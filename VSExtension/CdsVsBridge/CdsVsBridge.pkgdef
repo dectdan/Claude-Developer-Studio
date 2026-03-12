@@ -1,0 +1,9 @@
+[$RootKey$\Packages\{a1b2c3d4-e5f6-7890-abcd-ef1234567890}]
+@="CdsVsBridgePackage"
+"InprocServer32"="$WinDir$\SYSTEM32\MSCOREE.DLL"
+"Class"="CdsVsBridge.CdsVsBridgePackage"
+"Assembly"="CdsVsBridge, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+"CodeBase"="$PackageFolder$\CdsVsBridge.dll"
+"AllowsBackgroundLoad"=dword:00000001
+[$RootKey$\AutoLoadPackages\{f1536ef8-92ec-443c-9ed7-fdadf150da82}]
+"{a1b2c3d4-e5f6-7890-abcd-ef1234567890}"=dword:00000002

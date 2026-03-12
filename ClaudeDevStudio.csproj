@@ -17,13 +17,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Exclude UI projects from CLI build -->
+    <!-- Exclude UI projects and VS extension from CLI build -->
     <Compile Remove="ClaudeDevStudio.Dashboard\**" />
     <Compile Remove="ClaudeDevStudio.UI\**" />
+    <Compile Remove="VSExtension\**" />
     <EmbeddedResource Remove="ClaudeDevStudio.Dashboard\**" />
     <EmbeddedResource Remove="ClaudeDevStudio.UI\**" />
+    <EmbeddedResource Remove="VSExtension\**" />
     <None Remove="ClaudeDevStudio.Dashboard\**" />
     <None Remove="ClaudeDevStudio.UI\**" />
+    <None Remove="VSExtension\**" />
   </ItemGroup>
 
 </Project>

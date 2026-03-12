@@ -18,7 +18,6 @@ namespace CdsVsBridge
     [PackageRegistration(UseManagedResourcesOnly = true, AllowsBackgroundLoading = true)]
     [Guid(PackageGuidString)]
     [ProvideAutoLoad(VSConstants.UICONTEXT.SolutionExists_string, PackageAutoLoadFlags.BackgroundLoad)]
-    [ProvideMenuResource("Menus.ctmenu", 1)]
     public sealed class CdsVsBridgePackage : AsyncPackage
     {
         public const string PackageGuidString = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
@@ -30,6 +29,7 @@ namespace CdsVsBridge
         private SolutionEvents? _solutionEvents;
         private DocumentEvents? _documentEvents;
         private DTEEvents? _dteEvents;
+        private VsBridgeServer? _httpServer;
 
         protected override async Task InitializeAsync(
             CancellationToken cancellationToken,
@@ -45,9 +45,23 @@ namespace CdsVsBridge
 
             WireUpEvents();
 
+            // Start HTTP server for two-way VS control
+            _httpServer = new VsBridgeServer(_dte, this);
+            _httpServer.Start();
+
             // Write initial state on load
             WriteCurrentState();
             VsEventLogger.Log("extension_loaded", new { version = "1.0.0" });
+
+            // If a solution was already open when the package loaded, log it now
+            // (OnSolutionOpened won't fire retroactively)
+            try
+            {
+                var solutionFile = _dte?.Solution?.FileName;
+                if (!string.IsNullOrEmpty(solutionFile))
+                    VsEventLogger.Log("solution_already_open", new { solution = solutionFile });
+            }
+            catch { }
         }
 
         private void WireUpEvents()
@@ -141,6 +155,32 @@ namespace CdsVsBridge
                     errorCount = errors.Count,
                     warningCount = warnings.Count
                 });
+
+                // Capture build output pane text
+                try
+                {
+                    var outputWindow = _dte?.ToolWindows?.OutputWindow;
+                    if (outputWindow != null)
+                    {
+                        OutputWindowPane? buildPane = null;
+                        foreach (OutputWindowPane pane in outputWindow.OutputWindowPanes)
+                        {
+                            if (pane.Name == "Build")
+                            {
+                                buildPane = pane;
+                                break;
+                            }
+                        }
+                        if (buildPane != null)
+                        {
+                            var doc   = buildPane.TextDocument;
+                            var start = doc.StartPoint.CreateEditPoint();
+                            var text  = start.GetText(doc.EndPoint);
+                            VsStateWriter.AppendBuildOutput(text);
+                        }
+                    }
+                }
+                catch { /* Output pane capture failed — non-fatal */ }
             }
             catch { }
         }
@@ -306,6 +346,7 @@ namespace CdsVsBridge
                     {
                         _documentEvents.DocumentSaved -= OnDocumentSaved;
                     }
+                    _httpServer?.Dispose();
                 }
                 catch { }
             }
