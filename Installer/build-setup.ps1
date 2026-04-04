@@ -100,8 +100,19 @@ if (Test-Path "$Root\mcp-server\node_modules") {
 Copy-Item "$Installer\ConfigureClaudeDesktop.ps1" "$Build\" -Force
 Write-Host "  MCP server: OK" -ForegroundColor Green
 
-# ---- 6. Kokoro voice model ----
-Write-Host "`n[7/7] Staging Kokoro voice model..." -ForegroundColor Yellow
+# ---- 6. Review Panel ----
+Write-Host "`n[7/8] Staging Review Panel..." -ForegroundColor Yellow
+$rvDest = "$Build\review-server"
+New-Item -ItemType Directory -Force -Path $rvDest | Out-Null
+Copy-Item "$Root\review-server\server.js"    $rvDest -Force
+Copy-Item "$Root\review-server\package.json" $rvDest -Force
+if (Test-Path "$Root\review-server\node_modules") {
+    Copy-Item "$Root\review-server\node_modules" "$rvDest\node_modules" -Recurse -Force
+}
+Write-Host "  Review Panel: OK" -ForegroundColor Green
+
+# ---- 7. Kokoro voice model ----
+Write-Host "`n[8/8] Staging Kokoro voice model..." -ForegroundColor Yellow
 $kokoroSrc = "C:\Users\Big_D\AppData\Local\ClaudeDevStudio\VoiceServer\kokoro.onnx"
 if (Test-Path $kokoroSrc) {
     $size = [int]((Get-Item $kokoroSrc).Length / 1MB)

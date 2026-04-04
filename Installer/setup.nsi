@@ -68,6 +68,15 @@ Section "Install" SecMain
   SetOutPath "${INSTALL_DIR}"
   SetOverwrite on
 
+  ;--- Step 0: Stop running CDS processes so files aren't locked ---
+  DetailPrint "Stopping any running ClaudeDevStudio processes..."
+  nsExec::ExecToLog 'taskkill /IM ClaudeDevStudio.TrayApp.exe /F'
+  nsExec::ExecToLog 'taskkill /IM VoiceServer.exe /F'
+  nsExec::ExecToLog 'taskkill /IM claudedev.exe /F'
+  ; Kill review-server (node process on port 63000)
+  nsExec::ExecToLog 'cmd /c for /f "tokens=5" %a in (''netstat -ano ^| findstr :63000'') do taskkill /PID %a /F'
+  Sleep 1000
+
   ;--- Step 1: Check .NET 8 via registry, download if missing ---
   DetailPrint "Checking .NET 8 Runtime..."
   ReadRegStr $0 HKLM "SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.NETCore.App" "8.0.0"
@@ -126,6 +135,9 @@ Section "Install" SecMain
 
   SetOutPath "${INSTALL_DIR}\VoiceServer"
   File /nonfatal /r "build\VoiceServer\*.*"
+
+  SetOutPath "${INSTALL_DIR}\review-server"
+  File /nonfatal /r "build\review-server\*.*"
 
   SetOutPath "${INSTALL_DIR}\VSExtension"
   File /nonfatal "build\VSExtension\CdsVsBridge.vsix"
@@ -237,6 +249,7 @@ Section "Uninstall"
   RMDir /r "${INSTALL_DIR}\Dashboard"
   RMDir /r "${INSTALL_DIR}\mcp-server"
   RMDir /r "${INSTALL_DIR}\VoiceServer"
+  RMDir /r "${INSTALL_DIR}\review-server"
   RMDir /r "${INSTALL_DIR}\VSExtension"
   Delete   "${INSTALL_DIR}\ConfigureClaudeDesktop.ps1"
   Delete   "${INSTALL_DIR}\Uninstall.exe"
