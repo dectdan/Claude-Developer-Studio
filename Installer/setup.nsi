@@ -59,7 +59,7 @@ SetCompressor /SOLID lzma
 Name              "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile           "Output\ClaudeDevStudio-Setup.exe"
 InstallDir        "${INSTALL_DIR}"
-RequestExecutionLevel user
+RequestExecutionLevel admin
 ShowInstDetails   show
 
 ;---------------------------------------------------------------------------
