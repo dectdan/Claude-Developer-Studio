@@ -228,7 +228,9 @@ Section "Install" SecMain
 
   ;--- Step 7: Configure Claude Desktop ---
   DetailPrint "Configuring Claude Desktop..."
-  nsExec::ExecToLog 'powershell -ExecutionPolicy Bypass -NoProfile -File "${INSTALL_DIR}\ConfigureClaudeDesktop.ps1" -MCPServerPath "${MCP_INDEX}"'
+  ; Pass $APPDATA explicitly - elevated PowerShell resolves $env:APPDATA to
+  ; admin profile, not user profile. NSIS $APPDATA is always the correct user path.
+  nsExec::ExecToLog 'powershell -ExecutionPolicy Bypass -NoProfile -File "${INSTALL_DIR}\ConfigureClaudeDesktop.ps1" -MCPServerPath "${MCP_INDEX}" -UserAppData "$APPDATA"'
 
   ;--- Step 8: Create data directories ---
   CreateDirectory "$DOCUMENTS\ClaudeDevStudio\Projects"

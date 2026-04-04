@@ -1,8 +1,11 @@
 # Auto-configure Claude Desktop for ClaudeDevStudio
-param([string]$MCPServerPath)
+param(
+    [string]$MCPServerPath,
+    [string]$UserAppData = $env:APPDATA
+)
 
 try {
-    $configDir  = Join-Path $env:APPDATA "Claude"
+    $configDir  = Join-Path $UserAppData "Claude"
     $configPath = Join-Path $configDir "claude_desktop_config.json"
     New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 
@@ -25,7 +28,7 @@ try {
     $escapedNode = $nodePath.Replace('\', '\\')
     $escapedMcp  = $MCPServerPath.Replace('\', '\\')
 
-    # Write clean JSON - no BOM, no serialization
+    # Write clean JSON - no BOM, no serialization, no corruption risk
     $json = '{"mcpServers":{"claudedevstudio":{"command":"' + $escapedNode + '","args":["' + $escapedMcp + '"]}}}'
     [System.IO.File]::WriteAllText($configPath, $json, [System.Text.UTF8Encoding]::new($false))
 

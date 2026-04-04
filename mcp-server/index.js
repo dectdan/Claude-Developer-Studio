@@ -39,11 +39,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Path to claudedev.exe
 const CLAUDEDEV_PATH = path.join(__dirname, '..', 'CLI', 'claudedev.exe');
 
-// CDS data storage base (OneDrive)
-const CDS_BASE_PATH = 'C:\\Users\\Big_D\\OneDrive\\Documents\\ClaudeDevStudio\\Projects';
+// CDS data storage base — uses Documents folder, works for any user
+const CDS_BASE_PATH = path.join(process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\Default', 'Documents', 'ClaudeDevStudio', 'Projects');
 
-// Chat mirror log — survives context drops, stored on OneDrive
-const MIRROR_PATH = 'C:\\Users\\Big_D\\OneDrive\\Documents\\ClaudeDevStudio\\chat_mirror.jsonl';
+// Chat mirror log — survives context drops
+const MIRROR_PATH = path.join(process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\Default', 'Documents', 'ClaudeDevStudio', 'chat_mirror.jsonl');
 const MIRROR_MAX_LINES = 2000;
 const MIRROR_TOOL_TTL_MS  = 24 * 60 * 60 * 1000;  // 24h for tool entries
 const MIRROR_CKPT_TTL_MS  = 30 * 24 * 60 * 60 * 1000; // 30d for checkpoints
@@ -735,7 +735,7 @@ class ClaudeDevStudioServer {
 
   handleVsGetState() {
     const bridgeDir = path.join(
-      'C:\\Users\\Big_D\\OneDrive\\Documents\\ClaudeDevStudio\\VSBridge'
+      path.join(process.env.USERPROFILE || process.env.HOME || 'C:\\\\Users\\\\Default', 'Documents', 'ClaudeDevStudio', 'VSBridge')
     );
     const stateFile = path.join(bridgeDir, 'vs_state.json');
     if (!fs.existsSync(stateFile)) {
@@ -755,7 +755,7 @@ class ClaudeDevStudioServer {
 
   handleVsGetErrors() {
     const bridgeDir = path.join(
-      'C:\\Users\\Big_D\\OneDrive\\Documents\\ClaudeDevStudio\\VSBridge'
+      path.join(process.env.USERPROFILE || process.env.HOME || 'C:\\\\Users\\\\Default', 'Documents', 'ClaudeDevStudio', 'VSBridge')
     );
     const errFile = path.join(bridgeDir, 'vs_errors.json');
     if (!fs.existsSync(errFile)) {
@@ -789,7 +789,7 @@ class ClaudeDevStudioServer {
 
   handleVsGetOutput(args) {
     const bridgeDir = path.join(
-      'C:\\Users\\Big_D\\OneDrive\\Documents\\ClaudeDevStudio\\VSBridge'
+      path.join(process.env.USERPROFILE || process.env.HOME || 'C:\\\\Users\\\\Default', 'Documents', 'ClaudeDevStudio', 'VSBridge')
     );
     const outFile = path.join(bridgeDir, 'vs_build_output.txt');
     if (!fs.existsSync(outFile)) {
@@ -807,7 +807,7 @@ class ClaudeDevStudioServer {
 
   handleVsGetEvents(args) {
     const bridgeDir = path.join(
-      'C:\\Users\\Big_D\\OneDrive\\Documents\\ClaudeDevStudio\\VSBridge'
+      path.join(process.env.USERPROFILE || process.env.HOME || 'C:\\\\Users\\\\Default', 'Documents', 'ClaudeDevStudio', 'VSBridge')
     );
     const eventsFile = path.join(bridgeDir, 'vs_events.jsonl');
     if (!fs.existsSync(eventsFile)) {
@@ -922,21 +922,25 @@ class ClaudeDevStudioServer {
                 provider: providerKey, model: provider.model,
                 mode, tokIn, tokOut, cost: cost.toFixed(6), elapsed_ms: elapsed,
               }) + '\n';
-              fs.mkdirSync(path.dirname(cfg.log_path), { recursive: true });
-              fs.appendFileSync(cfg.log_path, entry, 'utf8');
+              if (cfg.log_path) {
+                fs.mkdirSync(path.dirname(cfg.log_path), { recursive: true });
+                fs.appendFileSync(cfg.log_path, entry, 'utf8');
+              }
             } catch { /* never break on log failure */ }
 
-            // Check daily budget
+            // Check daily budget (skip if no log_path configured)
             let budgetWarning = '';
             try {
-              const today = new Date().toISOString().slice(0, 10);
-              const lines = fs.readFileSync(cfg.log_path, 'utf8').split('\n').filter(Boolean);
-              const todayTotal = lines
-                .map(l => { try { return JSON.parse(l); } catch { return null; } })
-                .filter(e => e && e.ts && e.ts.startsWith(today))
-                .reduce((sum, e) => sum + parseFloat(e.cost || 0), 0);
-              if (todayTotal > cfg.limits.daily_budget_usd) {
-                budgetWarning = `\n⚠️ DAILY BUDGET EXCEEDED: $${todayTotal.toFixed(4)} spent today (limit $${cfg.limits.daily_budget_usd})`;
+              if (cfg.log_path && fs.existsSync(cfg.log_path)) {
+                const today = new Date().toISOString().slice(0, 10);
+                const lines = fs.readFileSync(cfg.log_path, 'utf8').split('\n').filter(Boolean);
+                const todayTotal = lines
+                  .map(l => { try { return JSON.parse(l); } catch { return null; } })
+                  .filter(e => e && e.ts && e.ts.startsWith(today))
+                  .reduce((sum, e) => sum + parseFloat(e.cost || 0), 0);
+                if (todayTotal > cfg.limits.daily_budget_usd) {
+                  budgetWarning = `\n⚠️ DAILY BUDGET EXCEEDED: $${todayTotal.toFixed(4)} spent today (limit $${cfg.limits.daily_budget_usd})`;
+                }
               }
             } catch { /* ignore budget calc errors */ }
 
