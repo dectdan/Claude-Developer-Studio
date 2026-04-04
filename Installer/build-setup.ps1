@@ -99,6 +99,8 @@ if (Test-Path "$Root\mcp-server\node_modules") {
 }
 Copy-Item "$Installer\ConfigureClaudeDesktop.ps1" "$Build\" -Force
 Write-Host "  MCP server: OK" -ForegroundColor Green
+Copy-Item "$Installer\ConfigureClaudeDesktop.ps1" "$Build\" -Force
+Write-Host "  ConfigureClaudeDesktop.ps1: OK" -ForegroundColor Green
 
 # ---- 6. Bundle Node.js installer ----
 Write-Host "`n[6/10] Bundling Node.js LTS..." -ForegroundColor Yellow
