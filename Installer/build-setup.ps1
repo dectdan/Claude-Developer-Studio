@@ -87,7 +87,7 @@ if ($msbuild) {
 }
 
 # ---- 5. Stage MCP server (with node_modules bundled) ----
-Write-Host "`n[6/7] Staging MCP server + dependencies..." -ForegroundColor Yellow
+Write-Host "`n[8/10] Staging MCP server + dependencies..." -ForegroundColor Yellow
 $mcpDest = "$Build\mcp-server"
 New-Item -ItemType Directory -Force -Path $mcpDest | Out-Null
 Copy-Item "$Root\mcp-server\index.js"      $mcpDest -Force
@@ -101,7 +101,7 @@ Copy-Item "$Installer\ConfigureClaudeDesktop.ps1" "$Build\" -Force
 Write-Host "  MCP server: OK" -ForegroundColor Green
 
 # ---- 6. Bundle Node.js installer ----
-Write-Host "`n[6/9] Bundling Node.js LTS..." -ForegroundColor Yellow
+Write-Host "`n[6/10] Bundling Node.js LTS..." -ForegroundColor Yellow
 $nodeMsi     = "$Build\node-lts-x64.msi"
 $nodeVersion = "22.14.0"
 $nodeUrl     = "https://nodejs.org/dist/v$nodeVersion/node-v$nodeVersion-x64.msi"
@@ -114,8 +114,21 @@ if (Test-Path $nodeMsi) {
     else { Write-Host "  WARNING: Node.js download failed" -ForegroundColor Yellow }
 }
 
+# ---- 7. Bundle Windows App Runtime ----
+Write-Host "`n[7/10] Bundling Windows App Runtime 1.8..." -ForegroundColor Yellow
+$winAppRt    = "$Build\WinAppRuntime.exe"
+$winAppUrl   = "https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe"
+if (Test-Path $winAppRt) {
+    Write-Host "  Already downloaded. Skipping." -ForegroundColor DarkGray
+} else {
+    Write-Host "  Downloading Windows App Runtime 1.8 (~101 MB)..."
+    Invoke-WebRequest -Uri $winAppUrl -OutFile $winAppRt -UseBasicParsing
+    if (Test-Path $winAppRt) { Write-Host "  Windows App Runtime: OK" -ForegroundColor Green }
+    else { Write-Host "  WARNING: Windows App Runtime download failed" -ForegroundColor Yellow }
+}
+
 # ---- 7. Review Panel ----
-Write-Host "`n[8/9] Staging Review Panel..." -ForegroundColor Yellow
+Write-Host "`n[9/10] Staging Review Panel..." -ForegroundColor Yellow
 $rvDest = "$Build\review-server"
 New-Item -ItemType Directory -Force -Path $rvDest | Out-Null
 Copy-Item "$Root\review-server\server.js"    $rvDest -Force
@@ -126,7 +139,7 @@ if (Test-Path "$Root\review-server\node_modules") {
 Write-Host "  Review Panel: OK" -ForegroundColor Green
 
 # ---- 7. Kokoro voice model ----
-Write-Host "`n[9/9] Staging Kokoro voice model..." -ForegroundColor Yellow
+Write-Host "`n[10/10] Staging Kokoro voice model..." -ForegroundColor Yellow
 $kokoroSrc = "C:\Users\Big_D\AppData\Local\ClaudeDevStudio\VoiceServer\kokoro.onnx"
 if (Test-Path $kokoroSrc) {
     $size = [int]((Get-Item $kokoroSrc).Length / 1MB)

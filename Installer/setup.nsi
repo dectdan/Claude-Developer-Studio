@@ -126,21 +126,29 @@ Section "Install" SecMain
     ${EndIf}
   ${EndIf}
 
-  ;--- Step 3: Install Windows App Runtime (required for WinUI 3 Dashboard) ---
+  ;--- Step 3: Install bundled Windows App Runtime 1.8 (required for WinUI 3 Dashboard) ---
   DetailPrint "Checking Windows App Runtime..."
-  ReadRegStr $0 HKLM "SOFTWARE\Microsoft\WindowsAppRuntime\1.6" ""
+  ReadRegStr $0 HKLM "SOFTWARE\Microsoft\WindowsAppRuntime\1.8" ""
+  ReadRegStr $1 HKLM "SOFTWARE\Microsoft\WindowsAppRuntime\1.6" ""
   ${If} $0 != ""
-    DetailPrint "Windows App Runtime already installed."
+    DetailPrint "Windows App Runtime 1.8 already installed."
+  ${ElseIf} $1 != ""
+    DetailPrint "Windows App Runtime 1.6 found -- installing 1.8..."
+    SetOutPath "$TEMP"
+    File "build\WinAppRuntime.exe"
+    ExecWait '"$TEMP\WinAppRuntime.exe" --quiet' $0
+    Delete "$TEMP\WinAppRuntime.exe"
+    DetailPrint "Windows App Runtime 1.8 installed."
   ${Else}
-    DetailPrint "Downloading Windows App Runtime (~14 MB)..."
-    ExecWait 'powershell -NoProfile -Command "(New-Object Net.WebClient).DownloadFile(\"https://aka.ms/windowsappruntimeinstall-x64\",\"$TEMP\WinAppRuntime.exe\")"' $0
+    DetailPrint "Installing bundled Windows App Runtime 1.8..."
+    SetOutPath "$TEMP"
+    File "build\WinAppRuntime.exe"
+    ExecWait '"$TEMP\WinAppRuntime.exe" --quiet' $0
+    Delete "$TEMP\WinAppRuntime.exe"
     ${If} $0 == 0
-      DetailPrint "Installing Windows App Runtime..."
-      ExecWait '"$TEMP\WinAppRuntime.exe" --quiet' $0
-      Delete "$TEMP\WinAppRuntime.exe"
-      DetailPrint "Windows App Runtime installed."
+      DetailPrint "Windows App Runtime installed successfully."
     ${Else}
-      DetailPrint "Windows App Runtime download failed -- Dashboard may not launch."
+      DetailPrint "Windows App Runtime install returned code $0."
     ${EndIf}
   ${EndIf}
 
