@@ -1,30 +1,40 @@
 # Auto-configure Claude Desktop for ClaudeDevStudio
-# This runs during installation and via 'claudedev configure-claude'
-
-param(
-    [string]$MCPServerPath
-)
+param([string]$MCPServerPath)
 
 try {
     $configDir  = Join-Path $env:APPDATA "Claude"
     $configPath = Join-Path $configDir "claude_desktop_config.json"
-
     New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 
-    # Escape backslashes for JSON
-    $escapedPath = $MCPServerPath.Replace('\', '\\')
+    # Find node.exe - use full path so Claude Desktop (Store app) can find it
+    $nodePath = "node"
+    $candidates = @(
+        "$env:ProgramFiles\nodejs\node.exe",
+        "${env:ProgramFiles(x86)}\nodejs\node.exe",
+        "$env:LOCALAPPDATA\Programs\nodejs\node.exe"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { $nodePath = $c; break }
+    }
+    if ($nodePath -eq "node") {
+        $found = Get-Command node -ErrorAction SilentlyContinue
+        if ($found) { $nodePath = $found.Source }
+    }
 
-    # Write clean JSON directly - no parsing, no serialization, no risk of corruption
-    $json = '{"mcpServers":{"claudedevstudio":{"command":"node","args":["' + $escapedPath + '"]}}}'
+    # Escape backslashes for JSON
+    $escapedNode = $nodePath.Replace('\', '\\')
+    $escapedMcp  = $MCPServerPath.Replace('\', '\\')
+
+    # Write clean JSON - no BOM, no serialization
+    $json = '{"mcpServers":{"claudedevstudio":{"command":"' + $escapedNode + '","args":["' + $escapedMcp + '"]}}}'
     [System.IO.File]::WriteAllText($configPath, $json, [System.Text.UTF8Encoding]::new($false))
 
     Write-Host "Claude Desktop configured successfully"
+    Write-Host "  Node:   $nodePath"
     Write-Host "  Config: $configPath"
-    Write-Host "  MCP Server: $MCPServerPath"
     exit 0
 }
 catch {
-    Write-Host "Error configuring Claude Desktop: $_"
+    Write-Host "Error: $_"
     exit 1
 }
-

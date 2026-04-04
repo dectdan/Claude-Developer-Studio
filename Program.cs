@@ -1177,9 +1177,20 @@ namespace ClaudeDevStudio
                 return 1;
             }
 
-            // Write clean JSON directly - no parsing, no serialization, no corruption risk
+            // Find node.exe full path - Claude Desktop (Store app) cannot resolve bare "node"
+            var nodePath = "node";
+            var nodeCandidates = new[] {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "nodejs", "node.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "nodejs", "node.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "nodejs", "node.exe")
+            };
+            foreach (var candidate in nodeCandidates)
+                if (File.Exists(candidate)) { nodePath = candidate; break; }
+
+            // Write clean JSON - no BOM, no serialization, no corruption risk
+            var escapedNode = nodePath.Replace(@"\", @"\\");
             var escapedPath = mcpServerPath.Replace(@"\", @"\\");
-            var json = $"{{\"mcpServers\":{{\"claudedevstudio\":{{\"command\":\"node\",\"args\":[\"{escapedPath}\"]}}}}}}";
+            var json = $"{{\"mcpServers\":{{\"claudedevstudio\":{{\"command\":\"{escapedNode}\",\"args\":[\"{escapedPath}\"]}}}}}}";
             Directory.CreateDirectory(configDir);
             File.WriteAllText(configPath, json, new System.Text.UTF8Encoding(false));
 
