@@ -27,5 +27,12 @@ packages/
 # Node
 node_modules/
 
+# Secrets - never commit API keys
+mcp-server/qwen_config.json
+
+# Installer build artifacts
+Installer/Output/*.exe
+Installer/build/
+
 # Keep MSI in releases folder
 !Releases/*.msi

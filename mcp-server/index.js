@@ -6,7 +6,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs';
@@ -368,12 +368,80 @@ class ClaudeDevStudioServer {
         {
           name: 'claudedev_chat_resume',
           description: 'Recover context after a drop. Returns all checkpoints from last 7 days + tool activity from recent hours. Call at session start when context may be missing.',
+        },
+        {
+          name: 'qwen_generate',
+          description: 'Delegate a generation task to a specialized AI model. ' +
+            'PROVIDERS: together=Qwen3-Coder-480B (best C#/C++ code), groq=Llama-3.3-70B (fastest, quick iteration), ' +
+            'deepinfra=Llama-3.3-70B (cheapest, bulk text), fireworks=Qwen3-235B (broad catalog), openrouter=Qwen3.5-397B (fallback). ' +
+            'SMART DEFAULTS: mode=code→together, mode=prose→deepinfra, mode=json→groq, mode=fast→groq, mode=cheap→deepinfra. ' +
+            'USE FOR: bulk code generation, scaffolding, repetitive output, getting a fast second opinion, cheap bulk text. ' +
+            'DO NOT USE FOR: tasks needing full conversation context or architectural judgment — handle those yourself.',
           inputSchema: {
             type: 'object',
             properties: {
-              hours: { type: 'number', description: 'Hours of tool activity to include (default: 4)' },
+              prompt:     { type: 'string', description: 'The task. Be specific — the model has no conversation context.' },
+              context:    { type: 'string', description: 'Optional: code snippets, interfaces, or constraints the model needs.' },
+              mode:       { type: 'string', enum: ['code', 'prose', 'json', 'fast', 'cheap', 'broad'], description: 'Determines provider routing if provider not set. code→together, prose→deepinfra, json/fast→groq, cheap→deepinfra, broad→fireworks.' },
+              provider:   { type: 'string', enum: ['together', 'groq', 'deepinfra', 'fireworks', 'openrouter'], description: 'Override smart routing and use a specific provider explicitly.' },
+              max_tokens: { type: 'number', description: 'Max output tokens. Default 4096, hard cap 16384.' },
             },
-            required: [],
+            required: ['prompt'],
+          },
+        },
+        {
+          name: 'display_review',
+          description: 'Send code or content to the CDS Review Panel (localhost:63000) for Dan to see visually. ' +
+            'Use for large code blocks, generated files, or multi-file changes — keeps the chat clean. ' +
+            'Dan opens http://localhost:63000 in his browser to see items in real-time. ' +
+            'Items persist until dismissed. LANGUAGES: csharp, javascript, json, markdown, text.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              title:    { type: 'string', description: 'Short descriptive title for the item (e.g. "ReviewPage.xaml.cs — Regen fix")' },
+              content:  { type: 'string', description: 'The code or text to display.' },
+              language: { type: 'string', enum: ['csharp', 'javascript', 'json', 'markdown', 'xml', 'text'], description: 'Syntax highlighting language. Default: text.' },
+              tag:      { type: 'string', description: 'Optional short label shown as a badge (e.g. "NEW", "EDIT", "FIX")' },
+            },
+            required: ['title', 'content'],
+          },
+        },
+        {
+          name: 'display_image',
+          description: 'Send a generated image (base64) to the CDS Review Panel (localhost:63000) for Dan to see. ' +
+            'Use after generate_image, or any time you have base64 image data. ' +
+            'Displays with zoom-on-click and a Save button.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              title:     { type: 'string', description: 'Descriptive title (e.g. "App Icon — 512x512")' },
+              imageData: { type: 'string', description: 'Base64-encoded image data (no data URI prefix).' },
+              mimeType:  { type: 'string', enum: ['image/png', 'image/jpeg', 'image/webp'], description: 'Image format. Default: image/png' },
+              filename:  { type: 'string', description: 'Optional suggested save filename (e.g. "icon_512.png")' },
+              tag:       { type: 'string', description: 'Optional badge label (e.g. "ICON", "512x512")' },
+            },
+            required: ['title', 'imageData'],
+          },
+        },
+        {
+          name: 'generate_image',
+          description: 'Generate an image using Fireworks SDXL and display it in the Review Panel. ' +
+            'Use for icons, logos, illustrations, mockups, concept art. ' +
+            'SDXL produces high quality 1024x1024 images (~15-20s). ' +
+            'Result auto-displays in Review Panel at localhost:63000. ' +
+            'Valid sizes: 1024x1024 (default), 1152x896, 896x1152, 1216x832, 1344x768 (landscape), 768x1344 (portrait). Odd sizes are snapped to nearest.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              prompt:   { type: 'string', description: 'Image description. Be specific: style, colors, subject, dimensions if important.' },
+              title:    { type: 'string', description: 'Display title in Review Panel (e.g. "App Icon — dark theme")' },
+              width:    { type: 'number', description: 'Width in pixels. Default 1024. Must be multiple of 32.' },
+              height:   { type: 'number', description: 'Height in pixels. Default 1024. Must be multiple of 32.' },
+              steps:    { type: 'number', description: 'Inference steps. Default 4 (fast). Max 8 for FLUX schnell.' },
+              filename: { type: 'string', description: 'Suggested save filename (e.g. "icon_512.png"). Optional.' },
+              tag:      { type: 'string', description: 'Badge label in panel (e.g. "FLUX", "ICON"). Optional.' },
+            },
+            required: ['prompt', 'title'],
           },
         },
       ],
@@ -406,6 +474,10 @@ class ClaudeDevStudioServer {
           case 'claudedev_vs_command':      result = this.handleVsHttp('POST', '/command', args); break;
           case 'claudedev_chat_checkpoint': return this.handleChatCheckpoint(args);
           case 'claudedev_chat_resume':     return this.handleChatResume(args);
+          case 'qwen_generate':             result = await this.handleQwenGenerate(args); break;
+          case 'display_review':            result = await this.handleDisplayReview(args); break;
+          case 'display_image':             result = await this.handleDisplayImage(args); break;
+          case 'generate_image':            result = await this.handleGenerateImage(args); break;
           default: throw new Error(`Unknown tool: ${name}`);
         }
         // Resolve promise if needed, then auto-log
@@ -746,6 +818,122 @@ class ClaudeDevStudioServer {
     }
   }
 
+  // ── Qwen Generate — multi-provider AI delegation ─────────────────────────
+
+  async handleQwenGenerate(args) {
+    // Load config
+    const cfgPath = path.join(__dirname, 'qwen_config.json');
+    let cfg;
+    try {
+      cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    } catch (e) {
+      return { content: [{ type: 'text', text: `[AiDelegate] Cannot read qwen_config.json: ${e.message}` }] };
+    }
+
+    const mode      = args.mode || 'code';
+    const maxTok    = Math.min(args.max_tokens || cfg.limits.max_tokens_default, cfg.limits.max_tokens_hard_cap);
+
+    // Resolve provider: explicit override → smart routing default
+    const providerKey = args.provider || cfg.routing_defaults[mode] || 'together';
+    const provider    = cfg.providers[providerKey];
+    if (!provider) {
+      return { content: [{ type: 'text', text: `[AiDelegate] Unknown provider: ${providerKey}` }] };
+    }
+
+    // System prompts per mode
+    const systemPrompts = {
+      code:  'You are an expert C# and C++ developer. Return clean, production-ready, compilable code only. No markdown fences. No explanations unless asked.',
+      prose: 'You are a clear, precise technical writer. Write in well-structured paragraphs.',
+      json:  'You are a data API. Return ONLY valid JSON. No markdown, no commentary, no preamble.',
+      fast:  'Be concise and direct. Answer quickly and accurately.',
+      cheap: 'You are a helpful assistant. Be thorough but efficient.',
+      broad: 'You are a versatile AI assistant. Complete the task as specified.',
+    };
+
+    const userPrompt = args.context
+      ? `## Context\n${args.context}\n\n## Task\n${args.prompt}`
+      : args.prompt;
+
+    const body = JSON.stringify({
+      model:      provider.model,
+      max_tokens: maxTok,
+      messages: [
+        { role: 'system', content: systemPrompts[mode] || systemPrompts.prose },
+        { role: 'user',   content: userPrompt },
+      ],
+    });
+
+    const urlObj = new URL(provider.base_url);
+    const t0     = Date.now();
+
+    return new Promise((resolve) => {
+      const options = {
+        hostname: urlObj.hostname,
+        path:     urlObj.pathname + (urlObj.search || ''),
+        method:   'POST',
+        headers: {
+          'Content-Type':   'application/json',
+          'Authorization':  `Bearer ${provider.api_key}`,
+          'Content-Length': Buffer.byteLength(body),
+          'HTTP-Referer':   'https://gainpublications.com',
+          'X-Title':        'ClaudeDevStudio',
+        },
+        timeout: cfg.limits.timeout_ms || 120000,
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          const elapsed = Date.now() - t0;
+          try {
+            const parsed  = JSON.parse(data);
+            const content = parsed?.choices?.[0]?.message?.content ?? '';
+            const tokIn   = parsed?.usage?.prompt_tokens     ?? 0;
+            const tokOut  = parsed?.usage?.completion_tokens ?? 0;
+            const cost    = (tokIn * provider.cost_in / 1_000_000) + (tokOut * provider.cost_out / 1_000_000);
+
+            // Log usage
+            try {
+              const entry = JSON.stringify({
+                ts: new Date().toISOString(),
+                provider: providerKey, model: provider.model,
+                mode, tokIn, tokOut, cost: cost.toFixed(6), elapsed_ms: elapsed,
+              }) + '\n';
+              fs.mkdirSync(path.dirname(cfg.log_path), { recursive: true });
+              fs.appendFileSync(cfg.log_path, entry, 'utf8');
+            } catch { /* never break on log failure */ }
+
+            // Check daily budget
+            let budgetWarning = '';
+            try {
+              const today = new Date().toISOString().slice(0, 10);
+              const lines = fs.readFileSync(cfg.log_path, 'utf8').split('\n').filter(Boolean);
+              const todayTotal = lines
+                .map(l => { try { return JSON.parse(l); } catch { return null; } })
+                .filter(e => e && e.ts && e.ts.startsWith(today))
+                .reduce((sum, e) => sum + parseFloat(e.cost || 0), 0);
+              if (todayTotal > cfg.limits.daily_budget_usd) {
+                budgetWarning = `\n⚠️ DAILY BUDGET EXCEEDED: $${todayTotal.toFixed(4)} spent today (limit $${cfg.limits.daily_budget_usd})`;
+              }
+            } catch { /* ignore budget calc errors */ }
+
+            const header = `[${providerKey.toUpperCase()} | ${provider.model.split('/').pop()} | ${elapsed}ms | in:${tokIn} out:${tokOut} | $${cost.toFixed(5)}]${budgetWarning}\n\n`;
+            resolve({ content: [{ type: 'text', text: header + content }] });
+
+          } catch (e) {
+            resolve({ content: [{ type: 'text', text: `[AiDelegate] Parse error (${providerKey}): ${e.message}\nRaw: ${data.slice(0, 500)}` }] });
+          }
+        });
+      });
+
+      req.on('timeout', () => { req.destroy(); resolve({ content: [{ type: 'text', text: `[AiDelegate] ${providerKey} timed out after ${cfg.limits.timeout_ms}ms.` }] }); });
+      req.on('error',   e  => resolve({ content: [{ type: 'text', text: `[AiDelegate] ${providerKey} network error: ${e.message}` }] }));
+      req.write(body);
+      req.end();
+    });
+  }
+
   // ── VS HTTP Bridge (Phase 2) ───────────────────────────────────────────────
 
   async handleVsHttp(method, path, body) {
@@ -787,7 +975,207 @@ class ClaudeDevStudioServer {
     });
   }
 
+  // ── Display Review — send content to localhost:63000 review panel ────────
+
+  async handleDisplayReview(args) {
+    const { title, content, language = 'text', tag } = args;
+    if (!title || content === undefined) {
+      return { content: [{ type: 'text', text: '[ReviewPanel] title and content are required.' }] };
+    }
+    return new Promise((resolve) => {
+      const body = JSON.stringify({ title, content, language, tag });
+      const options = {
+        hostname: '127.0.0.1',
+        port:     63000,
+        path:     '/review',
+        method:   'POST',
+        headers: {
+          'Content-Type':   'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+        timeout: 3000,
+      };
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', c => data += c);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.ok) {
+              resolve({ content: [{ type: 'text', text: `[ReviewPanel] Sent → "${title}" (id:${parsed.id}). Open http://localhost:63000 to view.` }] });
+            } else {
+              resolve({ content: [{ type: 'text', text: `[ReviewPanel] Server error: ${data}` }] });
+            }
+          } catch {
+            resolve({ content: [{ type: 'text', text: `[ReviewPanel] Bad response: ${data}` }] });
+          }
+        });
+      });
+      req.on('error', (e) => {
+        resolve({ content: [{ type: 'text', text: `[ReviewPanel] Cannot reach server — is review-server running? Start it with: cd review-server && node server.js\nError: ${e.message}` }] });
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        resolve({ content: [{ type: 'text', text: '[ReviewPanel] Timed out — server not responding.' }] });
+      });
+      req.write(body);
+      req.end();
+    });
+  }
+
+  // ── Display Image — send base64 image to review panel ────────────────────
+
+  async handleDisplayImage(args) {
+    const { title, imageData, mimeType = 'image/png', filename, tag } = args;
+    if (!title || !imageData) {
+      return { content: [{ type: 'text', text: '[ReviewPanel] title and imageData are required.' }] };
+    }
+    // Strip data URI prefix if accidentally included
+    const clean = imageData.replace(/^data:[^;]+;base64,/, '');
+    return new Promise((resolve) => {
+      const body = JSON.stringify({ title, imageData: clean, mimeType, filename, tag });
+      const options = {
+        hostname: '127.0.0.1',
+        port:     63000,
+        path:     '/image',
+        method:   'POST',
+        headers: {
+          'Content-Type':   'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+        timeout: 5000,
+      };
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', c => data += c);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.ok) {
+              resolve({ content: [{ type: 'text', text: `[ReviewPanel] Image sent → "${title}" (id:${parsed.id}). Open http://localhost:63000 to view. Click image to zoom, ⬇ Save to download.` }] });
+            } else {
+              resolve({ content: [{ type: 'text', text: `[ReviewPanel] Server error: ${data}` }] });
+            }
+          } catch {
+            resolve({ content: [{ type: 'text', text: `[ReviewPanel] Bad response: ${data}` }] });
+          }
+        });
+      });
+      req.on('error', (e) => resolve({ content: [{ type: 'text', text: `[ReviewPanel] Cannot reach server: ${e.message}` }] }));
+      req.on('timeout', () => { req.destroy(); resolve({ content: [{ type: 'text', text: '[ReviewPanel] Timed out.' }] }); });
+      req.write(body);
+      req.end();
+    });
+  }
+
+  // ── Generate Image — Fireworks SDXL → Review Panel ───────────────────────
+
+  async handleGenerateImage(args) {
+    const cfgPath = path.join(__dirname, 'qwen_config.json');
+    let cfg;
+    try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); }
+    catch (e) { return { content: [{ type: 'text', text: `[ImageGen] Cannot read qwen_config.json: ${e.message}` }] }; }
+
+    const fireworksKey = cfg.providers?.fireworks?.api_key;
+    if (!fireworksKey) return { content: [{ type: 'text', text: '[ImageGen] No Fireworks key in qwen_config.json.' }] };
+
+    const { prompt, title, width = 1024, height = 1024, steps = 20, filename, tag } = args;
+
+    // Fireworks SDXL valid resolutions — snap to nearest supported
+    const validSizes = [
+      [1024,1024],[1152,896],[896,1152],[1216,832],[832,1216],
+      [1344,768],[768,1344],[1536,640],[640,1536]
+    ];
+    const snap = (w, h) => {
+      let best = validSizes[0], bestDist = Infinity;
+      for (const [vw, vh] of validSizes) {
+        const dist = Math.abs(vw - w) + Math.abs(vh - h);
+        if (dist < bestDist) { bestDist = dist; best = [vw, vh]; }
+      }
+      return best;
+    };
+    const [snapW, snapH] = snap(width, height);
+
+    const bodyStr = JSON.stringify({
+      cfg_scale:       7,
+      width:           snapW,
+      height:          snapH,
+      steps:           Math.min(steps, 30),
+      samples:         1,
+      prompt,
+      negative_prompt: 'blurry, low quality, distorted, text, watermark',
+    });
+
+    return new Promise((resolve) => {
+      const bodyBytes = Buffer.from(bodyStr, 'utf8');
+      const urlObj   = new URL('https://api.fireworks.ai/inference/v1/image_generation/accounts/fireworks/models/stable-diffusion-xl-1024-v1-0');
+      const options  = {
+        hostname: urlObj.hostname,
+        path:     urlObj.pathname,
+        method:   'POST',
+        headers: {
+          'Authorization': `Bearer ${fireworksKey}`,
+          'Content-Type':  'application/json',
+          'Content-Length': bodyBytes.length,
+        },
+        timeout: 120000,
+      };
+      const req = https.request(options, (res) => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', async () => {
+          const contentType = res.headers['content-type'] || '';
+          const buf = Buffer.concat(chunks);
+
+          if (!contentType.includes('image/')) {
+            return resolve({ content: [{ type: 'text', text: `[ImageGen] Fireworks error: ${buf.toString('utf8').slice(0, 400)}` }] });
+          }
+
+          const b64 = buf.toString('base64');
+          const displayResult = await this.handleDisplayImage({
+            title,
+            imageData: b64,
+            mimeType:  'image/png',
+            filename:  filename || `generated_${Date.now()}.png`,
+            tag:       tag || 'SDXL',
+          });
+          const displayMsg = displayResult?.content?.[0]?.text ?? '';
+          resolve({ content: [{ type: 'text', text: `[ImageGen] Fireworks SDXL done (${snapW}×${snapH}). ${displayMsg}` }] });
+        });
+      });
+      req.on('error', (e) => resolve({ content: [{ type: 'text', text: `[ImageGen] Network error: ${e.message}` }] }));
+      req.on('timeout', () => { req.destroy(); resolve({ content: [{ type: 'text', text: '[ImageGen] Timed out after 120s.' }] }); });
+      req.write(bodyBytes);
+      req.end();
+    });
+  }
+
+  // ── Auto-start Review Panel server ───────────────────────────────────────
+
+  startReviewPanel() {
+    const serverPath = path.join(__dirname, '..', 'review-server', 'server.js');
+    if (!fs.existsSync(serverPath)) {
+      console.error('[ReviewPanel] server.js not found, skipping auto-start.');
+      return;
+    }
+    // Check if already running
+    const checkReq = http.request({ hostname: '127.0.0.1', port: 63000, path: '/status', method: 'GET', timeout: 1000 }, (res) => {
+      console.error('[ReviewPanel] Already running on port 63000.');
+    });
+    checkReq.on('error', () => {
+      // Not running — start it
+      const child = spawn(process.execPath, [serverPath], {
+        detached: true,
+        stdio:    'ignore',
+      });
+      child.unref();
+      console.error('[ReviewPanel] Started on http://localhost:63000');
+    });
+    checkReq.end();
+  }
+
   async run() {
+    this.startReviewPanel();
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     console.error('ClaudeDevStudio MCP server running on stdio');
