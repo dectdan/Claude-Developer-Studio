@@ -135,6 +135,17 @@ if (Test-Path $vsBuild) {
     Write-Warn "  dotnet build `"$Src\VoiceServer`" -c Release -r win-x64"
 }
 
+Write-Step "Adding claudedev to user PATH"
+$cliDir = Join-Path $Dst "CLI"
+$currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+if ($currentPath -notlike "*ClaudeDevStudio\CLI*") {
+    [Environment]::SetEnvironmentVariable("PATH", "$currentPath;$cliDir", "User")
+    Write-Ok "Added to PATH: $cliDir"
+    Write-Ok "Open a new terminal to use 'claudedev' from anywhere"
+} else {
+    Write-Skip "Already in PATH"
+}
+
 Write-Step "Configuring Claude Desktop"
 $mcpPath   = Join-Path $Dst "mcp-server\index.js"
 $configDir = Split-Path $ConfigFile -Parent
