@@ -1,4 +1,4 @@
-﻿# Auto-configure Claude Desktop for ClaudeDevStudio
+# Auto-configure Claude Desktop for ClaudeDevStudio
 # This runs during installation and via 'claudedev configure-claude'
 
 param(
@@ -16,7 +16,7 @@ try {
 
     # Write clean JSON directly - no parsing, no serialization, no risk of corruption
     $json = '{"mcpServers":{"claudedevstudio":{"command":"node","args":["' + $escapedPath + '"]}}}'
-    [System.IO.File]::WriteAllText($configPath, $json, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($configPath, $json, [System.Text.UTF8Encoding]::new($false))
 
     Write-Host "Claude Desktop configured successfully"
     Write-Host "  Config: $configPath"
@@ -27,3 +27,4 @@ catch {
     Write-Host "Error configuring Claude Desktop: $_"
     exit 1
 }
+

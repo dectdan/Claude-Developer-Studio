@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Linq;
 using ClaudeDevStudio.Memory;
@@ -1181,7 +1181,7 @@ namespace ClaudeDevStudio
             var escapedPath = mcpServerPath.Replace(@"\", @"\\");
             var json = $"{{\"mcpServers\":{{\"claudedevstudio\":{{\"command\":\"node\",\"args\":[\"{escapedPath}\"]}}}}}}";
             Directory.CreateDirectory(configDir);
-            File.WriteAllText(configPath, json, System.Text.Encoding.UTF8);
+            File.WriteAllText(configPath, json, new System.Text.UTF8Encoding(false));
 
             Console.WriteLine("Claude Desktop configured successfully!");
             Console.WriteLine($"  Config: {configPath}");
