@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using ClaudeDevStudio.Memory;
@@ -96,7 +96,7 @@ namespace ClaudeDevStudio
                 Path.GetFileName(projectPath)
             );
 
-            Console.WriteLine($"✓ Initialized ClaudeDevStudio memory for: {Path.GetFileName(projectPath)}");
+            Console.WriteLine($"âœ“ Initialized ClaudeDevStudio memory for: {Path.GetFileName(projectPath)}");
             Console.WriteLine($"  Memory location: {memoryLocation}");
             
             return 0;
@@ -135,7 +135,7 @@ namespace ClaudeDevStudio
 
             if (state.DecisionsPending.Any())
             {
-                Console.WriteLine($"\n⚠️ Pending Decisions: {state.DecisionsPending.Count}");
+                Console.WriteLine($"\nâš ï¸ Pending Decisions: {state.DecisionsPending.Count}");
                 foreach (var decision in state.DecisionsPending)
                 {
                     Console.WriteLine($"  - {decision.Question}");
@@ -144,7 +144,7 @@ namespace ClaudeDevStudio
 
             if (state.UncertaintiesFlagged.Any())
             {
-                Console.WriteLine($"\n❓ Flagged Uncertainties: {state.UncertaintiesFlagged.Count}");
+                Console.WriteLine($"\nâ“ Flagged Uncertainties: {state.UncertaintiesFlagged.Count}");
                 foreach (var uncertainty in state.UncertaintiesFlagged)
                 {
                     Console.WriteLine($"  - {uncertainty}");
@@ -179,7 +179,7 @@ namespace ClaudeDevStudio
                     if (activity != null)
                     {
                         memory.RecordActivity(activity);
-                        Console.WriteLine($"✓ Recorded activity: {activity.Action}");
+                        Console.WriteLine($"âœ“ Recorded activity: {activity.Action}");
                     }
                     break;
 
@@ -188,7 +188,7 @@ namespace ClaudeDevStudio
                     if (pattern != null)
                     {
                         memory.RecordPattern(pattern);
-                        Console.WriteLine($"✓ Recorded pattern: {pattern.PatternDescription}");
+                        Console.WriteLine($"âœ“ Recorded pattern: {pattern.PatternDescription}");
                     }
                     break;
 
@@ -197,7 +197,7 @@ namespace ClaudeDevStudio
                     if (mistake != null)
                     {
                         memory.RecordMistake(mistake);
-                        Console.WriteLine($"✓ Recorded mistake: {mistake.MistakeDescription}");
+                        Console.WriteLine($"âœ“ Recorded mistake: {mistake.MistakeDescription}");
                     }
                     break;
 
@@ -206,7 +206,7 @@ namespace ClaudeDevStudio
                     if (decision != null)
                     {
                         memory.RecordDecision(decision);
-                        Console.WriteLine($"✓ Recorded decision: {decision.DecisionDescription}");
+                        Console.WriteLine($"âœ“ Recorded decision: {decision.DecisionDescription}");
                     }
                     break;
 
@@ -215,7 +215,7 @@ namespace ClaudeDevStudio
                     if (perf != null)
                     {
                         memory.RecordPerformance(perf);
-                        Console.WriteLine($"✓ Recorded performance: {perf.Operation} = {perf.Duration}{perf.Unit}");
+                        Console.WriteLine($"âœ“ Recorded performance: {perf.Operation} = {perf.Duration}{perf.Unit}");
                     }
                     break;
 
@@ -242,7 +242,7 @@ namespace ClaudeDevStudio
 
             if (check.FoundPriorAttempt && check.PriorMistake != null)
             {
-                Console.WriteLine("⚠️ WARNING: This action matches a prior mistake!");
+                Console.WriteLine("âš ï¸ WARNING: This action matches a prior mistake!");
                 Console.WriteLine($"\nMistake ID: {check.PriorMistake.Id}");
                 Console.WriteLine($"Date: {check.PriorMistake.Timestamp:yyyy-MM-dd}");
                 Console.WriteLine($"What happened: {check.PriorMistake.Impact}");
@@ -253,7 +253,7 @@ namespace ClaudeDevStudio
             }
             else
             {
-                Console.WriteLine("✓ No prior mistakes found for this action");
+                Console.WriteLine("âœ“ No prior mistakes found for this action");
                 return 0;
             }
         }
@@ -283,11 +283,11 @@ namespace ClaudeDevStudio
                 
                 if (state.ContextUsage.ShouldHandoff)
                 {
-                    Console.WriteLine("  ⚠️ CRITICAL - Handoff recommended!");
+                    Console.WriteLine("  âš ï¸ CRITICAL - Handoff recommended!");
                 }
                 else if (state.ContextUsage.TokensUsed > state.ContextUsage.WarningThreshold)
                 {
-                    Console.WriteLine("  ⚠️ WARNING - Approaching context limit");
+                    Console.WriteLine("  âš ï¸ WARNING - Approaching context limit");
                 }
             }
 
@@ -337,7 +337,7 @@ namespace ClaudeDevStudio
 
             if (File.Exists(handoffPath))
             {
-                Console.WriteLine($"✓ Handoff document generated:");
+                Console.WriteLine($"âœ“ Handoff document generated:");
                 Console.WriteLine($"  {handoffPath}");
                 Console.WriteLine();
                 Console.WriteLine(File.ReadAllText(handoffPath));
@@ -502,28 +502,28 @@ namespace ClaudeDevStudio
             {
                 case "all":
                     Core.ComponentManager.RestartAll();
-                    Console.WriteLine("✓ All components restarted");
+                    Console.WriteLine("âœ“ All components restarted");
                     break;
 
                 case "tray":
                     if (Core.ComponentManager.RestartTrayApp())
-                        Console.WriteLine("✓ Tray app restarted");
+                        Console.WriteLine("âœ“ Tray app restarted");
                     else
-                        Console.WriteLine("✗ Failed to restart tray app");
+                        Console.WriteLine("âœ— Failed to restart tray app");
                     break;
 
                 case "dashboard":
                     if (Core.ComponentManager.RestartDashboard())
-                        Console.WriteLine("✓ Dashboard restarted");
+                        Console.WriteLine("âœ“ Dashboard restarted");
                     else
-                        Console.WriteLine("✗ Failed to restart dashboard");
+                        Console.WriteLine("âœ— Failed to restart dashboard");
                     break;
 
                 case "mcp":
                     if (Core.ComponentManager.RestartMcpServer())
-                        Console.WriteLine("✓ MCP server restarted");
+                        Console.WriteLine("âœ“ MCP server restarted");
                     else
-                        Console.WriteLine("✗ Failed to restart MCP server");
+                        Console.WriteLine("âœ— Failed to restart MCP server");
                     break;
 
                 default:
@@ -539,18 +539,18 @@ namespace ClaudeDevStudio
 
             Console.WriteLine("=== ClaudeDevStudio Component Status ===");
             Console.WriteLine();
-            Console.WriteLine($"Tray App:    {(status.TrayAppRunning ? "✓ Running" : "✗ Stopped")}");
-            Console.WriteLine($"Dashboard:   {(status.DashboardRunning ? "✓ Running" : "✗ Stopped")}");
-            Console.WriteLine($"MCP Server:  {(status.McpServerRunning ? "✓ Running" : "✗ Stopped")}");
+            Console.WriteLine($"Tray App:    {(status.TrayAppRunning ? "âœ“ Running" : "âœ— Stopped")}");
+            Console.WriteLine($"Dashboard:   {(status.DashboardRunning ? "âœ“ Running" : "âœ— Stopped")}");
+            Console.WriteLine($"MCP Server:  {(status.McpServerRunning ? "âœ“ Running" : "âœ— Stopped")}");
             Console.WriteLine();
 
             if (status.AllRunning)
             {
-                Console.WriteLine("All components are running ✓");
+                Console.WriteLine("All components are running âœ“");
             }
             else
             {
-                Console.WriteLine("⚠️ Some components are not running");
+                Console.WriteLine("âš ï¸ Some components are not running");
                 Console.WriteLine("Run 'claudedev restart all' to start all components");
             }
 
@@ -579,7 +579,7 @@ namespace ClaudeDevStudio
             foreach (var project in projects)
             {
                 var isActive = project.Path == activeState.ActiveProjectPath;
-                var marker = isActive ? "→" : " ";
+                var marker = isActive ? "â†’" : " ";
                 var timeSince = GetTimeSince(project.LastAccessed);
 
                 Console.WriteLine($"{marker} {project.Name}");
@@ -632,7 +632,7 @@ namespace ClaudeDevStudio
             var stateManager = new Core.SessionStateManager();
             stateManager.SetActiveProject(targetProject.Path, targetProject.Name);
 
-            Console.WriteLine($"✓ Switched to project: {targetProject.Name}");
+            Console.WriteLine($"âœ“ Switched to project: {targetProject.Name}");
             Console.WriteLine($"  Path: {targetProject.Path}");
 
             return 0;
@@ -671,15 +671,15 @@ namespace ClaudeDevStudio
 
             if (!result.Success)
             {
-                Console.WriteLine($"✗ {result.Message}");
+                Console.WriteLine($"âœ— {result.Message}");
                 return 1;
             }
 
-            Console.WriteLine($"✓ Loaded project: {result.ProjectName}");
+            Console.WriteLine($"âœ“ Loaded project: {result.ProjectName}");
             Console.WriteLine($"  Source: {result.Source}");
             Console.WriteLine();
             Console.WriteLine("Context:");
-            Console.WriteLine("─────────────────────────────────────");
+            Console.WriteLine("â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
             Console.WriteLine(result.Context);
 
             return 0;
@@ -725,11 +725,11 @@ namespace ClaudeDevStudio
             {
                 if (result.Skipped)
                 {
-                    Console.WriteLine($"✓ {result.Message}");
+                    Console.WriteLine($"âœ“ {result.Message}");
                 }
                 else
                 {
-                    Console.WriteLine($"✓ Backup created successfully");
+                    Console.WriteLine($"âœ“ Backup created successfully");
                     Console.WriteLine($"  File: {Path.GetFileName(result.BackupPath)}");
                     Console.WriteLine($"  Size: {result.Size / 1024.0:F2} KB");
                     Console.WriteLine($"  Location: {Path.GetDirectoryName(result.BackupPath)}");
@@ -738,7 +738,7 @@ namespace ClaudeDevStudio
             }
             else
             {
-                Console.WriteLine($"✗ {result.Message}");
+                Console.WriteLine($"âœ— {result.Message}");
                 return 1;
             }
         }
@@ -760,7 +760,7 @@ namespace ClaudeDevStudio
             if (!Directory.Exists(projectPath))
                 return Error($"Project path does not exist: {projectPath}");
 
-            Console.WriteLine("⚠️ This will restore from backup and overwrite current files.");
+            Console.WriteLine("âš ï¸ This will restore from backup and overwrite current files.");
             Console.Write("Continue? (y/n): ");
             var confirm = Console.ReadLine()?.ToLower();
 
@@ -781,12 +781,12 @@ namespace ClaudeDevStudio
 
             if (result.Success)
             {
-                Console.WriteLine($"✓ Restored {result.FilesRestored} files successfully");
+                Console.WriteLine($"âœ“ Restored {result.FilesRestored} files successfully");
                 return 0;
             }
             else
             {
-                Console.WriteLine($"✗ {result.Message}");
+                Console.WriteLine($"âœ— {result.Message}");
                 return 1;
             }
         }
@@ -847,7 +847,7 @@ namespace ClaudeDevStudio
 
             if (!Core.GitSyncManager.IsGitInstalled())
             {
-                Console.WriteLine("✗ Git is not installed or not in PATH");
+                Console.WriteLine("âœ— Git is not installed or not in PATH");
                 Console.WriteLine("  Install Git from: https://git-scm.com/download/win");
                 return 1;
             }
@@ -863,25 +863,25 @@ namespace ClaudeDevStudio
                 case "init":
                     var remoteUrl = args.Length > 2 ? args[2] : null;
                     var initResult = gitSync.InitializeRepo(remoteUrl);
-                    Console.WriteLine(initResult.Success ? $"✓ {initResult.Message}" : $"✗ {initResult.Message}");
+                    Console.WriteLine(initResult.Success ? $"âœ“ {initResult.Message}" : $"âœ— {initResult.Message}");
                     return initResult.Success ? 0 : 1;
 
                 case "commit":
                     var message = args.Length > 2 ? string.Join(" ", args.Skip(2)) : null;
                     var commitResult = gitSync.CommitChanges(message);
-                    Console.WriteLine(commitResult.Success ? $"✓ {commitResult.Message}" : $"✗ {commitResult.Message}");
+                    Console.WriteLine(commitResult.Success ? $"âœ“ {commitResult.Message}" : $"âœ— {commitResult.Message}");
                     return commitResult.Success ? 0 : 1;
 
                 case "push":
                     var pushBranch = args.Length > 2 ? args[2] : "main";
                     var pushResult = gitSync.Push(pushBranch);
-                    Console.WriteLine(pushResult.Success ? $"✓ {pushResult.Message}" : $"✗ {pushResult.Message}");
+                    Console.WriteLine(pushResult.Success ? $"âœ“ {pushResult.Message}" : $"âœ— {pushResult.Message}");
                     return pushResult.Success ? 0 : 1;
 
                 case "pull":
                     var pullBranch = args.Length > 2 ? args[2] : "main";
                     var pullResult = gitSync.Pull(pullBranch);
-                    Console.WriteLine(pullResult.Success ? $"✓ {pullResult.Message}" : $"✗ {pullResult.Message}");
+                    Console.WriteLine(pullResult.Success ? $"âœ“ {pullResult.Message}" : $"âœ— {pullResult.Message}");
                     return pullResult.Success ? 0 : 1;
 
                 case "status":
@@ -950,20 +950,20 @@ namespace ClaudeDevStudio
                         return 1;
                     }
                     cloudSync.Configure(args[2], args[3], args[4]);
-                    Console.WriteLine("✓ Cloud sync configured");
+                    Console.WriteLine("âœ“ Cloud sync configured");
                     return 0;
 
                 case "upload":
                     Console.WriteLine("Uploading to cloud...");
                     var uploadResult = cloudSync.UploadAsync().Result;
-                    Console.WriteLine(uploadResult.Success ? $"✓ {uploadResult.Message}" : $"✗ {uploadResult.Message}");
+                    Console.WriteLine(uploadResult.Success ? $"âœ“ {uploadResult.Message}" : $"âœ— {uploadResult.Message}");
                     return uploadResult.Success ? 0 : 1;
 
                 case "download":
                     var fileName = args.Length > 2 ? args[2] : null;
                     Console.WriteLine("Downloading from cloud...");
                     var downloadResult = cloudSync.DownloadAsync(fileName).Result;
-                    Console.WriteLine(downloadResult.Success ? $"✓ {downloadResult.Message}" : $"✗ {downloadResult.Message}");
+                    Console.WriteLine(downloadResult.Success ? $"âœ“ {downloadResult.Message}" : $"âœ— {downloadResult.Message}");
                     return downloadResult.Success ? 0 : 1;
 
                 case "list":
@@ -1009,7 +1009,7 @@ namespace ClaudeDevStudio
 
             if (backupResult.Success && !backupResult.Skipped)
             {
-                Console.WriteLine($"✓ Created local backup: {Path.GetFileName(backupResult.BackupPath)}");
+                Console.WriteLine($"âœ“ Created local backup: {Path.GetFileName(backupResult.BackupPath)}");
             }
 
             // Try Git sync if available
@@ -1023,32 +1023,32 @@ namespace ClaudeDevStudio
                     var commitResult = gitSync.CommitChanges($"Auto-sync: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
                     if (commitResult.Success)
                     {
-                        Console.WriteLine($"✓ Git: {commitResult.Message}");
+                        Console.WriteLine($"âœ“ Git: {commitResult.Message}");
 
                         if (status.HasRemote)
                         {
                             var pushResult = gitSync.Push();
-                            Console.WriteLine(pushResult.Success ? "✓ Git: Pushed to remote" : "✗ Git: Push failed");
+                            Console.WriteLine(pushResult.Success ? "âœ“ Git: Pushed to remote" : "âœ— Git: Push failed");
                         }
                     }
                 }
             }
 
             Console.WriteLine();
-            Console.WriteLine("✓ Sync complete");
+            Console.WriteLine("âœ“ Sync complete");
 
             return 0;
         }
 
         static int ShowHelp()
         {
-            Console.WriteLine("ClaudeDevStudio v1.0.1");
+            Console.WriteLine("ClaudeDevStudio v1.1.0");
             Console.WriteLine("Memory & Development System for Claude AI");
             Console.WriteLine();
-            Console.WriteLine("Copyright © 2026 Daniel E Gain");
+            Console.WriteLine("Copyright (c) 2026 Daniel E Gain");
             Console.WriteLine("Email: danielegain@gmail.com");
             Console.WriteLine("Licensed under MIT License");
-            Console.WriteLine("GitHub: https://github.com/dectdan/Cloud-Developer-Studio");
+            Console.WriteLine("GitHub: https://github.com/dectdan/Claude-Developer-Studio");
             Console.WriteLine();
             Console.WriteLine("Developed with assistance from Claude (Anthropic)");
             Console.WriteLine();
@@ -1113,7 +1113,7 @@ namespace ClaudeDevStudio
             Console.WriteLine("  claudedev cloud configure account123 token456 my-bucket");
             Console.WriteLine("  claudedev cloud upload");
             Console.WriteLine();
-            Console.WriteLine("For more info: https://github.com/dan/ClaudeDevStudio");
+            Console.WriteLine("For more info: https://github.com/dectdan/Claude-Developer-Studio");
             
             return 0;
         }
@@ -1145,15 +1145,15 @@ namespace ClaudeDevStudio
 
         static int ShowVersion()
         {
-            Console.WriteLine("ClaudeDevStudio v1.0.1");
+            Console.WriteLine("ClaudeDevStudio v1.1.0");
             Console.WriteLine();
-            Console.WriteLine("Copyright © 2026 Daniel E Gain");
+            Console.WriteLine("Copyright (c) 2026 Daniel E Gain");
             Console.WriteLine("Email: danielegain@gmail.com");
             Console.WriteLine("Licensed under MIT License");
             Console.WriteLine();
             Console.WriteLine("Developed with assistance from Claude (Anthropic)");
             Console.WriteLine();
-            Console.WriteLine("GitHub: https://github.com/dectdan/Cloud-Developer-Studio");
+            Console.WriteLine("GitHub: https://github.com/dectdan/Claude-Developer-Studio");
             Console.WriteLine();
             return 0;
         }
@@ -1171,7 +1171,7 @@ namespace ClaudeDevStudio
 
                 if (updateInfo.UpdateAvailable)
                 {
-                    Console.WriteLine($"✓ Update Available!");
+                    Console.WriteLine($"âœ“ Update Available!");
                     Console.WriteLine();
                     Console.WriteLine($"Current Version:  {updateInfo.CurrentVersion}");
                     Console.WriteLine($"Latest Version:   {updateInfo.LatestVersion}");
@@ -1194,7 +1194,7 @@ namespace ClaudeDevStudio
                         if (updateInfo.DownloadUrl != null)
                         {
                             UpdateChecker.OpenDownloadPage(updateInfo.DownloadUrl);
-                            Console.WriteLine("✓ Opened in browser");
+                            Console.WriteLine("âœ“ Opened in browser");
                         }
                     }
                     
@@ -1202,13 +1202,13 @@ namespace ClaudeDevStudio
                 }
                 else
                 {
-                    Console.WriteLine($"✓ You're running the latest version ({updateInfo.CurrentVersion})");
+                    Console.WriteLine($"âœ“ You're running the latest version ({updateInfo.CurrentVersion})");
                     return 0;
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"✗ Failed to check for updates: {ex.Message}");
+                Console.WriteLine($"âœ— Failed to check for updates: {ex.Message}");
                 return 1;
             }
         }

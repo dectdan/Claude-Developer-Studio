@@ -7,7 +7,7 @@
     <AssemblyName>claudedev</AssemblyName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
-    <Version>0.1.1</Version>
+    <Version>1.1.0</Version>
     <Authors>Claude &amp; Dan</Authors>
     <Description>Memory system for AI-assisted development with ClaudeDevStudio</Description>
   </PropertyGroup>
