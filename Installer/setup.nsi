@@ -99,12 +99,21 @@ Section "Install" SecMain
   DotNetDone:
   DetailPrint ".NET 8 check done."
 
-  ;--- Step 2: Check Node.js by exit code, download if missing ---
+  ;--- Step 2: Check Node.js by file path, download if missing ---
   DetailPrint "Checking Node.js..."
-  nsExec::ExecToStack 'node --version'
-  Pop $0
-  Pop $1
-  ${If} $0 != 0
+  ; Check known install locations directly - nsExec can't see PATH reliably
+  StrCpy $0 ""
+  ${If} ${FileExists} "$PROGRAMFILES64\nodejs\node.exe"
+    StrCpy $0 "$PROGRAMFILES64\nodejs\node.exe"
+  ${ElseIf} ${FileExists} "$PROGRAMFILES\nodejs\node.exe"
+    StrCpy $0 "$PROGRAMFILES\nodejs\node.exe"
+  ${ElseIf} ${FileExists} "$LOCALAPPDATA\Programs\nodejs\node.exe"
+    StrCpy $0 "$LOCALAPPDATA\Programs\nodejs\node.exe"
+  ${EndIf}
+
+  ${If} $0 != ""
+    DetailPrint "Node.js found at $0. Skipping download."
+  ${Else}
     DetailPrint "Downloading Node.js LTS (~30 MB)..."
     ExecWait 'powershell -NoProfile -Command "(New-Object Net.WebClient).DownloadFile(\"https://nodejs.org/dist/lts/node-v22.18.0-x64.msi\",\"$TEMP\nodejs.msi\")"' $0
     ${If} $0 == 0
@@ -114,8 +123,6 @@ Section "Install" SecMain
     ${Else}
       MessageBox MB_ICONEXCLAMATION "Could not download Node.js.$\r$\nInstall from: https://nodejs.org"
     ${EndIf}
-  ${Else}
-    DetailPrint "Node.js already installed. Skipping."
   ${EndIf}
 
   ;--- Step 3: Install CDS application files ---
