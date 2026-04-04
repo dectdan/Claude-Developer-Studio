@@ -248,6 +248,17 @@ Section "Install" SecMain
   WriteRegStr HKCU "Software\ClaudeDevStudio" "InstallDir"    "${INSTALL_DIR}"
   WriteRegStr HKCU "Software\ClaudeDevStudio" "Version"       "${PRODUCT_VERSION}"
 
+  ; Add CLI to user PATH so 'claudedev' works from any terminal
+  ReadRegStr $0 HKCU "Environment" "PATH"
+  ${If} $0 != ""
+    StrCpy $0 "$0;${INSTALL_DIR}\CLI"
+  ${Else}
+    StrCpy $0 "${INSTALL_DIR}\CLI"
+  ${EndIf}
+  WriteRegExpandStr HKCU "Environment" "PATH" "$0"
+  ; Broadcast WM_SETTINGCHANGE so open terminals pick it up
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" \
     "ClaudeDevStudio" '"${INSTALL_DIR}\TrayApp\ClaudeDevStudio.TrayApp.exe"'
 
@@ -296,6 +307,12 @@ Section "Uninstall"
 
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ClaudeDevStudio"
   DeleteRegKey   HKCU "${UNINSTALL_KEY}"
+
+  ; Remove CLI from user PATH
+  ReadRegStr $0 HKCU "Environment" "PATH"
+  ${WordReplace} "$0" "${INSTALL_DIR}\CLI;" "" "+" $0
+  ${WordReplace} "$0" ";${INSTALL_DIR}\CLI" "" "+" $0
+  WriteRegExpandStr HKCU "Environment" "PATH" "$0"
 
   Delete "$SMPROGRAMS\ClaudeDevStudio\ClaudeDevStudio.lnk"
   Delete "$SMPROGRAMS\ClaudeDevStudio\Uninstall.lnk"
