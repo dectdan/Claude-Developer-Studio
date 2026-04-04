@@ -48,6 +48,7 @@ namespace ClaudeDevStudio.TrayApp
             _contextMenu.Items.Add("View Activity", null, OnViewActivity);
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add("Link Claude Desktop...", null, OnLinkClaudeDesktop);
+            _contextMenu.Items.Add("Configure AI Keys...", null, OnConfigureAiKeys);
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add("Pending Approvals (0)", null, OnPendingApprovals);
             _contextMenu.Items.Add(new ToolStripSeparator());
@@ -198,6 +199,119 @@ namespace ClaudeDevStudio.TrayApp
             catch
             {
                 // Ignore registry errors
+            }
+        }
+
+        private void OnConfigureAiKeys(object? sender, EventArgs e)
+        {
+            var cfgPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ClaudeDevStudio", "mcp-server", "qwen_config.json");
+
+            // Read current keys
+            var keys = new System.Collections.Generic.Dictionary<string, string>
+            {
+                ["together"]   = "",
+                ["groq"]       = "",
+                ["deepinfra"]  = "",
+                ["fireworks"]  = "",
+                ["openrouter"] = "",
+            };
+            if (File.Exists(cfgPath))
+            {
+                try
+                {
+                    var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(cfgPath));
+                    if (doc.RootElement.TryGetProperty("providers", out var providers))
+                    {
+                        foreach (var key in keys.Keys.ToList())
+                        {
+                            if (providers.TryGetProperty(key, out var prov) &&
+                                prov.TryGetProperty("api_key", out var apiKey))
+                                keys[key] = apiKey.GetString() ?? "";
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // Build form
+            var form = new Form
+            {
+                Text = "Configure AI Provider Keys",
+                Width = 560, Height = 380,
+                StartPosition = FormStartPosition.CenterScreen,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false, MinimizeBox = false
+            };
+
+            var panel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16) };
+            form.Controls.Add(panel);
+
+            var providerList = new[]
+            {
+                ("together",   "Together AI  (Qwen3-Coder-480B — best for code)",  "together.ai"),
+                ("groq",       "Groq  (fastest responses, good for iteration)",      "console.groq.com"),
+                ("deepinfra",  "DeepInfra  (cheapest, bulk text)",                  "deepinfra.com"),
+                ("fireworks",  "Fireworks  (Qwen3-235B, broad tasks)",              "fireworks.ai"),
+                ("openrouter", "OpenRouter  (aggregator, 300+ models, fallback)",   "openrouter.ai"),
+            };
+
+            var fields = new System.Collections.Generic.Dictionary<string, TextBox>();
+            int y = 10;
+            foreach (var (id, label, url) in providerList)
+            {
+                var lbl = new Label { Text = label, Left = 0, Top = y, Width = 530, Font = new Font("Segoe UI", 8.5f) };
+                var txt = new TextBox { Left = 0, Top = y + 18, Width = 530, Text = keys[id],
+                    Font = new Font("Consolas", 8.5f), UseSystemPasswordChar = false };
+                panel.Controls.Add(lbl);
+                panel.Controls.Add(txt);
+                fields[id] = txt;
+                y += 52;
+            }
+
+            var note = new Label
+            {
+                Text = "Leave fields blank to skip that provider. Keys are stored locally only.",
+                Left = 0, Top = y + 4, Width = 530, ForeColor = Color.Gray,
+                Font = new Font("Segoe UI", 8f)
+            };
+            panel.Controls.Add(note);
+
+            var saveBtn = new Button { Text = "Save", Left = 350, Top = y + 26, Width = 80,
+                DialogResult = DialogResult.OK };
+            var cancelBtn = new Button { Text = "Cancel", Left = 445, Top = y + 26, Width = 80,
+                DialogResult = DialogResult.Cancel };
+            panel.Controls.Add(saveBtn);
+            panel.Controls.Add(cancelBtn);
+            form.AcceptButton = saveBtn;
+            form.CancelButton = cancelBtn;
+
+            if (form.ShowDialog() != DialogResult.OK) return;
+
+            // Write updated config preserving everything except api_keys
+            try
+            {
+                var raw = File.Exists(cfgPath) ? File.ReadAllText(cfgPath) : "{}";
+                var node = System.Text.Json.Nodes.JsonNode.Parse(raw)!.AsObject();
+                if (!node.ContainsKey("providers"))
+                    node["providers"] = System.Text.Json.Nodes.JsonNode.Parse("{}");
+                var provNode = node["providers"]!.AsObject();
+                foreach (var (id, _, _) in providerList)
+                {
+                    if (!provNode.ContainsKey(id))
+                        provNode[id] = System.Text.Json.Nodes.JsonNode.Parse("{}");
+                    provNode[id]!.AsObject()["api_key"] = fields[id].Text.Trim();
+                }
+                var json = node.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(cfgPath, json, new System.Text.UTF8Encoding(false));
+                MessageBox.Show("API keys saved successfully.", "Saved",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to save keys:\n{ex.Message}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 

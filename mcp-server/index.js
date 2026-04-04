@@ -17,6 +17,25 @@ import http from 'http';
 const execAsync = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ── Startup: check for API keys ────────────────────────────────────────────
+(function checkApiKeys() {
+  const cfgPath = path.join(__dirname, 'qwen_config.json');
+  try {
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const providers = cfg.providers || {};
+    const configured = Object.values(providers).filter(p => p.api_key && p.api_key.length > 0);
+    if (configured.length === 0) {
+      console.error('[CDS] No AI provider API keys configured.');
+      console.error('[CDS] Right-click the ClaudeDevStudio tray icon → Configure AI Keys to add them.');
+      console.error('[CDS] The qwen_generate tool will not work until at least one key is added.');
+    } else {
+      console.error(`[CDS] AI providers ready: ${configured.length} of ${Object.keys(providers).length} configured.`);
+    }
+  } catch {
+    console.error('[CDS] qwen_config.json not found or unreadable — AI delegation unavailable.');
+  }
+})();
+
 // Path to claudedev.exe
 const CLAUDEDEV_PATH = path.join(__dirname, '..', 'CLI', 'claudedev.exe');
 
@@ -838,6 +857,9 @@ class ClaudeDevStudioServer {
     const provider    = cfg.providers[providerKey];
     if (!provider) {
       return { content: [{ type: 'text', text: `[AiDelegate] Unknown provider: ${providerKey}` }] };
+    }
+    if (!provider.api_key || provider.api_key.trim() === '') {
+      return { content: [{ type: 'text', text: `[AiDelegate] No API key for provider '${providerKey}'.\nRight-click the ClaudeDevStudio tray icon → Configure AI Keys to add it.` }] };
     }
 
     // System prompts per mode

@@ -1,0 +1,62 @@
+{
+  "providers": {
+    "together": {
+      "api_key":  "",
+      "base_url": "https://api.together.xyz/v1/chat/completions",
+      "model":    "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+      "cost_in":  2.00,
+      "cost_out": 2.00,
+      "strength": "Coding — Qwen3-Coder-480B, best for C#/C++ generation"
+    },
+    "groq": {
+      "api_key":  "",
+      "base_url": "https://api.groq.com/openai/v1/chat/completions",
+      "model":    "llama-3.3-70b-versatile",
+      "cost_in":  0.59,
+      "cost_out": 0.79,
+      "strength": "Speed — LPU inference, fastest response times, good for quick iteration"
+    },
+    "deepinfra": {
+      "api_key":  "",
+      "base_url": "https://api.deepinfra.com/v1/openai/chat/completions",
+      "model":    "meta-llama/Llama-3.3-70B-Instruct",
+      "cost_in":  0.23,
+      "cost_out": 0.40,
+      "strength": "Cost — cheapest per token, good for bulk text generation"
+    },
+    "fireworks": {
+      "api_key":  "",
+      "base_url": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "model":    "accounts/fireworks/models/qwen3-235b-a22b",
+      "cost_in":  0.22,
+      "cost_out": 0.88,
+      "strength": "Breadth — large model catalog, image gen support, Qwen3-235B"
+    },
+    "openrouter": {
+      "api_key":  "",
+      "base_url": "https://openrouter.ai/api/v1/chat/completions",
+      "model":    "qwen/qwen3.5-397b-a17b",
+      "cost_in":  0.39,
+      "cost_out": 2.34,
+      "strength": "Fallback — aggregator, 300+ models, use when others unavailable"
+    }
+  },
+
+  "routing_defaults": {
+    "code":  "together",
+    "prose": "deepinfra",
+    "json":  "groq",
+    "fast":  "groq",
+    "cheap": "deepinfra",
+    "broad": "fireworks"
+  },
+
+  "limits": {
+    "max_tokens_default":  4096,
+    "max_tokens_hard_cap": 16384,
+    "daily_budget_usd":    10.00,
+    "timeout_ms":          120000
+  },
+
+  "log_path": ""
+}

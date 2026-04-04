@@ -92,6 +92,13 @@ $mcpDest = "$Build\mcp-server"
 New-Item -ItemType Directory -Force -Path $mcpDest | Out-Null
 Copy-Item "$Root\mcp-server\index.js"      $mcpDest -Force
 Copy-Item "$Root\mcp-server\package.json"  $mcpDest -Force
+# Ship template (no API keys) - never ship real qwen_config.json
+if (Test-Path "$Root\mcp-server\qwen_config.template.json") {
+    Copy-Item "$Root\mcp-server\qwen_config.template.json" "$mcpDest\qwen_config.json" -Force
+    Write-Host "  qwen_config.json: template (no API keys)" -ForegroundColor DarkGray
+} else {
+    Write-Host "  WARNING: qwen_config.template.json not found" -ForegroundColor Yellow
+}
 # Bundle node_modules so npm install isn't needed on target machine
 if (Test-Path "$Root\mcp-server\node_modules") {
     Write-Host "  Copying node_modules (~5 MB)..."
