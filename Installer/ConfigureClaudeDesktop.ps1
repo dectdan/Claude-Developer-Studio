@@ -16,27 +16,23 @@ try {
         New-Item -ItemType Directory -Path $configDir -Force | Out-Null
     }
     
-    # Read existing config or create new
+    # Read existing config or start fresh
+    $config = $null
     if (Test-Path $configPath) {
-        $config = Get-Content $configPath -Raw | ConvertFrom-Json
-    } else {
-        $config = @{
-            mcpServers = @{}
-            preferences = @{}
-        }
+        try { $config = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
     }
-    
-    # Add/update ClaudeDevStudio MCP server
-    if (!$config.mcpServers) {
-        $config | Add-Member -MemberType NoteProperty -Name "mcpServers" -Value @{} -Force
+    if (-not $config) { $config = [PSCustomObject]@{} }
+
+    # Ensure mcpServers exists
+    if (-not (Get-Member -InputObject $config -Name "mcpServers" -MemberType NoteProperty)) {
+        $config | Add-Member -NotePropertyName "mcpServers" -NotePropertyValue ([PSCustomObject]@{})
     }
-    
-    $config.mcpServers.claudedevstudio = @{
-        command = "node"
-        args = @($MCPServerPath)
-    }
-    
-    # Save config
+
+    # Add/update our entry only - preserves all other MCP servers
+    $entry = [PSCustomObject]@{ command = "node"; args = @($MCPServerPath) }
+    $config.mcpServers | Add-Member -NotePropertyName "claudedevstudio" -NotePropertyValue $entry -Force
+
+    # Write back
     $config | ConvertTo-Json -Depth 10 | Set-Content $configPath -Encoding UTF8
     
     Write-Host "✓ Claude Desktop configured successfully"

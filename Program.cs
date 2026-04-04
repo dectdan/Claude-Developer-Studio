@@ -1177,43 +1177,30 @@ namespace ClaudeDevStudio
                 return 1;
             }
 
-            // Read or create config
-            string rawConfig = File.Exists(configPath)
-                ? File.ReadAllText(configPath, System.Text.Encoding.UTF8)
-                : "{}";
-
-            var config = System.Text.Json.JsonDocument.Parse(rawConfig).RootElement;
-            var configObj = new System.Collections.Generic.Dictionary<string, object>();
-
-            // Copy existing top-level keys
-            foreach (var prop in config.EnumerateObject())
+            // Read existing config or start fresh
+            string rawConfig = "{}";
+            if (File.Exists(configPath))
             {
-                if (prop.Name != "mcpServers")
-                    configObj[prop.Name] = prop.Value;
+                rawConfig = File.ReadAllText(configPath, System.Text.Encoding.UTF8).Trim();
+                if (string.IsNullOrWhiteSpace(rawConfig)) rawConfig = "{}";
             }
 
-            // Build mcpServers section
-            var mcpServers = new System.Collections.Generic.Dictionary<string, object>();
-            if (config.TryGetProperty("mcpServers", out var existingMcp))
-            {
-                foreach (var server in existingMcp.EnumerateObject())
-                {
-                    if (server.Name != "claudedevstudio")
-                        mcpServers[server.Name] = server.Value;
-                }
-            }
+            // Parse with JsonNode so we can mutate without losing existing values
+            var configNode = System.Text.Json.Nodes.JsonNode.Parse(rawConfig)!.AsObject();
 
-            mcpServers["claudedevstudio"] = new
-            {
-                command = "node",
-                args = new[] { mcpServerPath }
-            };
+            // Ensure mcpServers object exists
+            if (!configNode.ContainsKey("mcpServers") || configNode["mcpServers"] is not System.Text.Json.Nodes.JsonObject)
+                configNode["mcpServers"] = new System.Text.Json.Nodes.JsonObject();
 
-            configObj["mcpServers"] = mcpServers;
+            var mcpServers = configNode["mcpServers"]!.AsObject();
 
-            // Write back
+            // Write our entry (preserves all other servers)
+            mcpServers["claudedevstudio"] = System.Text.Json.Nodes.JsonNode.Parse(
+                $"{{\"command\":\"node\",\"args\":[\"{mcpServerPath.Replace("\\", "\\\\")}\"]}}");
+
+            // Write back with indentation
             var options = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
-            var json = System.Text.Json.JsonSerializer.Serialize(configObj, options);
+            var json = configNode.ToJsonString(options);
             Directory.CreateDirectory(configDir);
             File.WriteAllText(configPath, json, System.Text.Encoding.UTF8);
 
