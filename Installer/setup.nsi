@@ -126,7 +126,25 @@ Section "Install" SecMain
     ${EndIf}
   ${EndIf}
 
-  ;--- Step 3: Install CDS application files ---
+  ;--- Step 3: Install Windows App Runtime (required for WinUI 3 Dashboard) ---
+  DetailPrint "Checking Windows App Runtime..."
+  ReadRegStr $0 HKLM "SOFTWARE\Microsoft\WindowsAppRuntime\1.6" ""
+  ${If} $0 != ""
+    DetailPrint "Windows App Runtime already installed."
+  ${Else}
+    DetailPrint "Downloading Windows App Runtime (~14 MB)..."
+    ExecWait 'powershell -NoProfile -Command "(New-Object Net.WebClient).DownloadFile(\"https://aka.ms/windowsappruntimeinstall-x64\",\"$TEMP\WinAppRuntime.exe\")"' $0
+    ${If} $0 == 0
+      DetailPrint "Installing Windows App Runtime..."
+      ExecWait '"$TEMP\WinAppRuntime.exe" --quiet' $0
+      Delete "$TEMP\WinAppRuntime.exe"
+      DetailPrint "Windows App Runtime installed."
+    ${Else}
+      DetailPrint "Windows App Runtime download failed -- Dashboard may not launch."
+    ${EndIf}
+  ${EndIf}
+
+  ;--- Step 3b: Install CDS application files ---
   DetailPrint "Installing ClaudeDevStudio files..."
 
   SetOutPath "${INSTALL_DIR}\CLI"
@@ -216,6 +234,11 @@ Section "Install" SecMain
   WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '"${INSTALL_DIR}\Uninstall.exe"'
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair"  1
+
+  ; CDS runtime settings used by TrayApp
+  WriteRegStr HKCU "Software\ClaudeDevStudio" "DashboardPath" "${INSTALL_DIR}\Dashboard"
+  WriteRegStr HKCU "Software\ClaudeDevStudio" "InstallDir"    "${INSTALL_DIR}"
+  WriteRegStr HKCU "Software\ClaudeDevStudio" "Version"       "${PRODUCT_VERSION}"
 
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" \
     "ClaudeDevStudio" '"${INSTALL_DIR}\TrayApp\ClaudeDevStudio.TrayApp.exe"'
