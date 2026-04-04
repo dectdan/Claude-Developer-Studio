@@ -1,6 +1,6 @@
-# build-setup.ps1 - Build ClaudeDevStudio-Setup.exe
-# Run from D:\Projects\ClaudeDevStudio\Installer\ as Administrator
-# Requires: choco install nsis -y
+# build-setup.ps1 — Build ClaudeDevStudio-Setup.exe
+# Run from Administrator PowerShell: .\build-setup.ps1
+# Requires: NSIS (choco install nsis -y as admin)
 
 $ErrorActionPreference = "Stop"
 $Root      = "D:\Projects\ClaudeDevStudio"
@@ -16,60 +16,104 @@ if (!(Test-Path $makensis)) {
     Write-Host "ERROR: NSIS not found. Run as admin: choco install nsis -y" -ForegroundColor Red
     exit 1
 }
-Write-Host "  NSIS found." -ForegroundColor Green
+Write-Host "  NSIS: OK" -ForegroundColor Green
 
-# ---- 1. Build .NET projects ----
-Write-Host "`n[1/6] Building .NET projects..." -ForegroundColor Yellow
-
-Write-Host "  Building VoiceServer..."
-dotnet publish "$Root\VoiceServer\VoiceServer.csproj" -c Release -r win-x64 --self-contained false -o "$Build\VoiceServer" | Out-Null
-
-Write-Host "  Building VS Bridge VSIX..."
-dotnet build "$Root\VSExtension\CdsVsBridge\CdsVsBridge.csproj" -c Release | Out-Null
-$vsix = Get-ChildItem "$Root\VSExtension\CdsVsBridge\bin\Release\*.vsix" -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($vsix) {
-    New-Item -ItemType Directory -Force -Path "$Build\VSExtension" | Out-Null
-    Copy-Item $vsix.FullName "$Build\VSExtension\CdsVsBridge.vsix" -Force
-    Write-Host "  VSIX: $($vsix.Name)" -ForegroundColor Green
-} else {
-    Write-Host "  WARNING: VSIX not found - VS Bridge won't be bundled" -ForegroundColor Yellow
+# ---- Find MSBuild (needed for VSIX) ----
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$msbuild = $null
+if (Test-Path $vswhere) {
+    $vsPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+    if ($vsPath) { $msbuild = "$vsPath\MSBuild\Current\Bin\MSBuild.exe" }
 }
-Write-Host "  .NET builds done." -ForegroundColor Green
+if ($msbuild -and (Test-Path $msbuild)) {
+    Write-Host "  MSBuild: $msbuild" -ForegroundColor Green
+} else {
+    Write-Host "  MSBuild: not found -- VSIX will be skipped" -ForegroundColor Yellow
+    $msbuild = $null
+}
 
-# ---- 2. Stage MCP server ----
-Write-Host "`n[2/6] Staging MCP server..." -ForegroundColor Yellow
+# ---- Clean build folder ----
+if (Test-Path $Build) { Remove-Item $Build -Recurse -Force }
+New-Item -ItemType Directory -Force -Path $Build | Out-Null
+New-Item -ItemType Directory -Force -Path $Output | Out-Null
+
+# ---- 1. VoiceServer ----
+Write-Host "`n[1/6] Building VoiceServer..." -ForegroundColor Yellow
+dotnet publish "$Root\VoiceServer\VoiceServer.csproj" -c Release -r win-x64 --self-contained false -o "$Build\VoiceServer"
+if ($LASTEXITCODE -ne 0) { Write-Host "  ERROR: VoiceServer build failed" -ForegroundColor Red; exit 1 }
+Write-Host "  VoiceServer: OK" -ForegroundColor Green
+
+# ---- 2. CLI tool ----
+Write-Host "`n[2/6] Building CLI tool..." -ForegroundColor Yellow
+dotnet publish "$Root\ClaudeDevStudio.csproj" -c Release -r win-x64 --self-contained false -o "$Build\CLI"
+if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: CLI build failed -- skipping" -ForegroundColor Yellow }
+else { Write-Host "  CLI: OK" -ForegroundColor Green }
+
+# ---- 3. TrayApp ----
+Write-Host "`n[3/6] Building TrayApp..." -ForegroundColor Yellow
+dotnet publish "$Root\ClaudeDevStudio.UI\ClaudeDevStudio.TrayApp.csproj" -c Release -r win-x64 --self-contained false -o "$Build\TrayApp"
+if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: TrayApp build failed -- skipping" -ForegroundColor Yellow }
+else { Write-Host "  TrayApp: OK" -ForegroundColor Green }
+
+# ---- 4. Dashboard (WinUI 3) ----
+Write-Host "`n[4/7] Building Dashboard..." -ForegroundColor Yellow
+dotnet publish "$Root\ClaudeDevStudio.Dashboard\ClaudeDevStudio.Dashboard.csproj" -c Release -r win-x64 --self-contained false -o "$Build\Dashboard"
+if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: Dashboard build failed -- skipping" -ForegroundColor Yellow }
+else { Write-Host "  Dashboard: OK" -ForegroundColor Green }
+
+# ---- 5. VSIX (VS Bridge extension) ----
+Write-Host "`n[5/7] Building VS Bridge VSIX..." -ForegroundColor Yellow
+if ($msbuild) {
+    # VSIX requires the full VS IDE MSBuild (not BuildTools) for VSSDK targets
+    $vsMsbuildPaths = @(
+        "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe",
+        "${env:ProgramFiles}\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe",
+        "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
+    )
+    $buildMsbuild = $vsMsbuildPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (!$buildMsbuild) { $buildMsbuild = $msbuild }
+    Write-Host "  Using MSBuild: $buildMsbuild"
+    & $buildMsbuild "$Root\VSExtension\CdsVsBridge\CdsVsBridge.csproj" /p:Configuration=Release /t:Restore,Build /v:minimal
+    $vsix = Get-ChildItem "$Root\VSExtension\CdsVsBridge\bin\Release\*.vsix" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($vsix) {
+        New-Item -ItemType Directory -Force -Path "$Build\VSExtension" | Out-Null
+        Copy-Item $vsix.FullName "$Build\VSExtension\CdsVsBridge.vsix" -Force
+        Write-Host "  VSIX: $($vsix.Name)" -ForegroundColor Green
+    } else {
+        Write-Host "  WARNING: VSIX not found after build -- skipping" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  Skipped (MSBuild not found)" -ForegroundColor Yellow
+}
+
+# ---- 5. Stage MCP server (with node_modules bundled) ----
+Write-Host "`n[6/7] Staging MCP server + dependencies..." -ForegroundColor Yellow
 $mcpDest = "$Build\mcp-server"
 New-Item -ItemType Directory -Force -Path $mcpDest | Out-Null
-Copy-Item "$Root\mcp-server\index.js"     $mcpDest -Force
-Copy-Item "$Root\mcp-server\package.json" $mcpDest -Force
-Write-Host "  MCP server staged." -ForegroundColor Green
+Copy-Item "$Root\mcp-server\index.js"      $mcpDest -Force
+Copy-Item "$Root\mcp-server\package.json"  $mcpDest -Force
+# Bundle node_modules so npm install isn't needed on target machine
+if (Test-Path "$Root\mcp-server\node_modules") {
+    Write-Host "  Copying node_modules (~5 MB)..."
+    Copy-Item "$Root\mcp-server\node_modules" "$mcpDest\node_modules" -Recurse -Force
+}
+Copy-Item "$Installer\ConfigureClaudeDesktop.ps1" "$Build\" -Force
+Write-Host "  MCP server: OK" -ForegroundColor Green
 
-# ---- 3. Stage Kokoro model ----
-Write-Host "`n[3/6] Staging Kokoro voice model..." -ForegroundColor Yellow
+# ---- 6. Kokoro voice model ----
+Write-Host "`n[7/7] Staging Kokoro voice model..." -ForegroundColor Yellow
 $kokoroSrc = "C:\Users\Big_D\AppData\Local\ClaudeDevStudio\VoiceServer\kokoro.onnx"
 if (Test-Path $kokoroSrc) {
     $size = [int]((Get-Item $kokoroSrc).Length / 1MB)
-    Write-Host "  Found kokoro.onnx ($size MB) - copying into build..."
+    Write-Host "  Found kokoro.onnx ($size MB) -- bundling..."
     Copy-Item $kokoroSrc "$Build\VoiceServer\kokoro.onnx" -Force
-    Write-Host "  Kokoro model bundled." -ForegroundColor Green
+    Write-Host "  Kokoro model: OK" -ForegroundColor Green
 } else {
-    Write-Host "  WARNING: kokoro.onnx not found - installer will download it instead." -ForegroundColor Yellow
+    Write-Host "  WARNING: kokoro.onnx not found -- installer will download it" -ForegroundColor Yellow
 }
 
-# ---- 4. Copy config script + assets ----
-Write-Host "`n[4/6] Copying installer assets..." -ForegroundColor Yellow
-Copy-Item "$Installer\ConfigureClaudeDesktop.ps1" "$Build\" -Force
-New-Item -ItemType Directory -Force -Path "$Installer\Assets" | Out-Null
-New-Item -ItemType Directory -Force -Path $Output | Out-Null
-$icon = "$Root\VSExtension\CdsVsBridge\Resources\AppIcon.ico"
-if (Test-Path $icon) {
-    Copy-Item $icon "$Installer\Assets\AppIcon.ico" -Force
-    Write-Host "  Icon staged." -ForegroundColor Green
-}
-Write-Host "  Assets ready." -ForegroundColor Green
-
-# ---- 5. Run NSIS ----
-Write-Host "`n[5/6] Compiling installer with NSIS..." -ForegroundColor Yellow
+# ---- NSIS compile ----
+Write-Host "`nCompiling installer..." -ForegroundColor Yellow
 $nsisArgs = @("/V3")
 if (Test-Path "$Installer\Assets\AppIcon.ico") { $nsisArgs += "/DHAVE_ICON" }
 $nsisArgs += "setup.nsi"
@@ -77,21 +121,15 @@ Push-Location $Installer
 & $makensis @nsisArgs
 $nsisExit = $LASTEXITCODE
 Pop-Location
-if ($nsisExit -ne 0) {
-    Write-Host "NSIS build FAILED (exit $nsisExit)" -ForegroundColor Red
-    exit 1
-}
-Write-Host "  NSIS compile done." -ForegroundColor Green
+if ($nsisExit -ne 0) { Write-Host "NSIS FAILED (exit $nsisExit)" -ForegroundColor Red; exit 1 }
 
-# ---- 6. Report ----
+# ---- Report ----
 $exe = "$Output\ClaudeDevStudio-Setup.exe"
 if (Test-Path $exe) {
-    $sizeMB = [int]((Get-Item $exe).Length / 1MB)
+    $mb = [int]((Get-Item $exe).Length / 1MB)
     Write-Host "`n===== BUILD COMPLETE =====" -ForegroundColor Cyan
     Write-Host "  Output : $exe" -ForegroundColor Green
-    Write-Host "  Size   : $sizeMB MB" -ForegroundColor Green
-    Write-Host "  Drop this EXE anywhere and double-click to install." -ForegroundColor White
+    Write-Host "  Size   : $mb MB" -ForegroundColor Green
 } else {
-    Write-Host "ERROR: Output EXE not found!" -ForegroundColor Red
-    exit 1
+    Write-Host "ERROR: EXE not found after build!" -ForegroundColor Red; exit 1
 }

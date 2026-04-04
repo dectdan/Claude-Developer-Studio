@@ -25,6 +25,7 @@
     <StartArguments>/rootsuffix Exp</StartArguments>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <RuntimeIdentifiers>win</RuntimeIdentifiers>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>

@@ -113,29 +113,33 @@ Section "Install" SecMain
   DetailPrint "Installing ClaudeDevStudio files..."
 
   SetOutPath "${INSTALL_DIR}\CLI"
-  File /nonfatal /r "..\build\CLI\*.*"
+  File /nonfatal /r "build\CLI\*.*"
 
   SetOutPath "${INSTALL_DIR}\TrayApp"
-  File /nonfatal /r "..\build\TrayApp\*.*"
+  File /nonfatal /r "build\TrayApp\*.*"
 
   SetOutPath "${INSTALL_DIR}\Dashboard"
-  File /nonfatal /r "..\build\Dashboard\*.*"
+  File /nonfatal /r "build\Dashboard\*.*"
 
   SetOutPath "${INSTALL_DIR}\mcp-server"
-  File /nonfatal /r "..\build\mcp-server\*.*"
+  File /nonfatal /r "build\mcp-server\*.*"
 
   SetOutPath "${INSTALL_DIR}\VoiceServer"
-  File /nonfatal /r "..\build\VoiceServer\*.*"
+  File /nonfatal /r "build\VoiceServer\*.*"
 
   SetOutPath "${INSTALL_DIR}\VSExtension"
-  File /nonfatal "..\build\VSExtension\CdsVsBridge.vsix"
+  File /nonfatal "build\VSExtension\CdsVsBridge.vsix"
 
   SetOutPath "${INSTALL_DIR}"
-  File /nonfatal "..\build\ConfigureClaudeDesktop.ps1"
+  File /nonfatal "build\ConfigureClaudeDesktop.ps1"
 
-  ;--- Step 4: npm install ---
-  DetailPrint "Installing MCP server dependencies..."
-  nsExec::ExecToLog 'cmd /c cd /d "${INSTALL_DIR}\mcp-server" && npm install --production 2>&1'
+  ;--- Step 4: npm install (only if node_modules wasn't bundled) ---
+  ${IfNot} ${FileExists} "${INSTALL_DIR}\mcp-server\node_modules\*.*"
+    DetailPrint "Installing MCP server dependencies..."
+    nsExec::ExecToLog 'cmd /c cd /d "${INSTALL_DIR}\mcp-server" && npm install --production 2>&1'
+  ${Else}
+    DetailPrint "MCP dependencies already bundled. Skipping npm install."
+  ${EndIf}
 
   ;--- Step 5: Download Kokoro model if not bundled ---
   DetailPrint "Checking voice model..."
