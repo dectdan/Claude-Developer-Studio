@@ -11,8 +11,29 @@ namespace ClaudeDevStudio
     /// </summary>
     public class UpdateChecker
     {
-        private const string GITHUB_REPO = "dectdan/Cloud-Developer-Studio";
-        private const string CURRENT_VERSION = "1.0.0";
+        private const string GITHUB_REPO = "dectdan/Claude-Developer-Studio";
+
+        // Read the installed version from the registry (set by installer)
+        // Fall back to assembly version if not found
+        private static readonly string CURRENT_VERSION = GetInstalledVersion();
+
+        private static string GetInstalledVersion()
+        {
+            try
+            {
+                using var key = Microsoft.Win32.Registry.CurrentUser
+                    .OpenSubKey(@"Software\ClaudeDevStudio", false);
+                var ver = key?.GetValue("Version") as string;
+                if (!string.IsNullOrWhiteSpace(ver)) return ver;
+            }
+            catch { }
+            // Fallback: use assembly version
+            return System.Reflection.Assembly
+                .GetExecutingAssembly()
+                .GetName()
+                .Version?
+                .ToString(3) ?? "1.1.0";
+        }
         private static readonly HttpClient client = new HttpClient();
 
         /// <summary>
