@@ -156,13 +156,26 @@ Section "Install" SecMain
   ${EndIf}
 
   ;--- Step 6: Install VSIX into Visual Studio if detected ---
+  ; VS 2022 doesn't reliably write to the old COM registry key.
+  ; Instead we check known install paths for all three editions.
   DetailPrint "Checking for Visual Studio 2022..."
-  ReadRegStr $0 HKLM "SOFTWARE\Microsoft\VisualStudio\17.0" "InstallDir"
+  StrCpy $0 ""
+
+  ${If} ${FileExists} "$PROGRAMFILES64\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\VSIXInstaller.exe"
+    StrCpy $0 "$PROGRAMFILES64\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\VSIXInstaller.exe"
+  ${ElseIf} ${FileExists} "$PROGRAMFILES64\Microsoft Visual Studio\2022\Professional\Common7\IDE\VSIXInstaller.exe"
+    StrCpy $0 "$PROGRAMFILES64\Microsoft Visual Studio\2022\Professional\Common7\IDE\VSIXInstaller.exe"
+  ${ElseIf} ${FileExists} "$PROGRAMFILES64\Microsoft Visual Studio\2022\Community\Common7\IDE\VSIXInstaller.exe"
+    StrCpy $0 "$PROGRAMFILES64\Microsoft Visual Studio\2022\Community\Common7\IDE\VSIXInstaller.exe"
+  ${EndIf}
+
   ${If} $0 != ""
-    DetailPrint "Installing VS Bridge extension..."
-    nsExec::ExecToLog '"$0VSIXInstaller.exe" /quiet "${INSTALL_DIR}\VSExtension\CdsVsBridge.vsix"'
+    DetailPrint "Found VS 2022. Installing VS Bridge extension..."
+    ; /quiet suppresses the VSIX UI; result is non-zero only on hard failure
+    nsExec::ExecToLog '"$0" /quiet "${INSTALL_DIR}\VSExtension\CdsVsBridge.vsix"'
+    DetailPrint "VS Bridge extension installed."
   ${Else}
-    DetailPrint "Visual Studio 2022 not found -- skipping VS Bridge."
+    DetailPrint "Visual Studio 2022 not found -- VS Bridge skipped (optional)."
   ${EndIf}
 
   ;--- Step 7: Configure Claude Desktop ---
@@ -205,6 +218,19 @@ Section "Uninstall"
 
   nsExec::ExecToLog 'taskkill /IM ClaudeDevStudio.TrayApp.exe /F'
   nsExec::ExecToLog 'taskkill /IM VoiceServer.exe /F'
+
+  ;--- Remove VS Bridge extension if VS 2022 is present ---
+  StrCpy $0 ""
+  ${If} ${FileExists} "$PROGRAMFILES64\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\VSIXInstaller.exe"
+    StrCpy $0 "$PROGRAMFILES64\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\VSIXInstaller.exe"
+  ${ElseIf} ${FileExists} "$PROGRAMFILES64\Microsoft Visual Studio\2022\Professional\Common7\IDE\VSIXInstaller.exe"
+    StrCpy $0 "$PROGRAMFILES64\Microsoft Visual Studio\2022\Professional\Common7\IDE\VSIXInstaller.exe"
+  ${ElseIf} ${FileExists} "$PROGRAMFILES64\Microsoft Visual Studio\2022\Community\Common7\IDE\VSIXInstaller.exe"
+    StrCpy $0 "$PROGRAMFILES64\Microsoft Visual Studio\2022\Community\Common7\IDE\VSIXInstaller.exe"
+  ${EndIf}
+  ${If} $0 != ""
+    nsExec::ExecToLog '"$0" /quiet /uninstall:CdsVsBridge.DanGain.ClaudeDevStudio'
+  ${EndIf}
 
   RMDir /r "${INSTALL_DIR}\CLI"
   RMDir /r "${INSTALL_DIR}\TrayApp"
