@@ -1177,30 +1177,9 @@ namespace ClaudeDevStudio
                 return 1;
             }
 
-            // Read existing config or start fresh
-            string rawConfig = "{}";
-            if (File.Exists(configPath))
-            {
-                rawConfig = File.ReadAllText(configPath, System.Text.Encoding.UTF8).Trim();
-                if (string.IsNullOrWhiteSpace(rawConfig)) rawConfig = "{}";
-            }
-
-            // Parse with JsonNode so we can mutate without losing existing values
-            var configNode = System.Text.Json.Nodes.JsonNode.Parse(rawConfig)!.AsObject();
-
-            // Ensure mcpServers object exists
-            if (!configNode.ContainsKey("mcpServers") || configNode["mcpServers"] is not System.Text.Json.Nodes.JsonObject)
-                configNode["mcpServers"] = new System.Text.Json.Nodes.JsonObject();
-
-            var mcpServers = configNode["mcpServers"]!.AsObject();
-
-            // Write our entry (preserves all other servers)
-            mcpServers["claudedevstudio"] = System.Text.Json.Nodes.JsonNode.Parse(
-                $"{{\"command\":\"node\",\"args\":[\"{mcpServerPath.Replace("\\", "\\\\")}\"]}}");
-
-            // Write back with indentation
-            var options = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
-            var json = configNode.ToJsonString(options);
+            // Write clean JSON directly - no parsing, no serialization, no corruption risk
+            var escapedPath = mcpServerPath.Replace(@"\", @"\\");
+            var json = $"{{\"mcpServers\":{{\"claudedevstudio\":{{\"command\":\"node\",\"args\":[\"{escapedPath}\"]}}}}}}";
             Directory.CreateDirectory(configDir);
             File.WriteAllText(configPath, json, System.Text.Encoding.UTF8);
 

@@ -1,47 +1,29 @@
-# Auto-configure Claude Desktop for ClaudeDevStudio
-# This runs during MSI installation
+﻿# Auto-configure Claude Desktop for ClaudeDevStudio
+# This runs during installation and via 'claudedev configure-claude'
 
 param(
     [string]$MCPServerPath
 )
 
-$ErrorActionPreference = "Stop"
-
 try {
-    $configPath = "$env:APPDATA\Claude\claude_desktop_config.json"
-    $configDir = Split-Path $configPath -Parent
-    
-    # Create Claude config directory if it doesn't exist
-    if (!(Test-Path $configDir)) {
-        New-Item -ItemType Directory -Path $configDir -Force | Out-Null
-    }
-    
-    # Read existing config or start fresh
-    $config = $null
-    if (Test-Path $configPath) {
-        try { $config = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
-    }
-    if (-not $config) { $config = [PSCustomObject]@{} }
+    $configDir  = Join-Path $env:APPDATA "Claude"
+    $configPath = Join-Path $configDir "claude_desktop_config.json"
 
-    # Ensure mcpServers exists
-    if (-not (Get-Member -InputObject $config -Name "mcpServers" -MemberType NoteProperty)) {
-        $config | Add-Member -NotePropertyName "mcpServers" -NotePropertyValue ([PSCustomObject]@{})
-    }
+    New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 
-    # Add/update our entry only - preserves all other MCP servers
-    $entry = [PSCustomObject]@{ command = "node"; args = @($MCPServerPath) }
-    $config.mcpServers | Add-Member -NotePropertyName "claudedevstudio" -NotePropertyValue $entry -Force
+    # Escape backslashes for JSON
+    $escapedPath = $MCPServerPath.Replace('\', '\\')
 
-    # Write back
-    $config | ConvertTo-Json -Depth 10 | Set-Content $configPath -Encoding UTF8
-    
-    Write-Host "✓ Claude Desktop configured successfully"
+    # Write clean JSON directly - no parsing, no serialization, no risk of corruption
+    $json = '{"mcpServers":{"claudedevstudio":{"command":"node","args":["' + $escapedPath + '"]}}}'
+    [System.IO.File]::WriteAllText($configPath, $json, [System.Text.Encoding]::UTF8)
+
+    Write-Host "Claude Desktop configured successfully"
     Write-Host "  Config: $configPath"
     Write-Host "  MCP Server: $MCPServerPath"
-    
     exit 0
-} catch {
+}
+catch {
     Write-Host "Error configuring Claude Desktop: $_"
-    # Don't fail installation if config fails
-    exit 0
+    exit 1
 }
