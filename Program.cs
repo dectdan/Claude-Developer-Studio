@@ -62,6 +62,7 @@ namespace ClaudeDevStudio
                     "cloud" => CloudCommand(args),
                     "sync" => SyncProject(args),
                     "update" => UpdateCommand(args),
+                    "configure-claude" or "link-claude" => ConfigureClaude(),
                     "version" or "--version" or "-v" => ShowVersion(),
                     "help" or "--help" or "-h" => ShowHelp(),
                     _ => Error($"Unknown command: {command}")
@@ -1143,6 +1144,86 @@ namespace ClaudeDevStudio
             return size;
         }
 
+
+        static int ConfigureClaude()
+        {
+            Console.WriteLine("Configuring Claude Desktop integration...");
+            Console.WriteLine();
+
+            var installDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ClaudeDevStudio");
+
+            var mcpServerPath = Path.Combine(installDir, "mcp-server", "index.js");
+            var configDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "Claude");
+            var configPath = Path.Combine(configDir, "claude_desktop_config.json");
+
+            // Check Claude Desktop is installed
+            if (!Directory.Exists(configDir))
+            {
+                Console.WriteLine("Claude Desktop not found.");
+                Console.WriteLine("  Install from: https://claude.ai/download");
+                Console.WriteLine("  Then run: claudedev configure-claude");
+                return 1;
+            }
+
+            // Check MCP server exists
+            if (!File.Exists(mcpServerPath))
+            {
+                Console.WriteLine($"MCP server not found at: {mcpServerPath}");
+                Console.WriteLine("ClaudeDevStudio may not be installed correctly. Try reinstalling.");
+                return 1;
+            }
+
+            // Read or create config
+            string rawConfig = File.Exists(configPath)
+                ? File.ReadAllText(configPath, System.Text.Encoding.UTF8)
+                : "{}";
+
+            var config = System.Text.Json.JsonDocument.Parse(rawConfig).RootElement;
+            var configObj = new System.Collections.Generic.Dictionary<string, object>();
+
+            // Copy existing top-level keys
+            foreach (var prop in config.EnumerateObject())
+            {
+                if (prop.Name != "mcpServers")
+                    configObj[prop.Name] = prop.Value;
+            }
+
+            // Build mcpServers section
+            var mcpServers = new System.Collections.Generic.Dictionary<string, object>();
+            if (config.TryGetProperty("mcpServers", out var existingMcp))
+            {
+                foreach (var server in existingMcp.EnumerateObject())
+                {
+                    if (server.Name != "claudedevstudio")
+                        mcpServers[server.Name] = server.Value;
+                }
+            }
+
+            mcpServers["claudedevstudio"] = new
+            {
+                command = "node",
+                args = new[] { mcpServerPath }
+            };
+
+            configObj["mcpServers"] = mcpServers;
+
+            // Write back
+            var options = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+            var json = System.Text.Json.JsonSerializer.Serialize(configObj, options);
+            Directory.CreateDirectory(configDir);
+            File.WriteAllText(configPath, json, System.Text.Encoding.UTF8);
+
+            Console.WriteLine("Claude Desktop configured successfully!");
+            Console.WriteLine($"  Config: {configPath}");
+            Console.WriteLine($"  MCP Server: {mcpServerPath}");
+            Console.WriteLine();
+            Console.WriteLine("Restart Claude Desktop to activate ClaudeDevStudio.");
+            return 0;
+        }
         static int ShowVersion()
         {
             Console.WriteLine("ClaudeDevStudio v1.1.0");

@@ -47,6 +47,8 @@ namespace ClaudeDevStudio.TrayApp
             _contextMenu.Items.Add("Open Dashboard", null, OnOpenDashboard);
             _contextMenu.Items.Add("View Activity", null, OnViewActivity);
             _contextMenu.Items.Add(new ToolStripSeparator());
+            _contextMenu.Items.Add("Link Claude Desktop...", null, OnLinkClaudeDesktop);
+            _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add("Pending Approvals (0)", null, OnPendingApprovals);
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add("Check for Updates...", null, OnCheckUpdates);
@@ -196,6 +198,44 @@ namespace ClaudeDevStudio.TrayApp
             catch
             {
                 // Ignore registry errors
+            }
+        }
+
+        private void OnLinkClaudeDesktop(object? sender, EventArgs e)
+        {
+            try
+            {
+                var claudedev = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ClaudeDevStudio", "CLI", "claudedev.exe");
+
+                var result = System.Diagnostics.Process.Start(new ProcessStartInfo
+                {
+                    FileName = claudedev,
+                    Arguments = "configure-claude",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                });
+
+                result?.WaitForExit(10000);
+                var output = result?.StandardOutput.ReadToEnd() ?? "";
+                var error  = result?.StandardError.ReadToEnd() ?? "";
+                var msg    = (output + error).Trim();
+                var success = result?.ExitCode == 0;
+
+                MessageBox.Show(
+                    msg + (success ? "\n\nRestart Claude Desktop to activate." : ""),
+                    success ? "Linked Successfully" : "Link Failed",
+                    MessageBoxButtons.OK,
+                    success ? MessageBoxIcon.Information : MessageBoxIcon.Error);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Failed to link Claude Desktop:\n{ex.Message}",
+                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
