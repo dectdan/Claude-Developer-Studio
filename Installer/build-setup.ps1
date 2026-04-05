@@ -38,27 +38,26 @@ New-Item -ItemType Directory -Force -Path $Build | Out-Null
 New-Item -ItemType Directory -Force -Path $Output | Out-Null
 
 # ---- 1. CLI tool ----
-Write-Host "`n[1/5] Building CLI tool..." -ForegroundColor Yellow
+Write-Host "`n[1/7] Building CLI tool..." -ForegroundColor Yellow
 dotnet publish "$Root\ClaudeDevStudio.csproj" -c Release -r win-x64 --self-contained false -o "$Build\CLI"
 if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: CLI build failed -- skipping" -ForegroundColor Yellow }
 else { Write-Host "  CLI: OK" -ForegroundColor Green }
 
 # ---- 2. TrayApp ----
-Write-Host "`n[2/5] Building TrayApp..." -ForegroundColor Yellow
+Write-Host "`n[2/7] Building TrayApp..." -ForegroundColor Yellow
 dotnet publish "$Root\ClaudeDevStudio.UI\ClaudeDevStudio.TrayApp.csproj" -c Release -r win-x64 --self-contained false -o "$Build\TrayApp"
 if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: TrayApp build failed -- skipping" -ForegroundColor Yellow }
 else { Write-Host "  TrayApp: OK" -ForegroundColor Green }
 
 # ---- 3. Dashboard (WinUI 3) ----
-Write-Host "`n[3/5] Building Dashboard..." -ForegroundColor Yellow
+Write-Host "`n[3/7] Building Dashboard..." -ForegroundColor Yellow
 dotnet publish "$Root\ClaudeDevStudio.Dashboard\ClaudeDevStudio.Dashboard.csproj" -c Release -r win-x64 --self-contained false -o "$Build\Dashboard"
 if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: Dashboard build failed -- skipping" -ForegroundColor Yellow }
 else { Write-Host "  Dashboard: OK" -ForegroundColor Green }
 
 # ---- 4. VSIX (VS Bridge extension) ----
-Write-Host "`n[4/5] Building VS Bridge VSIX..." -ForegroundColor Yellow
+Write-Host "`n[4/7] Building VS Bridge VSIX..." -ForegroundColor Yellow
 if ($msbuild) {
-    # VSIX requires the full VS IDE MSBuild (not BuildTools) for VSSDK targets
     $vsMsbuildPaths = @(
         "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe",
         "${env:ProgramFiles}\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe",
@@ -80,31 +79,64 @@ if ($msbuild) {
     Write-Host "  Skipped (MSBuild not found)" -ForegroundColor Yellow
 }
 
-# ---- 5. Stage MCP server (with node_modules bundled) ----
-Write-Host "`n[5/5] Staging MCP server + dependencies..." -ForegroundColor Yellow
+# ---- 5. Stage MCP server + Review Panel ----
+Write-Host "`n[5/7] Staging MCP server + Review Panel..." -ForegroundColor Yellow
 $mcpDest = "$Build\mcp-server"
 New-Item -ItemType Directory -Force -Path $mcpDest | Out-Null
 Copy-Item "$Root\mcp-server\index.js"      $mcpDest -Force
 Copy-Item "$Root\mcp-server\package.json"  $mcpDest -Force
 Copy-Item "$Root\mcp-server\manifest.json" $mcpDest -Force
-# Ship template (no API keys) - never ship real qwen_config.json
 if (Test-Path "$Root\mcp-server\qwen_config.template.json") {
     Copy-Item "$Root\mcp-server\qwen_config.template.json" "$mcpDest\qwen_config.json" -Force
     Write-Host "  qwen_config.json: template (no API keys)" -ForegroundColor DarkGray
 } else {
     Write-Host "  WARNING: qwen_config.template.json not found" -ForegroundColor Yellow
 }
-# Bundle node_modules so npm install isn't needed on target machine
 if (Test-Path "$Root\mcp-server\node_modules") {
-    Write-Host "  Copying node_modules (~5 MB)..."
+    Write-Host "  Copying node_modules..."
     Copy-Item "$Root\mcp-server\node_modules" "$mcpDest\node_modules" -Recurse -Force
 }
+Write-Host "  MCP server: OK" -ForegroundColor Green
+
+$rvDest = "$Build\review-server"
+New-Item -ItemType Directory -Force -Path $rvDest | Out-Null
+Copy-Item "$Root\review-server\server.js"    $rvDest -Force
+Copy-Item "$Root\review-server\package.json" $rvDest -Force
+if (Test-Path "$Root\review-server\node_modules") {
+    Copy-Item "$Root\review-server\node_modules" "$rvDest\node_modules" -Recurse -Force
+}
+Write-Host "  Review Panel: OK" -ForegroundColor Green
+
 Copy-Item "$Installer\ConfigureClaudeDesktop.ps1" "$Build\" -Force
 Copy-Item "$Installer\install-extension.ps1"      "$Build\" -Force
-Write-Host "  MCP server: OK" -ForegroundColor Green
-Copy-Item "$Installer\ConfigureClaudeDesktop.ps1" "$Build\" -Force
-Write-Host "  ConfigureClaudeDesktop.ps1: OK" -ForegroundColor Green
-Write-Host "  install-extension.ps1: OK" -ForegroundColor Green
+Write-Host "  Scripts: OK" -ForegroundColor Green
+
+# ---- 6. Bundle Node.js LTS ----
+Write-Host "`n[6/7] Bundling Node.js LTS..." -ForegroundColor Yellow
+$nodeMsi     = "$Build\node-lts-x64.msi"
+$nodeVersion = "22.14.0"
+$nodeUrl     = "https://nodejs.org/dist/v$nodeVersion/node-v$nodeVersion-x64.msi"
+if (Test-Path $nodeMsi) {
+    Write-Host "  Already downloaded. Skipping." -ForegroundColor DarkGray
+} else {
+    Write-Host "  Downloading Node.js v$nodeVersion (~30 MB)..."
+    Invoke-WebRequest -Uri $nodeUrl -OutFile $nodeMsi -UseBasicParsing
+    if (Test-Path $nodeMsi) { Write-Host "  Node.js: OK" -ForegroundColor Green }
+    else { Write-Host "  WARNING: Node.js download failed" -ForegroundColor Yellow }
+}
+
+# ---- 7. Bundle Windows App Runtime ----
+Write-Host "`n[7/7] Bundling Windows App Runtime 1.8..." -ForegroundColor Yellow
+$winAppRt  = "$Build\WinAppRuntime.exe"
+$winAppUrl = "https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe"
+if (Test-Path $winAppRt) {
+    Write-Host "  Already downloaded. Skipping." -ForegroundColor DarkGray
+} else {
+    Write-Host "  Downloading Windows App Runtime 1.8 (~101 MB)..."
+    Invoke-WebRequest -Uri $winAppUrl -OutFile $winAppRt -UseBasicParsing
+    if (Test-Path $winAppRt) { Write-Host "  Windows App Runtime: OK" -ForegroundColor Green }
+    else { Write-Host "  WARNING: Windows App Runtime download failed" -ForegroundColor Yellow }
+}
 
 # ---- NSIS compile ----
 Write-Host "`nCompiling installer..." -ForegroundColor Yellow

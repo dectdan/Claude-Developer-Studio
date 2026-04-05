@@ -95,7 +95,7 @@ Section "Install" SecMain
   DotNetDone:
   DetailPrint ".NET 8 check done."
 
-  ;--- Step 2: Check Node.js (required, not bundled) ---
+  ;--- Step 2: Node.js — install bundled version if not present ---
   DetailPrint "Checking Node.js..."
   StrCpy $0 ""
   ${If} ${FileExists} "$PROGRAMFILES64\nodejs\node.exe"
@@ -107,13 +107,35 @@ Section "Install" SecMain
   ${EndIf}
 
   ${If} $0 != ""
-    DetailPrint "Node.js found at $0."
+    DetailPrint "Node.js found at $0. Skipping install."
   ${Else}
-    MessageBox MB_ICONEXCLAMATION "Node.js was not found on this system.$\r$\nPlease install Node.js 18+ from https://nodejs.org and re-run this installer."
-    Abort
+    DetailPrint "Installing bundled Node.js LTS..."
+    SetOutPath "$TEMP"
+    File "build\node-lts-x64.msi"
+    ExecWait 'msiexec /i "$TEMP\node-lts-x64.msi" /quiet /norestart' $0
+    Delete "$TEMP\node-lts-x64.msi"
+    ${If} $0 == 0
+      DetailPrint "Node.js installed successfully."
+    ${Else}
+      DetailPrint "Node.js install returned code $0 -- may already be present."
+    ${EndIf}
   ${EndIf}
 
-  ;--- Step 3: Install CDS application files ---
+  ;--- Step 3: Windows App Runtime 1.8 (required for WinUI 3 Dashboard) ---
+  DetailPrint "Checking Windows App Runtime..."
+  ReadRegStr $0 HKLM "SOFTWARE\Microsoft\WindowsAppRuntime\1.8" ""
+  ${If} $0 != ""
+    DetailPrint "Windows App Runtime 1.8 already installed."
+  ${Else}
+    DetailPrint "Installing bundled Windows App Runtime 1.8..."
+    SetOutPath "$TEMP"
+    File "build\WinAppRuntime.exe"
+    ExecWait '"$TEMP\WinAppRuntime.exe" --quiet' $0
+    Delete "$TEMP\WinAppRuntime.exe"
+    DetailPrint "Windows App Runtime install done (code $0)."
+  ${EndIf}
+
+  ;--- Step 4: Install CDS application files ---
   DetailPrint "Installing ClaudeDevStudio files..."
 
   SetOutPath "${INSTALL_DIR}\CLI"
