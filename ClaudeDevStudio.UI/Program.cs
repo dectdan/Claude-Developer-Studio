@@ -3,6 +3,8 @@ using System.Windows.Forms;
 using System.Drawing;
 using System.Diagnostics;
 using System.Threading.Tasks;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using Microsoft.Win32;
 
 namespace ClaudeDevStudio.TrayApp
@@ -30,6 +32,7 @@ namespace ClaudeDevStudio.TrayApp
         private ContextMenuStrip? _contextMenu;
         private Process? _mcpServerProcess;
         private UpdateInfo? _availableUpdate;
+        private static readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
         public TrayApplication()
         {
@@ -202,6 +205,30 @@ namespace ClaudeDevStudio.TrayApp
             }
         }
 
+        // Verification endpoints for each AI provider (GET /models validates the key at zero cost)
+        private static readonly System.Collections.Generic.Dictionary<string, string> _verifyUrls = new()
+        {
+            ["together"]   = "https://api.together.xyz/v1/models",
+            ["groq"]       = "https://api.groq.com/openai/v1/models",
+            ["deepinfra"]  = "https://api.deepinfra.com/v1/openai/models",
+            ["fireworks"]  = "https://api.fireworks.ai/inference/v1/models",
+            ["openrouter"] = "https://openrouter.ai/api/v1/models",
+        };
+
+        private async Task<bool> VerifyApiKeyAsync(string providerId, string apiKey)
+        {
+            if (string.IsNullOrWhiteSpace(apiKey)) return false;
+            if (!_verifyUrls.TryGetValue(providerId, out var url)) return false;
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey.Trim());
+                var response = await _httpClient.SendAsync(request);
+                return response.IsSuccessStatusCode;
+            }
+            catch { return false; }
+        }
+
         private void OnConfigureAiKeys(object? sender, EventArgs e)
         {
             var cfgPath = Path.Combine(
@@ -239,7 +266,7 @@ namespace ClaudeDevStudio.TrayApp
             var form = new Form
             {
                 Text = "Configure AI Provider Keys",
-                Width = 560, Height = 380,
+                Width = 580, Height = 430,
                 StartPosition = FormStartPosition.CenterScreen,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 MaximizeBox = false, MinimizeBox = false
@@ -253,34 +280,78 @@ namespace ClaudeDevStudio.TrayApp
                 ("together",   "Together AI  (Qwen3-Coder-480B — best for code)",  "together.ai"),
                 ("groq",       "Groq  (fastest responses, good for iteration)",      "console.groq.com"),
                 ("deepinfra",  "DeepInfra  (cheapest, bulk text)",                  "deepinfra.com"),
-                ("fireworks",  "Fireworks  (Qwen3-235B, broad tasks)",              "fireworks.ai"),
+                ("fireworks",  "Fireworks  (broad model catalog, image gen)",       "fireworks.ai"),
                 ("openrouter", "OpenRouter  (aggregator, 300+ models, fallback)",   "openrouter.ai"),
             };
 
             var fields = new System.Collections.Generic.Dictionary<string, TextBox>();
+            var statusLabels = new System.Collections.Generic.Dictionary<string, Label>();
             int y = 10;
             foreach (var (id, label, url) in providerList)
             {
-                var lbl = new Label { Text = label, Left = 0, Top = y, Width = 530, Font = new Font("Segoe UI", 8.5f) };
-                var txt = new TextBox { Left = 0, Top = y + 18, Width = 530, Text = keys[id],
+                var lbl = new Label { Text = label, Left = 0, Top = y, Width = 460, Font = new Font("Segoe UI", 8.5f) };
+                var txt = new TextBox { Left = 0, Top = y + 18, Width = 460, Text = keys[id],
                     Font = new Font("Consolas", 8.5f), UseSystemPasswordChar = false };
+                var status = new Label
+                {
+                    Text = string.IsNullOrWhiteSpace(keys[id]) ? "" : "\u25CF",
+                    Left = 470, Top = y + 18, Width = 70, Height = 22,
+                    Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                    ForeColor = Color.Gray,
+                    TextAlign = ContentAlignment.MiddleLeft
+                };
                 panel.Controls.Add(lbl);
                 panel.Controls.Add(txt);
+                panel.Controls.Add(status);
                 fields[id] = txt;
-                y += 52;
+                statusLabels[id] = status;
+
+                // Auto-verify when field loses focus
+                var capturedId = id;
+                txt.Leave += async (s, ev) =>
+                {
+                    var key = ((TextBox)s!).Text.Trim();
+                    if (string.IsNullOrEmpty(key))
+                    {
+                        statusLabels[capturedId].Text = "";
+                        statusLabels[capturedId].ForeColor = Color.Gray;
+                        return;
+                    }
+                    statusLabels[capturedId].Text = "verifying...";
+                    statusLabels[capturedId].ForeColor = Color.Orange;
+                    bool valid = await VerifyApiKeyAsync(capturedId, key);
+                    statusLabels[capturedId].Text = valid ? "\u2713 Valid" : "\u2717 Invalid";
+                    statusLabels[capturedId].ForeColor = valid ? Color.Green : Color.Red;
+                };
+
+                // Verify existing keys on form load
+                if (!string.IsNullOrWhiteSpace(keys[id]))
+                {
+                    var capturedId2 = id;
+                    form.Shown += async (s, ev) =>
+                    {
+                        statusLabels[capturedId2].Text = "verifying...";
+                        statusLabels[capturedId2].ForeColor = Color.Orange;
+                        bool valid = await VerifyApiKeyAsync(capturedId2, keys[capturedId2]);
+                        statusLabels[capturedId2].Text = valid ? "\u2713 Valid" : "\u2717 Invalid";
+                        statusLabels[capturedId2].ForeColor = valid ? Color.Green : Color.Red;
+                    };
+                }
+
+                y += 56;
             }
 
             var note = new Label
             {
-                Text = "Leave fields blank to skip that provider. Keys are stored locally only.",
+                Text = "Keys are verified automatically. Leave blank to skip a provider.",
                 Left = 0, Top = y + 4, Width = 530, ForeColor = Color.Gray,
                 Font = new Font("Segoe UI", 8f)
             };
             panel.Controls.Add(note);
 
-            var saveBtn = new Button { Text = "Save", Left = 350, Top = y + 26, Width = 80,
+            var saveBtn = new Button { Text = "Save", Left = 370, Top = y + 26, Width = 80,
                 DialogResult = DialogResult.OK };
-            var cancelBtn = new Button { Text = "Cancel", Left = 445, Top = y + 26, Width = 80,
+            var cancelBtn = new Button { Text = "Cancel", Left = 460, Top = y + 26, Width = 80,
                 DialogResult = DialogResult.Cancel };
             panel.Controls.Add(saveBtn);
             panel.Controls.Add(cancelBtn);

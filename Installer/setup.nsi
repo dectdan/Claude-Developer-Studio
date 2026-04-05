@@ -9,7 +9,7 @@ SetCompressor /SOLID lzma
 ; Metadata
 ;---------------------------------------------------------------------------
 !define PRODUCT_NAME      "ClaudeDevStudio"
-!define PRODUCT_VERSION   "1.1.1"
+!define PRODUCT_VERSION   "1.2.0"
 !define PRODUCT_PUBLISHER "Daniel E Gain"
 !define PRODUCT_URL       "https://github.com/dectdan/Claude-Developer-Studio"
 !define INSTALL_DIR       "$LocalAppData\ClaudeDevStudio"
@@ -266,7 +266,10 @@ Section "Uninstall"
   Delete   "${INSTALL_DIR}\Uninstall.exe"
   RMDir    "${INSTALL_DIR}"
 
-  ;--- Remove Claude Desktop extension registration ---
+  ;--- Remove Claude Desktop MCP server entries ---
+  nsExec::ExecToLog 'powershell -NoProfile -Command "$f=Join-Path $env:APPDATA \"Claude\claude_desktop_config.json\"; if(Test-Path $f){$c=Get-Content $f -Raw|ConvertFrom-Json; if($c.mcpServers){$c.mcpServers.PSObject.Properties.Remove(\"claudedevstudio\"); $c.mcpServers.PSObject.Properties.Remove(\"cds-workbench\")}; $c|ConvertTo-Json -Depth 10 -Compress|Set-Content $f -Encoding UTF8}"'
+
+  ;--- Remove legacy extension registration (if upgrading from older version) ---
   RMDir /r "$APPDATA\Claude\Claude Extensions\ant.dir.gh.dectdan.claudedevstudio"
   Delete   "$APPDATA\Claude\Claude Extensions Settings\ant.dir.gh.dectdan.claudedevstudio.json"
   nsExec::ExecToLog 'powershell -NoProfile -Command "$f=Join-Path $env:APPDATA \"Claude\extensions-installations.json\"; if(Test-Path $f){$j=Get-Content $f -Raw|ConvertFrom-Json; $j.extensions.PSObject.Properties.Remove(\"ant.dir.gh.dectdan.claudedevstudio\"); $j|ConvertTo-Json -Depth 20 -Compress|Set-Content $f -Encoding UTF8}"'

@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "claudedevstudio",
   "display_name": "ClaudeDevStudio",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Persistent memory for Claude AI across development sessions.",
   "long_description": "ClaudeDevStudio gives Claude persistent memory of your development projects, solving the problem of losing context between chat sessions. It tracks activities, mistakes, patterns, and decisions so Claude always knows the history of your project.",
   "author": {

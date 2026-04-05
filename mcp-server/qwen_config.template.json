@@ -27,10 +27,10 @@
     "fireworks": {
       "api_key":  "",
       "base_url": "https://api.fireworks.ai/inference/v1/chat/completions",
-      "model":    "accounts/fireworks/models/qwen3-235b-a22b",
+      "model":    "accounts/fireworks/models/llama-v3p3-70b-instruct",
       "cost_in":  0.22,
       "cost_out": 0.88,
-      "strength": "Breadth — large model catalog, image gen support, Qwen3-235B"
+      "strength": "Breadth — large model catalog, image gen, many model options"
     },
     "openrouter": {
       "api_key":  "",

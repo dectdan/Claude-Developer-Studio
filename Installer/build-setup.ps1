@@ -84,6 +84,7 @@ Write-Host "`n[5/7] Staging MCP server + Review Panel..." -ForegroundColor Yello
 $mcpDest = "$Build\mcp-server"
 New-Item -ItemType Directory -Force -Path $mcpDest | Out-Null
 Copy-Item "$Root\mcp-server\index.js"      $mcpDest -Force
+Copy-Item "$Root\mcp-server\workbench.js"  $mcpDest -Force
 Copy-Item "$Root\mcp-server\package.json"  $mcpDest -Force
 Copy-Item "$Root\mcp-server\manifest.json" $mcpDest -Force
 if (Test-Path "$Root\mcp-server\qwen_config.template.json") {

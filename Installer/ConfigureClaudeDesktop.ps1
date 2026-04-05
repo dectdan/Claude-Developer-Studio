@@ -24,17 +24,24 @@ try {
         if ($found) { $nodePath = $found.Source }
     }
 
-    # Escape backslashes for JSON
-    $escapedNode = $nodePath.Replace('\', '\\')
-    $escapedMcp  = $MCPServerPath.Replace('\', '\\')
+    # Derive workbench path from index.js path (same directory)
+    $mcpDir = Split-Path $MCPServerPath -Parent
+    $workbenchPath = Join-Path $mcpDir "workbench.js"
 
-    # Write clean JSON - no BOM, no serialization, no corruption risk
-    $json = '{"mcpServers":{"claudedevstudio":{"command":"' + $escapedNode + '","args":["' + $escapedMcp + '"]}}}'
+    # Escape backslashes for JSON
+    $escapedNode      = $nodePath.Replace('\', '\\')
+    $escapedMcp       = $MCPServerPath.Replace('\', '\\')
+    $escapedWorkbench = $workbenchPath.Replace('\', '\\')
+
+    # Write clean JSON with both servers - no BOM, no serialization, no corruption risk
+    $json = '{"mcpServers":{"claudedevstudio":{"command":"' + $escapedNode + '","args":["' + $escapedMcp + '"]},"cds-workbench":{"command":"' + $escapedNode + '","args":["' + $escapedWorkbench + '"]}}}'
     [System.IO.File]::WriteAllText($configPath, $json, [System.Text.UTF8Encoding]::new($false))
 
     Write-Host "Claude Desktop configured successfully"
-    Write-Host "  Node:   $nodePath"
-    Write-Host "  Config: $configPath"
+    Write-Host "  Node:      $nodePath"
+    Write-Host "  Core:      $MCPServerPath"
+    Write-Host "  Workbench: $workbenchPath"
+    Write-Host "  Config:    $configPath"
     exit 0
 }
 catch {
