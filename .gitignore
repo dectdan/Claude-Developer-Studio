@@ -36,3 +36,5 @@ Installer/build/
 
 # Keep MSI in releases folder
 !Releases/*.msi
+# Never commit large EXE installers - upload to GitHub releases manually
+Releases/*.exe
