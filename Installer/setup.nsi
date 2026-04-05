@@ -1,7 +1,4 @@
 ; ClaudeDevStudio Setup -- NSIS Installer Script
-; Single-EXE installer: downloads .NET 8 + Node.js if missing,
-; installs all components, bundles Kokoro model, auto-configures Claude Desktop.
-;
 ; Build: makensis setup.nsi   (run from Installer\ directory via build-setup.ps1)
 ; Output: Output\ClaudeDevStudio-Setup.exe
 
@@ -17,7 +14,6 @@ SetCompressor /SOLID lzma
 !define PRODUCT_URL       "https://github.com/dectdan/Claude-Developer-Studio"
 !define INSTALL_DIR       "$LocalAppData\ClaudeDevStudio"
 !define MCP_INDEX         "$LocalAppData\ClaudeDevStudio\mcp-server\index.js"
-!define VOICE_DIR         "$LocalAppData\ClaudeDevStudio\VoiceServer"
 !define UNINSTALL_KEY     "Software\Microsoft\Windows\CurrentVersion\Uninstall\ClaudeDevStudio"
 
 ;---------------------------------------------------------------------------
@@ -38,7 +34,7 @@ SetCompressor /SOLID lzma
   !define MUI_UNICON "Assets\AppIcon.ico"
 !endif
 !define MUI_WELCOMEPAGE_TITLE  "Install ClaudeDevStudio v${PRODUCT_VERSION}"
-!define MUI_WELCOMEPAGE_TEXT   "ClaudeDevStudio gives Claude AI persistent memory, voice alerts, and live Visual Studio integration.$\r$\n$\r$\nThis installer will:$\r$\n  - Install all required components$\r$\n  - Download .NET 8 and Node.js if needed$\r$\n  - Auto-configure Claude Desktop$\r$\n$\r$\nClick Install to continue."
+!define MUI_WELCOMEPAGE_TEXT   "ClaudeDevStudio gives Claude AI persistent memory and live Visual Studio integration.$\r$\n$\r$\nThis installer will:$\r$\n  - Install all required components$\r$\n  - Register ClaudeDevStudio as a Claude Desktop extension$\r$\n  - Auto-configure Claude Desktop$\r$\n$\r$\nClick Install to continue."
 !define MUI_FINISHPAGE_TITLE   "ClaudeDevStudio Installed!"
 !define MUI_FINISHPAGE_TEXT    "Installation complete.$\r$\n$\r$\nRestart Claude Desktop to activate.$\r$\n$\r$\nThe ClaudeDevStudio tray icon will appear in your system tray."
 !define MUI_FINISHPAGE_RUN          "$LocalAppData\ClaudeDevStudio\TrayApp\ClaudeDevStudio.TrayApp.exe"
@@ -73,17 +69,15 @@ Section "Install" SecMain
   ;--- Step 0: Stop running CDS processes so files aren't locked ---
   DetailPrint "Stopping any running ClaudeDevStudio processes..."
   nsExec::ExecToLog 'taskkill /IM ClaudeDevStudio.TrayApp.exe /F'
-  nsExec::ExecToLog 'taskkill /IM VoiceServer.exe /F'
   nsExec::ExecToLog 'taskkill /IM claudedev.exe /F'
   ; Kill review-server (node process on port 63000)
   nsExec::ExecToLog 'cmd /c for /f "tokens=5" %a in (''netstat -ano ^| findstr :63000'') do taskkill /PID %a /F'
   Sleep 1000
 
-  ;--- Step 1: Check .NET 8 via registry, download if missing ---
+  ;--- Step 1: Check .NET 8 ---
   DetailPrint "Checking .NET 8 Runtime..."
   ReadRegStr $0 HKLM "SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.NETCore.App" "8.0.0"
   StrCmp $0 "" 0 DotNetDone
-    ; Not found via registry - also try running dotnet
     nsExec::ExecToStack 'cmd /c dotnet --list-runtimes 2>&1 | findstr /C:"Microsoft.NETCore.App 8."'
     Pop $0
     Pop $1
@@ -101,7 +95,7 @@ Section "Install" SecMain
   DotNetDone:
   DetailPrint ".NET 8 check done."
 
-  ;--- Step 2: Install bundled Node.js if not already present ---
+  ;--- Step 2: Check Node.js (required, not bundled) ---
   DetailPrint "Checking Node.js..."
   StrCpy $0 ""
   ${If} ${FileExists} "$PROGRAMFILES64\nodejs\node.exe"
@@ -113,48 +107,13 @@ Section "Install" SecMain
   ${EndIf}
 
   ${If} $0 != ""
-    DetailPrint "Node.js found at $0. Skipping install."
+    DetailPrint "Node.js found at $0."
   ${Else}
-    DetailPrint "Installing bundled Node.js LTS..."
-    ; Extract the bundled MSI to temp and run it silently
-    SetOutPath "$TEMP"
-    File "build\node-lts-x64.msi"
-    ExecWait 'msiexec /i "$TEMP\node-lts-x64.msi" /quiet /norestart' $0
-    Delete "$TEMP\node-lts-x64.msi"
-    ${If} $0 == 0
-      DetailPrint "Node.js installed successfully."
-    ${Else}
-      DetailPrint "Node.js install returned code $0 -- may already be present."
-    ${EndIf}
+    MessageBox MB_ICONEXCLAMATION "Node.js was not found on this system.$\r$\nPlease install Node.js 18+ from https://nodejs.org and re-run this installer."
+    Abort
   ${EndIf}
 
-  ;--- Step 3: Install bundled Windows App Runtime 1.8 (required for WinUI 3 Dashboard) ---
-  DetailPrint "Checking Windows App Runtime..."
-  ReadRegStr $0 HKLM "SOFTWARE\Microsoft\WindowsAppRuntime\1.8" ""
-  ReadRegStr $1 HKLM "SOFTWARE\Microsoft\WindowsAppRuntime\1.6" ""
-  ${If} $0 != ""
-    DetailPrint "Windows App Runtime 1.8 already installed."
-  ${ElseIf} $1 != ""
-    DetailPrint "Windows App Runtime 1.6 found -- installing 1.8..."
-    SetOutPath "$TEMP"
-    File "build\WinAppRuntime.exe"
-    ExecWait '"$TEMP\WinAppRuntime.exe" --quiet' $0
-    Delete "$TEMP\WinAppRuntime.exe"
-    DetailPrint "Windows App Runtime 1.8 installed."
-  ${Else}
-    DetailPrint "Installing bundled Windows App Runtime 1.8..."
-    SetOutPath "$TEMP"
-    File "build\WinAppRuntime.exe"
-    ExecWait '"$TEMP\WinAppRuntime.exe" --quiet' $0
-    Delete "$TEMP\WinAppRuntime.exe"
-    ${If} $0 == 0
-      DetailPrint "Windows App Runtime installed successfully."
-    ${Else}
-      DetailPrint "Windows App Runtime install returned code $0."
-    ${EndIf}
-  ${EndIf}
-
-  ;--- Step 3b: Install CDS application files ---
+  ;--- Step 3: Install CDS application files ---
   DetailPrint "Installing ClaudeDevStudio files..."
 
   SetOutPath "${INSTALL_DIR}\CLI"
@@ -168,9 +127,6 @@ Section "Install" SecMain
 
   SetOutPath "${INSTALL_DIR}\mcp-server"
   File /nonfatal /r "build\mcp-server\*.*"
-
-  SetOutPath "${INSTALL_DIR}\VoiceServer"
-  File /nonfatal /r "build\VoiceServer\*.*"
 
   SetOutPath "${INSTALL_DIR}\review-server"
   File /nonfatal /r "build\review-server\*.*"
@@ -190,26 +146,9 @@ Section "Install" SecMain
     DetailPrint "MCP dependencies already bundled. Skipping npm install."
   ${EndIf}
 
-  ;--- Step 5: Download Kokoro model if not bundled ---
-  DetailPrint "Checking voice model..."
-  ${IfNot} ${FileExists} "${INSTALL_DIR}\VoiceServer\kokoro.onnx"
-    DetailPrint "Downloading Kokoro voice model (~310 MB)..."
-    ExecWait 'powershell -NoProfile -Command "(New-Object Net.WebClient).DownloadFile(\"https://github.com/taylorchu/kokoro-onnx/releases/download/v0.2.0/kokoro.onnx\",\"${INSTALL_DIR}\VoiceServer\kokoro.onnx\")"' $0
-    ${If} $0 == 0
-      DetailPrint "Voice model downloaded."
-    ${Else}
-      DetailPrint "Voice model download failed -- voice disabled until retried."
-    ${EndIf}
-  ${Else}
-    DetailPrint "Voice model present."
-  ${EndIf}
-
-  ;--- Step 6: Install VSIX into Visual Studio if detected ---
-  ; VS 2022 doesn't reliably write to the old COM registry key.
-  ; Instead we check known install paths for all three editions.
+  ;--- Step 5: Install VS Bridge VSIX if VS 2022 detected ---
   DetailPrint "Checking for Visual Studio 2022..."
   StrCpy $0 ""
-
   ${If} ${FileExists} "$PROGRAMFILES64\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\VSIXInstaller.exe"
     StrCpy $0 "$PROGRAMFILES64\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\VSIXInstaller.exe"
   ${ElseIf} ${FileExists} "$PROGRAMFILES64\Microsoft Visual Studio\2022\Professional\Common7\IDE\VSIXInstaller.exe"
@@ -220,25 +159,22 @@ Section "Install" SecMain
 
   ${If} $0 != ""
     DetailPrint "Found VS 2022. Installing VS Bridge extension..."
-    ; /quiet suppresses the VSIX UI; result is non-zero only on hard failure
     nsExec::ExecToLog '"$0" /quiet "${INSTALL_DIR}\VSExtension\CdsVsBridge.vsix"'
     DetailPrint "VS Bridge extension installed."
   ${Else}
     DetailPrint "Visual Studio 2022 not found -- VS Bridge skipped (optional)."
   ${EndIf}
 
-  ;--- Step 7: Register Claude Desktop Extension (NEW — replaces old claude_desktop_config.json approach) ---
+  ;--- Step 6: Register ClaudeDevStudio as Claude Desktop extension ---
   DetailPrint "Registering ClaudeDevStudio as Claude Desktop extension..."
-  ; Pass $APPDATA and $LOCALAPPDATA from NSIS — elevated PowerShell resolves these
-  ; to the admin profile, not the current user. NSIS always has the correct user path.
   nsExec::ExecToLog 'powershell -ExecutionPolicy Bypass -NoProfile -File "${INSTALL_DIR}\install-extension.ps1" -Version "${PRODUCT_VERSION}" -UserAppData "$APPDATA" -UserLocalAppData "$LOCALAPPDATA"'
 
-  ;--- Step 8: Create data directories ---
+  ;--- Step 7: Create data directories ---
   CreateDirectory "$DOCUMENTS\ClaudeDevStudio\Projects"
   CreateDirectory "$DOCUMENTS\ClaudeDevStudio\Backups"
   CreateDirectory "$APPDATA\Claude"
 
-  ;--- Step 9: Registry, shortcuts, autostart ---
+  ;--- Step 8: Registry, shortcuts, autostart ---
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName"     "${PRODUCT_NAME}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion"  "${PRODUCT_VERSION}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher"       "${PRODUCT_PUBLISHER}"
@@ -248,12 +184,10 @@ Section "Install" SecMain
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair"  1
 
-  ; CDS runtime settings used by TrayApp
-  WriteRegStr HKCU "Software\ClaudeDevStudio" "DashboardPath" "${INSTALL_DIR}\Dashboard"
-  WriteRegStr HKCU "Software\ClaudeDevStudio" "InstallDir"    "${INSTALL_DIR}"
-  WriteRegStr HKCU "Software\ClaudeDevStudio" "Version"       "${PRODUCT_VERSION}"
+  WriteRegStr HKCU "Software\ClaudeDevStudio" "InstallDir" "${INSTALL_DIR}"
+  WriteRegStr HKCU "Software\ClaudeDevStudio" "Version"    "${PRODUCT_VERSION}"
 
-  ; Add CLI to user PATH so 'claudedev' works from any terminal
+  ; Add CLI to user PATH
   ReadRegStr $0 HKCU "Environment" "PATH"
   ${If} $0 != ""
     StrCpy $0 "$0;${INSTALL_DIR}\CLI"
@@ -261,7 +195,6 @@ Section "Install" SecMain
     StrCpy $0 "${INSTALL_DIR}\CLI"
   ${EndIf}
   WriteRegExpandStr HKCU "Environment" "PATH" "$0"
-  ; Broadcast WM_SETTINGCHANGE so open terminals pick it up
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" \
@@ -284,9 +217,9 @@ SectionEnd
 Section "Uninstall"
 
   nsExec::ExecToLog 'taskkill /IM ClaudeDevStudio.TrayApp.exe /F'
-  nsExec::ExecToLog 'taskkill /IM VoiceServer.exe /F'
+  nsExec::ExecToLog 'taskkill /IM claudedev.exe /F'
 
-  ;--- Remove VS Bridge extension if VS 2022 is present ---
+  ;--- Remove VS Bridge extension if VS 2022 present ---
   StrCpy $0 ""
   ${If} ${FileExists} "$PROGRAMFILES64\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\VSIXInstaller.exe"
     StrCpy $0 "$PROGRAMFILES64\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\VSIXInstaller.exe"
@@ -299,11 +232,11 @@ Section "Uninstall"
     nsExec::ExecToLog '"$0" /quiet /uninstall:CdsVsBridge.DanGain.ClaudeDevStudio'
   ${EndIf}
 
+  ;--- Remove installed files ---
   RMDir /r "${INSTALL_DIR}\CLI"
   RMDir /r "${INSTALL_DIR}\TrayApp"
   RMDir /r "${INSTALL_DIR}\Dashboard"
   RMDir /r "${INSTALL_DIR}\mcp-server"
-  RMDir /r "${INSTALL_DIR}\VoiceServer"
   RMDir /r "${INSTALL_DIR}\review-server"
   RMDir /r "${INSTALL_DIR}\VSExtension"
   Delete   "${INSTALL_DIR}\ConfigureClaudeDesktop.ps1"
@@ -311,16 +244,16 @@ Section "Uninstall"
   Delete   "${INSTALL_DIR}\Uninstall.exe"
   RMDir    "${INSTALL_DIR}"
 
-  ; Remove Claude Desktop extension registration
+  ;--- Remove Claude Desktop extension registration ---
   RMDir /r "$APPDATA\Claude\Claude Extensions\ant.dir.gh.dectdan.claudedevstudio"
   Delete   "$APPDATA\Claude\Claude Extensions Settings\ant.dir.gh.dectdan.claudedevstudio.json"
-  ; Remove entry from extensions-installations.json via PowerShell
-  nsExec::ExecToLog 'powershell -NoProfile -Command "$f=\"$env:APPDATA\Claude\extensions-installations.json\"; if(Test-Path $f){$j=Get-Content $f -Raw|ConvertFrom-Json; $j.extensions.PSObject.Properties.Remove(\"ant.dir.gh.dectdan.claudedevstudio\"); $j|ConvertTo-Json -Depth 20 -Compress|Set-Content $f -Encoding UTF8}"'
+  nsExec::ExecToLog 'powershell -NoProfile -Command "$f=Join-Path $env:APPDATA \"Claude\extensions-installations.json\"; if(Test-Path $f){$j=Get-Content $f -Raw|ConvertFrom-Json; $j.extensions.PSObject.Properties.Remove(\"ant.dir.gh.dectdan.claudedevstudio\"); $j|ConvertTo-Json -Depth 20 -Compress|Set-Content $f -Encoding UTF8}"'
 
+  ;--- Remove registry and shortcuts ---
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ClaudeDevStudio"
   DeleteRegKey   HKCU "${UNINSTALL_KEY}"
+  DeleteRegKey   HKCU "Software\ClaudeDevStudio"
 
-  ; Remove CLI from user PATH
   ReadRegStr $0 HKCU "Environment" "PATH"
   ${WordReplace} "$0" "${INSTALL_DIR}\CLI;" "" "+" $0
   ${WordReplace} "$0" ";${INSTALL_DIR}\CLI" "" "+" $0

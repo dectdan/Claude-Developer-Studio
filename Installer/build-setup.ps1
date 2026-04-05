@@ -37,32 +37,26 @@ if (Test-Path $Build) { Remove-Item $Build -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $Build | Out-Null
 New-Item -ItemType Directory -Force -Path $Output | Out-Null
 
-# ---- 1. VoiceServer ----
-Write-Host "`n[1/6] Building VoiceServer..." -ForegroundColor Yellow
-dotnet publish "$Root\VoiceServer\VoiceServer.csproj" -c Release -r win-x64 --self-contained false -o "$Build\VoiceServer"
-if ($LASTEXITCODE -ne 0) { Write-Host "  ERROR: VoiceServer build failed" -ForegroundColor Red; exit 1 }
-Write-Host "  VoiceServer: OK" -ForegroundColor Green
-
-# ---- 2. CLI tool ----
-Write-Host "`n[2/6] Building CLI tool..." -ForegroundColor Yellow
+# ---- 1. CLI tool ----
+Write-Host "`n[1/5] Building CLI tool..." -ForegroundColor Yellow
 dotnet publish "$Root\ClaudeDevStudio.csproj" -c Release -r win-x64 --self-contained false -o "$Build\CLI"
 if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: CLI build failed -- skipping" -ForegroundColor Yellow }
 else { Write-Host "  CLI: OK" -ForegroundColor Green }
 
-# ---- 3. TrayApp ----
-Write-Host "`n[3/6] Building TrayApp..." -ForegroundColor Yellow
+# ---- 2. TrayApp ----
+Write-Host "`n[2/5] Building TrayApp..." -ForegroundColor Yellow
 dotnet publish "$Root\ClaudeDevStudio.UI\ClaudeDevStudio.TrayApp.csproj" -c Release -r win-x64 --self-contained false -o "$Build\TrayApp"
 if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: TrayApp build failed -- skipping" -ForegroundColor Yellow }
 else { Write-Host "  TrayApp: OK" -ForegroundColor Green }
 
-# ---- 4. Dashboard (WinUI 3) ----
-Write-Host "`n[4/7] Building Dashboard..." -ForegroundColor Yellow
+# ---- 3. Dashboard (WinUI 3) ----
+Write-Host "`n[3/5] Building Dashboard..." -ForegroundColor Yellow
 dotnet publish "$Root\ClaudeDevStudio.Dashboard\ClaudeDevStudio.Dashboard.csproj" -c Release -r win-x64 --self-contained false -o "$Build\Dashboard"
 if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: Dashboard build failed -- skipping" -ForegroundColor Yellow }
 else { Write-Host "  Dashboard: OK" -ForegroundColor Green }
 
-# ---- 5. VSIX (VS Bridge extension) ----
-Write-Host "`n[5/7] Building VS Bridge VSIX..." -ForegroundColor Yellow
+# ---- 4. VSIX (VS Bridge extension) ----
+Write-Host "`n[4/5] Building VS Bridge VSIX..." -ForegroundColor Yellow
 if ($msbuild) {
     # VSIX requires the full VS IDE MSBuild (not BuildTools) for VSSDK targets
     $vsMsbuildPaths = @(
@@ -87,7 +81,7 @@ if ($msbuild) {
 }
 
 # ---- 5. Stage MCP server (with node_modules bundled) ----
-Write-Host "`n[8/10] Staging MCP server + dependencies..." -ForegroundColor Yellow
+Write-Host "`n[5/5] Staging MCP server + dependencies..." -ForegroundColor Yellow
 $mcpDest = "$Build\mcp-server"
 New-Item -ItemType Directory -Force -Path $mcpDest | Out-Null
 Copy-Item "$Root\mcp-server\index.js"      $mcpDest -Force
@@ -111,56 +105,6 @@ Write-Host "  MCP server: OK" -ForegroundColor Green
 Copy-Item "$Installer\ConfigureClaudeDesktop.ps1" "$Build\" -Force
 Write-Host "  ConfigureClaudeDesktop.ps1: OK" -ForegroundColor Green
 Write-Host "  install-extension.ps1: OK" -ForegroundColor Green
-
-# ---- 6. Bundle Node.js installer ----
-Write-Host "`n[6/10] Bundling Node.js LTS..." -ForegroundColor Yellow
-$nodeMsi     = "$Build\node-lts-x64.msi"
-$nodeVersion = "22.14.0"
-$nodeUrl     = "https://nodejs.org/dist/v$nodeVersion/node-v$nodeVersion-x64.msi"
-if (Test-Path $nodeMsi) {
-    Write-Host "  Already downloaded. Skipping." -ForegroundColor DarkGray
-} else {
-    Write-Host "  Downloading Node.js v$nodeVersion (~30 MB)..."
-    Invoke-WebRequest -Uri $nodeUrl -OutFile $nodeMsi -UseBasicParsing
-    if (Test-Path $nodeMsi) { Write-Host "  Node.js: OK" -ForegroundColor Green }
-    else { Write-Host "  WARNING: Node.js download failed" -ForegroundColor Yellow }
-}
-
-# ---- 7. Bundle Windows App Runtime ----
-Write-Host "`n[7/10] Bundling Windows App Runtime 1.8..." -ForegroundColor Yellow
-$winAppRt    = "$Build\WinAppRuntime.exe"
-$winAppUrl   = "https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe"
-if (Test-Path $winAppRt) {
-    Write-Host "  Already downloaded. Skipping." -ForegroundColor DarkGray
-} else {
-    Write-Host "  Downloading Windows App Runtime 1.8 (~101 MB)..."
-    Invoke-WebRequest -Uri $winAppUrl -OutFile $winAppRt -UseBasicParsing
-    if (Test-Path $winAppRt) { Write-Host "  Windows App Runtime: OK" -ForegroundColor Green }
-    else { Write-Host "  WARNING: Windows App Runtime download failed" -ForegroundColor Yellow }
-}
-
-# ---- 7. Review Panel ----
-Write-Host "`n[9/10] Staging Review Panel..." -ForegroundColor Yellow
-$rvDest = "$Build\review-server"
-New-Item -ItemType Directory -Force -Path $rvDest | Out-Null
-Copy-Item "$Root\review-server\server.js"    $rvDest -Force
-Copy-Item "$Root\review-server\package.json" $rvDest -Force
-if (Test-Path "$Root\review-server\node_modules") {
-    Copy-Item "$Root\review-server\node_modules" "$rvDest\node_modules" -Recurse -Force
-}
-Write-Host "  Review Panel: OK" -ForegroundColor Green
-
-# ---- 7. Kokoro voice model ----
-Write-Host "`n[10/10] Staging Kokoro voice model..." -ForegroundColor Yellow
-$kokoroSrc = "C:\Users\Big_D\AppData\Local\ClaudeDevStudio\VoiceServer\kokoro.onnx"
-if (Test-Path $kokoroSrc) {
-    $size = [int]((Get-Item $kokoroSrc).Length / 1MB)
-    Write-Host "  Found kokoro.onnx ($size MB) -- bundling..."
-    Copy-Item $kokoroSrc "$Build\VoiceServer\kokoro.onnx" -Force
-    Write-Host "  Kokoro model: OK" -ForegroundColor Green
-} else {
-    Write-Host "  WARNING: kokoro.onnx not found -- installer will download it" -ForegroundColor Yellow
-}
 
 # ---- NSIS compile ----
 Write-Host "`nCompiling installer..." -ForegroundColor Yellow
