@@ -30,7 +30,6 @@
     { "name": "claudedev_check_mistake",   "description": "Check if an action matches a prior mistake" },
     { "name": "claudedev_stats",           "description": "Get memory statistics for current project" },
     { "name": "claudedev_monitor_start",   "description": "Start monitoring Visual Studio debug output" },
-    { "name": "claudedev_speak",           "description": "Speak text aloud using on-machine TTS" },
     { "name": "claudedev_vs_get_state",    "description": "Get current Visual Studio state" },
     { "name": "claudedev_vs_get_errors",   "description": "Get Visual Studio Error List from last build" },
     { "name": "claudedev_vs_get_output",   "description": "Get Visual Studio build output text" },

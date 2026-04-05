@@ -307,17 +307,6 @@ class ClaudeDevStudioServer {
           },
         },
         {
-          name: 'claudedev_speak',
-          description: 'Speak text aloud using Kokoro TTS (on-machine, no API cost). Use only for actual conversational moments, alerts, or key findings — NOT for status dumps. Examples: "Build failed — 3 errors", "Found the bug — null reference in ProcessQueue", "Done, all tests pass." Keep it concise.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              text: { type: 'string', description: 'Text to speak (keep under 200 chars for natural speech)' },
-            },
-            required: ['text'],
-          },
-        },
-        {
           name: 'claudedev_vs_get_state',
           description: 'Get current Visual Studio state: active solution, open file, debug mode, exception message. Written by the CDS VS Bridge VSIX extension.',
           inputSchema: { type: 'object', properties: {}, required: [] },
@@ -489,7 +478,6 @@ class ClaudeDevStudioServer {
           case 'claudedev_stats':           result = await this.handleStats(args); break;
           case 'claudedev_monitor_start':   result = await this.handleMonitorStart(args); break;
           case 'fetch_url':                 result = await this.handleFetchUrl(args); break;
-          case 'claudedev_speak':           result = await this.handleSpeak(args); break;
           case 'claudedev_vs_get_state':    result = this.handleVsGetState(); break;
           case 'claudedev_vs_get_errors':   result = this.handleVsGetErrors(); break;
           case 'claudedev_vs_get_output':   result = this.handleVsGetOutput(args); break;
@@ -701,40 +689,6 @@ class ClaudeDevStudioServer {
     } catch (err) {
       return { content: [{ type: 'text', text: `[mirror] Error reading log: ${err.message}` }] };
     }
-  }
-
-  // ── Voice / TTS ────────────────────────────────────────────────────────────
-
-  async handleSpeak(args) {
-    const text = (args && args.text) ? String(args.text).trim() : '';
-    if (!text) {
-      return { content: [{ type: 'text', text: '[speak] No text provided.' }] };
-    }
-    return new Promise((resolve) => {
-      const bodyStr = JSON.stringify({ text });
-      const options = {
-        hostname: 'localhost',
-        port: 62001,
-        path: '/speak',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyStr) },
-        timeout: 3000,
-      };
-      const req = http.request(options, (res) => {
-        let data = '';
-        res.on('data', (c) => { data += c; });
-        res.on('end', () => {
-          resolve({ content: [{ type: 'text', text: res.statusCode === 200 ? `[speak] queued: "${text}"` : `[speak] server error: ${data}` }] });
-        });
-      });
-      req.on('error', () => {
-        // Voice server not running — silently succeed (speech is optional, never block work)
-        resolve({ content: [{ type: 'text', text: `[speak] VoiceServer offline — run VoiceServer.exe to enable speech.` }] });
-      });
-      req.on('timeout', () => { req.destroy(); resolve({ content: [{ type: 'text', text: '[speak] timeout' }] }); });
-      req.write(bodyStr);
-      req.end();
-    });
   }
 
   // ── VS Bridge handlers ─────────────────────────────────────────────────────
