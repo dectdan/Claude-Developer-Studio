@@ -221,25 +221,33 @@ class ClaudeDevStudioServer {
       tools: [
         {
           name: 'claudedev_init',
-          description: 'Initialize ClaudeDevStudio memory for a project',
+          description: 'ClaudeDevStudio: Set up persistent memory for a project. ' +
+            'Call this the FIRST TIME a user wants to use ClaudeDevStudio with a project. ' +
+            'Ask the user for the full path to their project folder (e.g. C:\\Projects\\MyApp), then call this tool. ' +
+            'After init, call claudedev_load to bring context into this session.',
           inputSchema: {
             type: 'object',
-            properties: { project_path: { type: 'string', description: 'Absolute path to the project source directory' } },
+            properties: { project_path: { type: 'string', description: 'Full path to the project folder, e.g. C:\\Projects\\MyApp' } },
             required: ['project_path'],
           },
         },
         {
           name: 'claudedev_load',
-          description: 'Load context from ClaudeDevStudio memory (call at session start)',
+          description: 'ClaudeDevStudio: Load saved memory and context for a project into this session. ' +
+            'Call this at the START of every session when the user wants to work on a project that has CDS memory. ' +
+            'If the user says "load my project", "start CDS", "load ClaudeDevStudio", or similar — ask them which project folder to load, then call this. ' +
+            'Returns everything Claude needs to remember about the project: past decisions, activities, mistakes, and session state.',
           inputSchema: {
             type: 'object',
-            properties: { project_path: { type: 'string', description: 'Absolute path to the project source directory' } },
+            properties: { project_path: { type: 'string', description: 'Full path to the project folder, e.g. C:\\Projects\\MyApp' } },
             required: ['project_path'],
           },
         },
         {
           name: 'claudedev_record_activity',
-          description: 'Record an activity/action taken during development',
+          description: 'ClaudeDevStudio: Save a record of work done on the current project to persistent memory. ' +
+            'Call this automatically after completing any meaningful task — code change, fix, debug session, decision. ' +
+            'This is how CDS builds its memory of the project over time.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -254,7 +262,8 @@ class ClaudeDevStudioServer {
         },
         {
           name: 'claudedev_record_mistake',
-          description: 'Record a mistake/failed attempt with lesson learned',
+          description: 'ClaudeDevStudio: Save a record of a mistake or failed approach to persistent memory so it is never repeated. ' +
+            'Call this when something went wrong, a fix was reverted, or an approach failed.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -269,7 +278,8 @@ class ClaudeDevStudioServer {
         },
         {
           name: 'claudedev_check_mistake',
-          description: 'Check if an action matches a prior mistake (prevents repeating errors)',
+          description: 'ClaudeDevStudio: Before taking an action, check if it matches a previously recorded mistake. ' +
+            'Call this proactively before making significant changes to avoid repeating known errors.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -281,7 +291,7 @@ class ClaudeDevStudioServer {
         },
         {
           name: 'claudedev_stats',
-          description: 'Get memory statistics for current project',
+          description: 'ClaudeDevStudio: Show memory statistics for a project — how many activities, mistakes, and patterns have been recorded.',
           inputSchema: {
             type: 'object',
             properties: { project_path: { type: 'string', description: 'Absolute path to the project source directory' } },
@@ -381,7 +391,9 @@ class ClaudeDevStudioServer {
         },
         {
           name: 'claudedev_chat_resume',
-          description: 'Recover context after a drop. Returns all checkpoints from last 7 days + tool activity from recent hours. Call at session start when context may be missing.',
+          description: 'ClaudeDevStudio: Recover context after a session drop or when returning to an interrupted conversation. ' +
+            'Call this at session start if the user says they were in the middle of something or if context seems missing. ' +
+            'Returns recent checkpoints and tool activity.',
         },
         {
           name: 'qwen_generate',
