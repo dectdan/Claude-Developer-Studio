@@ -17,9 +17,15 @@ import http from 'http';
 const execAsync = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Absolute path to ClaudeDevStudio install — works regardless of where this script runs from
+const CDS_INSTALL_PATH = path.join(
+  process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || 'C:\\Users\\Default', 'AppData', 'Local'),
+  'ClaudeDevStudio'
+);
+
 // ── Startup: check for API keys ────────────────────────────────────────────
 (function checkApiKeys() {
-  const cfgPath = path.join(__dirname, 'qwen_config.json');
+  const cfgPath = path.join(CDS_INSTALL_PATH, 'mcp-server', 'qwen_config.json');
   try {
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
     const providers = cfg.providers || {};
@@ -37,7 +43,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 })();
 
 // Path to claudedev.exe
-const CLAUDEDEV_PATH = path.join(__dirname, '..', 'CLI', 'claudedev.exe');
+const CLAUDEDEV_PATH = path.join(CDS_INSTALL_PATH, 'CLI', 'claudedev.exe');
 
 // CDS data storage base — uses Documents folder, works for any user
 const CDS_BASE_PATH = path.join(process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\Default', 'Documents', 'ClaudeDevStudio', 'Projects');
@@ -841,7 +847,7 @@ class ClaudeDevStudioServer {
 
   async handleQwenGenerate(args) {
     // Load config
-    const cfgPath = path.join(__dirname, 'qwen_config.json');
+    const cfgPath = path.join(CDS_INSTALL_PATH, 'mcp-server', 'qwen_config.json');
     let cfg;
     try {
       cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
@@ -1097,7 +1103,7 @@ class ClaudeDevStudioServer {
   // ── Generate Image — Fireworks SDXL → Review Panel ───────────────────────
 
   async handleGenerateImage(args) {
-    const cfgPath = path.join(__dirname, 'qwen_config.json');
+    const cfgPath = path.join(CDS_INSTALL_PATH, 'mcp-server', 'qwen_config.json');
     let cfg;
     try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); }
     catch (e) { return { content: [{ type: 'text', text: `[ImageGen] Cannot read qwen_config.json: ${e.message}` }] }; }
@@ -1179,7 +1185,7 @@ class ClaudeDevStudioServer {
   // ── Auto-start Review Panel server ───────────────────────────────────────
 
   startReviewPanel() {
-    const serverPath = path.join(__dirname, '..', 'review-server', 'server.js');
+    const serverPath = path.join(CDS_INSTALL_PATH, 'review-server', 'server.js');
     if (!fs.existsSync(serverPath)) {
       console.error('[ReviewPanel] server.js not found, skipping auto-start.');
       return;

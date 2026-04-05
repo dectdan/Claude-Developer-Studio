@@ -3,7 +3,7 @@
      xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
   
   <?define ProductName = "ClaudeDevStudio" ?>
-  <?define ProductVersion = "1.0.1.0" ?>
+  <?define ProductVersion = "1.1.1.0" ?>
   <?define Manufacturer = "Daniel E Gain" ?>
   <?define UpgradeCode = "12345678-1234-1234-1234-123456789ABC" ?>
   
@@ -31,8 +31,8 @@
     <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
     
     <!-- Add/Remove Programs Info -->
-    <Property Id="ARPHELPLINK" Value="https://github.com/dectdan/Cloud-Developer-Studio" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/dectdan/Cloud-Developer-Studio" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/dectdan/Claude-Developer-Studio" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/dectdan/Claude-Developer-Studio" />
 
     <!-- Installation Directory -->
     <Directory Id="TARGETDIR" Name="SourceDir">
@@ -40,9 +40,14 @@
       <Directory Id="LocalAppDataFolder">
         <Directory Id="INSTALLFOLDER" Name="ClaudeDevStudio">
           
-          <!-- Auto-Configuration Script -->
+          <!-- Auto-Configuration Script (Legacy — kept for reference) -->
           <Component Id="ConfigScript_Component" Guid="2222BBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF">
             <File Id="ConfigureClaudeDesktop.ps1" Source="ConfigureClaudeDesktop.ps1" KeyPath="yes" />
+          </Component>
+
+          <!-- Extension Registration Script (NEW — replaces old config approach) -->
+          <Component Id="ExtensionScript_Component" Guid="3333CCCC-DDDD-EEEE-FFFF-000000000001">
+            <File Id="install_extension.ps1" Source="install-extension.ps1" KeyPath="yes" />
           </Component>
           
           <!-- CLI Tool -->
@@ -158,6 +163,7 @@
       <ComponentRef Id="Shortcuts_Component" />
       <ComponentRef Id="Registry_Component" />
       <ComponentRef Id="ConfigScript_Component" />
+      <ComponentRef Id="ExtensionScript_Component" />
     </Feature>
 
     <!-- UI - Minimal dialogs, no choices -->
@@ -167,7 +173,15 @@
     <!-- License Agreement -->
     <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
 
-    <!-- Custom Action: Auto-configure Claude Desktop -->
+    <!-- Custom Action: Register Claude Desktop Extension (NEW) -->
+    <CustomAction Id="RegisterClaudeExtension"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="powershell.exe -ExecutionPolicy Bypass -NoProfile -File &quot;[INSTALLFOLDER]install-extension.ps1&quot; -Version &quot;1.1.1&quot;"
+                  Execute="deferred"
+                  Return="ignore"
+                  Impersonate="yes" />
+
+    <!-- Custom Action: Auto-configure Claude Desktop (Legacy — kept for upgrade cleanup) -->
     <CustomAction Id="ConfigureClaudeDesktop"
                   Directory="INSTALLFOLDER"
                   ExeCommand="powershell.exe -ExecutionPolicy Bypass -NoProfile -File &quot;[INSTALLFOLDER]ConfigureClaudeDesktop.ps1&quot; -MCPServerPath &quot;[MCPSERVERFOLDER]index.js&quot;"
@@ -177,6 +191,7 @@
     
     <InstallExecuteSequence>
       <Custom Action="ConfigureClaudeDesktop" After="InstallFiles">NOT Installed OR REINSTALL</Custom>
+      <Custom Action="RegisterClaudeExtension" After="ConfigureClaudeDesktop">NOT Installed OR REINSTALL</Custom>
     </InstallExecuteSequence>
 
   </Product>

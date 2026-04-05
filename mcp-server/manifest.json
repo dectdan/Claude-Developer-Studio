@@ -1,0 +1,58 @@
+{
+  "manifest_version": "0.2",
+  "name": "claudedevstudio",
+  "display_name": "ClaudeDevStudio",
+  "version": "1.1.1",
+  "description": "Persistent memory for Claude AI across development sessions.",
+  "long_description": "ClaudeDevStudio gives Claude persistent memory of your development projects, solving the problem of losing context between chat sessions. It tracks activities, mistakes, patterns, and decisions so Claude always knows the history of your project.",
+  "author": {
+    "name": "Daniel E Gain",
+    "url": "https://claudedevstudio.com"
+  },
+  "homepage": "https://claudedevstudio.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dectdan/Claude-Developer-Studio"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"]
+    }
+  },
+  "tools": [
+    { "name": "claudedev_init",            "description": "Initialize ClaudeDevStudio memory for a project" },
+    { "name": "claudedev_load",            "description": "Load context from ClaudeDevStudio memory (call at session start)" },
+    { "name": "claudedev_record_activity", "description": "Record an activity/action taken during development" },
+    { "name": "claudedev_record_mistake",  "description": "Record a mistake/failed attempt with lesson learned" },
+    { "name": "claudedev_check_mistake",   "description": "Check if an action matches a prior mistake" },
+    { "name": "claudedev_stats",           "description": "Get memory statistics for current project" },
+    { "name": "claudedev_monitor_start",   "description": "Start monitoring Visual Studio debug output" },
+    { "name": "claudedev_speak",           "description": "Speak text aloud using on-machine TTS" },
+    { "name": "claudedev_vs_get_state",    "description": "Get current Visual Studio state" },
+    { "name": "claudedev_vs_get_errors",   "description": "Get Visual Studio Error List from last build" },
+    { "name": "claudedev_vs_get_output",   "description": "Get Visual Studio build output text" },
+    { "name": "claudedev_vs_get_events",   "description": "Get recent Visual Studio events" },
+    { "name": "claudedev_vs_get_debugger", "description": "Get full Visual Studio debugger state" },
+    { "name": "claudedev_vs_evaluate",     "description": "Evaluate an expression in the VS debugger frame" },
+    { "name": "claudedev_vs_command",      "description": "Send a command to Visual Studio" },
+    { "name": "claudedev_chat_checkpoint", "description": "Write a checkpoint to the chat mirror log" },
+    { "name": "claudedev_chat_resume",     "description": "Recover context after a context drop" },
+    { "name": "fetch_url",                 "description": "Fetch content from a URL" },
+    { "name": "qwen_generate",             "description": "Delegate a generation task to a specialized AI model" },
+    { "name": "display_review",            "description": "Send code or content to the CDS Review Panel" },
+    { "name": "display_image",             "description": "Send a generated image to the CDS Review Panel" },
+    { "name": "generate_image",            "description": "Generate an image using Fireworks SDXL" }
+  ],
+  "keywords": ["mcp", "claude", "development", "memory", "debugging"],
+  "license": "MIT",
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": ["win32"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}

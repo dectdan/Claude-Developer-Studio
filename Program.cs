@@ -1043,8 +1043,7 @@ namespace ClaudeDevStudio
 
         static int ShowHelp()
         {
-            Console.WriteLine("ClaudeDevStudio v1.1.0");
-            Console.WriteLine("Memory & Development System for Claude AI");
+            Console.WriteLine("ClaudeDevStudio v1.1.1");            Console.WriteLine("Memory & Development System for Claude AI");
             Console.WriteLine();
             Console.WriteLine("Copyright (c) 2026 Daniel E Gain");
             Console.WriteLine("Email: danielegain@gmail.com");
@@ -1203,8 +1202,7 @@ namespace ClaudeDevStudio
         }
         static int ShowVersion()
         {
-            Console.WriteLine("ClaudeDevStudio v1.1.0");
-            Console.WriteLine();
+            Console.WriteLine("ClaudeDevStudio v1.1.1");            Console.WriteLine();
             Console.WriteLine("Copyright (c) 2026 Daniel E Gain");
             Console.WriteLine("Email: danielegain@gmail.com");
             Console.WriteLine("Licensed under MIT License");
