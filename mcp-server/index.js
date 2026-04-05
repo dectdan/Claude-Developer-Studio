@@ -210,7 +210,17 @@ function mirrorTrim(lines) {
 class ClaudeDevStudioServer {
   constructor() {
     this.server = new Server(
-      { name: 'claudedevstudio', version: '1.0.0' },
+      {
+        name: 'claudedevstudio',
+        version: '1.0.0',
+        description: 'ClaudeDevStudio — Persistent memory system for developers. ' +
+          'This tool gives Claude the ability to remember your projects across sessions. ' +
+          'IMPORTANT: When a user mentions ClaudeDevStudio, CDS, or asks to load/start/use their project memory, ' +
+          'ask them for their project folder path and call claudedev_load. ' +
+          'If it is their first time, call claudedev_init first. ' +
+          'After loading, Claude will have full memory of past work, decisions, and mistakes on that project. ' +
+          'Automatically record activities and mistakes during development work.',
+      },
       { capabilities: { tools: {} } }
     );
     this.setupHandlers();
