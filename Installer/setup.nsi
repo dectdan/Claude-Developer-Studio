@@ -12,7 +12,7 @@ SetCompressor /SOLID lzma
 ; Metadata
 ;---------------------------------------------------------------------------
 !define PRODUCT_NAME      "ClaudeDevStudio"
-!define PRODUCT_VERSION   "1.1.0"
+!define PRODUCT_VERSION   "1.1.1"
 !define PRODUCT_PUBLISHER "Daniel E Gain"
 !define PRODUCT_URL       "https://github.com/dectdan/Claude-Developer-Studio"
 !define INSTALL_DIR       "$LocalAppData\ClaudeDevStudio"
@@ -180,6 +180,7 @@ Section "Install" SecMain
 
   SetOutPath "${INSTALL_DIR}"
   File /nonfatal "build\ConfigureClaudeDesktop.ps1"
+  File /nonfatal "build\install-extension.ps1"
 
   ;--- Step 4: npm install (only if node_modules wasn't bundled) ---
   ${IfNot} ${FileExists} "${INSTALL_DIR}\mcp-server\node_modules\*.*"
@@ -226,11 +227,11 @@ Section "Install" SecMain
     DetailPrint "Visual Studio 2022 not found -- VS Bridge skipped (optional)."
   ${EndIf}
 
-  ;--- Step 7: Configure Claude Desktop ---
-  DetailPrint "Configuring Claude Desktop..."
-  ; Pass $APPDATA explicitly - elevated PowerShell resolves $env:APPDATA to
-  ; admin profile, not user profile. NSIS $APPDATA is always the correct user path.
-  nsExec::ExecToLog 'powershell -ExecutionPolicy Bypass -NoProfile -File "${INSTALL_DIR}\ConfigureClaudeDesktop.ps1" -MCPServerPath "${MCP_INDEX}" -UserAppData "$APPDATA"'
+  ;--- Step 7: Register Claude Desktop Extension (NEW — replaces old claude_desktop_config.json approach) ---
+  DetailPrint "Registering ClaudeDevStudio as Claude Desktop extension..."
+  ; Pass $APPDATA and $LOCALAPPDATA from NSIS — elevated PowerShell resolves these
+  ; to the admin profile, not the current user. NSIS always has the correct user path.
+  nsExec::ExecToLog 'powershell -ExecutionPolicy Bypass -NoProfile -File "${INSTALL_DIR}\install-extension.ps1" -Version "${PRODUCT_VERSION}" -UserAppData "$APPDATA" -UserLocalAppData "$LOCALAPPDATA"'
 
   ;--- Step 8: Create data directories ---
   CreateDirectory "$DOCUMENTS\ClaudeDevStudio\Projects"
@@ -306,8 +307,15 @@ Section "Uninstall"
   RMDir /r "${INSTALL_DIR}\review-server"
   RMDir /r "${INSTALL_DIR}\VSExtension"
   Delete   "${INSTALL_DIR}\ConfigureClaudeDesktop.ps1"
+  Delete   "${INSTALL_DIR}\install-extension.ps1"
   Delete   "${INSTALL_DIR}\Uninstall.exe"
   RMDir    "${INSTALL_DIR}"
+
+  ; Remove Claude Desktop extension registration
+  RMDir /r "$APPDATA\Claude\Claude Extensions\ant.dir.gh.dectdan.claudedevstudio"
+  Delete   "$APPDATA\Claude\Claude Extensions Settings\ant.dir.gh.dectdan.claudedevstudio.json"
+  ; Remove entry from extensions-installations.json via PowerShell
+  nsExec::ExecToLog 'powershell -NoProfile -Command "$f=\"$env:APPDATA\Claude\extensions-installations.json\"; if(Test-Path $f){$j=Get-Content $f -Raw|ConvertFrom-Json; $j.extensions.PSObject.Properties.Remove(\"ant.dir.gh.dectdan.claudedevstudio\"); $j|ConvertTo-Json -Depth 20 -Compress|Set-Content $f -Encoding UTF8}"'
 
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ClaudeDevStudio"
   DeleteRegKey   HKCU "${UNINSTALL_KEY}"

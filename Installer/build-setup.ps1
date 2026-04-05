@@ -92,6 +92,7 @@ $mcpDest = "$Build\mcp-server"
 New-Item -ItemType Directory -Force -Path $mcpDest | Out-Null
 Copy-Item "$Root\mcp-server\index.js"      $mcpDest -Force
 Copy-Item "$Root\mcp-server\package.json"  $mcpDest -Force
+Copy-Item "$Root\mcp-server\manifest.json" $mcpDest -Force
 # Ship template (no API keys) - never ship real qwen_config.json
 if (Test-Path "$Root\mcp-server\qwen_config.template.json") {
     Copy-Item "$Root\mcp-server\qwen_config.template.json" "$mcpDest\qwen_config.json" -Force
@@ -105,9 +106,11 @@ if (Test-Path "$Root\mcp-server\node_modules") {
     Copy-Item "$Root\mcp-server\node_modules" "$mcpDest\node_modules" -Recurse -Force
 }
 Copy-Item "$Installer\ConfigureClaudeDesktop.ps1" "$Build\" -Force
+Copy-Item "$Installer\install-extension.ps1"      "$Build\" -Force
 Write-Host "  MCP server: OK" -ForegroundColor Green
 Copy-Item "$Installer\ConfigureClaudeDesktop.ps1" "$Build\" -Force
 Write-Host "  ConfigureClaudeDesktop.ps1: OK" -ForegroundColor Green
+Write-Host "  install-extension.ps1: OK" -ForegroundColor Green
 
 # ---- 6. Bundle Node.js installer ----
 Write-Host "`n[6/10] Bundling Node.js LTS..." -ForegroundColor Yellow
