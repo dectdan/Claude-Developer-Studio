@@ -1,6 +1,6 @@
 # Configure Claude Desktop for ClaudeDevStudio — direct MCP server entries
 param(
-  [string]$Version          = "1.2.0",
+  [string]$Version          = "1.2.1",
   [string]$UserAppData      = $env:APPDATA,
   [string]$UserLocalAppData = $env:LOCALAPPDATA
 )

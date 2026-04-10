@@ -9,7 +9,7 @@ SetCompressor /SOLID lzma
 ; Metadata
 ;---------------------------------------------------------------------------
 !define PRODUCT_NAME      "ClaudeDevStudio"
-!define PRODUCT_VERSION   "1.2.0"
+!define PRODUCT_VERSION   "1.2.1"
 !define PRODUCT_PUBLISHER "Daniel E Gain"
 !define PRODUCT_URL       "https://github.com/dectdan/Claude-Developer-Studio"
 !define INSTALL_DIR       "$LocalAppData\ClaudeDevStudio"

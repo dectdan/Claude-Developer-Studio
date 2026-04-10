@@ -20,10 +20,20 @@ const CDS_INSTALL_PATH = path.join(
   'ClaudeDevStudio'
 );
 
-const VS_BRIDGE_DIR = path.join(
-  process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\Default',
-  'Documents', 'ClaudeDevStudio', 'VSBridge'
-);
+// Documents may be redirected to OneDrive on some systems.
+// Check both standard locations and use whichever actually exists.
+function resolveVsBridgeDir() {
+  const base = process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\Default';
+  const candidates = [
+    path.join(base, 'OneDrive', 'Documents', 'ClaudeDevStudio', 'VSBridge'),
+    path.join(base, 'Documents', 'ClaudeDevStudio', 'VSBridge'),
+  ];
+  for (const dir of candidates) {
+    if (fs.existsSync(dir)) return dir;
+  }
+  return candidates[1]; // default fallback
+}
+const VS_BRIDGE_DIR = resolveVsBridgeDir();
 
 // Startup: check for AI keys
 (function checkApiKeys() {
