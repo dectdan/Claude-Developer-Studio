@@ -12,6 +12,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
+import { vsBridgeDir } from './cds-paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,20 +27,9 @@ const CDS_INSTALL_PATH = path.join(
   'ClaudeDevStudio'
 );
 
-// Documents may be redirected to OneDrive on some systems.
-// Check both standard locations and use whichever actually exists.
-function resolveVsBridgeDir() {
-  const base = process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\Default';
-  const candidates = [
-    path.join(base, 'OneDrive', 'Documents', 'ClaudeDevStudio', 'VSBridge'),
-    path.join(base, 'Documents', 'ClaudeDevStudio', 'VSBridge'),
-  ];
-  for (const dir of candidates) {
-    if (fs.existsSync(dir)) return dir;
-  }
-  return candidates[1]; // default fallback
-}
-const VS_BRIDGE_DIR = resolveVsBridgeDir();
+// The VS Bridge writes to [Documents]\ClaudeDevStudio\VSBridge, where [Documents] is the
+// folder Windows reports (it may be redirected anywhere, not only to OneDrive). Asked once,
+// on the first VS tool call, exactly as index.js asks for the memory folder (cds-paths.js).
 
 // Startup: check for AI keys
 (function checkApiKeys() {
@@ -254,7 +244,7 @@ class WorkbenchServer {
   }
 
   handleVsFile(filename) {
-    const filePath = path.join(VS_BRIDGE_DIR, filename);
+    const filePath = path.join(vsBridgeDir(),filename);
     if (!fs.existsSync(filePath)) return { content: [{ type: 'text', text: `[VS Bridge] ${filename} not found.` }] };
     try {
       const raw = fs.readFileSync(filePath, 'utf8');
@@ -267,7 +257,7 @@ class WorkbenchServer {
   }
 
   handleVsErrors() {
-    const errFile = path.join(VS_BRIDGE_DIR, 'vs_errors.json');
+    const errFile = path.join(vsBridgeDir(),'vs_errors.json');
     if (!fs.existsSync(errFile)) return { content: [{ type: 'text', text: '[VS Bridge] vs_errors.json not found.' }] };
     try {
       const snap = JSON.parse(fs.readFileSync(errFile, 'utf8'));
@@ -289,7 +279,7 @@ class WorkbenchServer {
   }
 
   handleVsOutput(args) {
-    const outFile = path.join(VS_BRIDGE_DIR, 'vs_build_output.txt');
+    const outFile = path.join(vsBridgeDir(),'vs_build_output.txt');
     if (!fs.existsSync(outFile)) return { content: [{ type: 'text', text: '[VS Bridge] vs_build_output.txt not found.' }] };
     try {
       const lines = fs.readFileSync(outFile, 'utf8').split('\n');
@@ -301,7 +291,7 @@ class WorkbenchServer {
   }
 
   handleVsEvents(args) {
-    const eventsFile = path.join(VS_BRIDGE_DIR, 'vs_events.jsonl');
+    const eventsFile = path.join(vsBridgeDir(),'vs_events.jsonl');
     if (!fs.existsSync(eventsFile)) return { content: [{ type: 'text', text: '[VS Bridge] vs_events.jsonl not found.' }] };
     try {
       const since = (args && args.since) ? new Date(args.since) : null;

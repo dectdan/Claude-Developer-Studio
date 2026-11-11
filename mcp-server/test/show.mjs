@@ -1,4 +1,5 @@
-// Prints what a tool returns, for eyeballing output. Read-only tools only.
+// Prints what a tool returns, and its length in characters, for eyeballing output.
+// Read-only tools only (claudedev_load also saves the project's session_state.json, as every load does).
 //   node mcp-server\test\show.mjs <tool> <project_path> [action_description]
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -16,6 +17,8 @@ await client.connect(new StdioClientTransport({ command: process.execPath, args:
 const args = { project_path: project };
 if (tool === 'claudedev_check_mistake') args.action_description = extra || '';
 const r = await client.callTool({ name: tool, arguments: args });
-console.log(r.isError ? '[isError]' : '[ok]');
-console.log(r.content?.[0]?.text ?? '');
+const out = r.content?.[0]?.text ?? '';
+// The length is what load's size budget measures (it aims at 8,000 characters, at most 12,000).
+console.log(`${r.isError ? '[isError]' : '[ok]'} ${out.length} characters`);
+console.log(out);
 await client.close();

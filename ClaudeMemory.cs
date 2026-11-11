@@ -301,83 +301,146 @@ namespace ClaudeDevStudio.Memory
                 if (_sessionState.ContextUsage.ShouldHandoff)
                 {
                     Console.WriteLine("⚠️ Context usage critical - handoff recommended");
-                    PrepareHandoff();
+                    var wrote = WriteAutomaticHandoff(out var auto);
+                    Console.WriteLine(wrote
+                        ? $"📄 Automatic handoff {auto.Id} written: {HandoffPath}"
+                        : $"📄 Automatic handoff {auto.Id} saved in HANDOFFS.jsonl; the explicit handoff in {HandoffPath} is kept");
                 }
             }
         }
 
-        private void PrepareHandoff()
+        #endregion
+
+        #region Handoffs
+
+        // One format for every handoff (see Handoff in MemorySchemas.cs). The first line of
+        // session_handoff.md says which kind it holds, so an automatic handoff can tell that
+        // it must not replace an explicit one.
+        private const string HandoffMarkerExplicit = "<!-- cds-handoff: explicit -->";
+        private const string HandoffMarkerAuto = "<!-- cds-handoff: auto -->";
+
+        /// <summary>session_handoff.md: the latest handoff, shown first by claudedev_load.</summary>
+        public string HandoffPath => Path.Combine(_memoryPath, "session_handoff.md");
+
+        private string HandoffHistoryPath => Path.Combine(_memoryPath, "HANDOFFS.jsonl");
+
+        /// <summary>
+        /// An explicit handoff (written by Claude): appended to HANDOFFS.jsonl and written to
+        /// session_handoff.md, replacing whatever handoff was there.
+        /// </summary>
+        public void RecordHandoff(Handoff handoff)
         {
-            var handoffPath = Path.Combine(_memoryPath, "session_handoff.md");
-            var handoff = GenerateHandoffDocument();
-            File.WriteAllText(handoffPath, handoff);
-            Console.WriteLine($"📄 Handoff document created: {handoffPath}");
+            handoff.Id = $"HND{NextIdNumber(HandoffHistoryPath, "HND"):D3}";
+            handoff.Timestamp = DateTime.Now;
+            handoff.Source = Handoff.Explicit;
+            handoff.WhereIStopped = (handoff.WhereIStopped ?? string.Empty).Trim();
+            handoff.NextStep = (handoff.NextStep ?? string.Empty).Trim();
+            handoff.OpenQuestions = (handoff.OpenQuestions ?? new List<string>())
+                .Where(q => !string.IsNullOrWhiteSpace(q)).Select(q => q.Trim()).ToList();
+            handoff.Notes = string.IsNullOrWhiteSpace(handoff.Notes) ? null : handoff.Notes.Trim();
+
+            AppendJsonLine(HandoffHistoryPath, handoff);
+            File.WriteAllText(HandoffPath, RenderHandoff(handoff));
         }
 
-        private string GenerateHandoffDocument()
+        /// <summary>
+        /// An automatic handoff, built from the session state. Always appended to
+        /// HANDOFFS.jsonl. Written to session_handoff.md only when that file doesn't hold an
+        /// explicit handoff: returns false when the explicit one was kept.
+        /// </summary>
+        public bool WriteAutomaticHandoff(out Handoff handoff)
         {
+            handoff = BuildAutomaticHandoff();
+            handoff.Id = $"HND{NextIdNumber(HandoffHistoryPath, "HND"):D3}";
+            handoff.Timestamp = DateTime.Now;
+            handoff.Source = Handoff.Automatic;
+
+            AppendJsonLine(HandoffHistoryPath, handoff);
+            if (LatestHandoffIsExplicit())
+                return false;
+
+            File.WriteAllText(HandoffPath, RenderHandoff(handoff));
+            return true;
+        }
+
+        private bool LatestHandoffIsExplicit()
+        {
+            if (!File.Exists(HandoffPath))
+                return false;
+            var first = File.ReadLines(HandoffPath).FirstOrDefault(l => !string.IsNullOrWhiteSpace(l));
+            return first != null && first.Trim().TrimStart('﻿') == HandoffMarkerExplicit;
+        }
+
+        private Handoff BuildAutomaticHandoff()
+        {
+            var task = _sessionState.CurrentTask;
+            var recent = GetRecentActivities(5);
+            var last = recent.FirstOrDefault();
+
+            var where = task != null && !string.IsNullOrWhiteSpace(task.Description)
+                ? $"{task.Description} (status: {task.Status})"
+                : last != null
+                    ? $"Last recorded activity: [{last.Timestamp:HH:mm}] {last.Action}: {OneLine(last.Description, 300)}"
+                    : "No task or activity was recorded in this session.";
+
+            var next = task != null && task.NextSteps.Any()
+                ? string.Join("; ", task.NextSteps)
+                : "Not recorded (an automatic handoff knows only the session state): read the project's ground truth, Status and Next.";
+
+            var questions = _sessionState.DecisionsPending.Select(d => d.Question)
+                .Concat(task?.Blockers.Select(b => $"Blocker: {b}") ?? Enumerable.Empty<string>())
+                .Where(q => !string.IsNullOrWhiteSpace(q))
+                .ToList();
+
+            var notes = new StringBuilder();
+            if (task != null && task.FilesModified.Any())
+                notes.AppendLine($"Files modified: {string.Join(", ", task.FilesModified)}");
+            if (recent.Any())
+            {
+                notes.AppendLine("Recent activity today:");
+                foreach (var a in recent)
+                    notes.AppendLine($"- [{a.Timestamp:HH:mm}] {a.Action}: {OneLine(a.Description, 200)}");
+            }
+
+            return new Handoff
+            {
+                WhereIStopped = where,
+                NextStep = next,
+                OpenQuestions = questions,
+                Notes = notes.Length > 0 ? notes.ToString().TrimEnd() : null
+            };
+        }
+
+        private string RenderHandoff(Handoff h)
+        {
+            var explicitOne = h.Source == Handoff.Explicit;
             var sb = new StringBuilder();
-            sb.AppendLine($"# Session Handoff - {_projectName}");
-            sb.AppendLine($"*Generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss}*");
+            sb.AppendLine(explicitOne ? HandoffMarkerExplicit : HandoffMarkerAuto);
+            sb.AppendLine($"# Handoff: {_projectName}");
+            sb.AppendLine($"*Written {h.Timestamp:yyyy-MM-dd HH:mm} ({(explicitOne ? "explicit" : "automatic, from the session state")}) · {h.Id}*");
             sb.AppendLine();
-
-            if (_sessionState.CurrentTask != null)
+            sb.AppendLine($"**Where I stopped:** {h.WhereIStopped}");
+            sb.AppendLine();
+            sb.AppendLine($"**Next step:** {h.NextStep}");
+            if (h.OpenQuestions.Any())
             {
-                sb.AppendLine("## Current Task");
-                sb.AppendLine($"**Status:** {_sessionState.CurrentTask.Status}");
-                sb.AppendLine($"**Description:** {_sessionState.CurrentTask.Description}");
                 sb.AppendLine();
-
-                if (_sessionState.CurrentTask.NextSteps.Any())
-                {
-                    sb.AppendLine("**Next Steps:**");
-                    foreach (var step in _sessionState.CurrentTask.NextSteps)
-                    {
-                        sb.AppendLine($"- {step}");
-                    }
-                    sb.AppendLine();
-                }
-
-                if (_sessionState.CurrentTask.FilesModified.Any())
-                {
-                    sb.AppendLine("**Files Modified:**");
-                    foreach (var file in _sessionState.CurrentTask.FilesModified)
-                    {
-                        sb.AppendLine($"- {file}");
-                    }
-                    sb.AppendLine();
-                }
-
-                if (_sessionState.CurrentTask.Blockers.Any())
-                {
-                    sb.AppendLine("**Blockers:**");
-                    foreach (var blocker in _sessionState.CurrentTask.Blockers)
-                    {
-                        sb.AppendLine($"- ⚠️ {blocker}");
-                    }
-                    sb.AppendLine();
-                }
+                sb.AppendLine("**Open questions:**");
+                foreach (var q in h.OpenQuestions)
+                    sb.AppendLine($"- {q}");
             }
-
-            if (_sessionState.DecisionsPending.Any())
+            if (!string.IsNullOrWhiteSpace(h.Notes))
             {
-                sb.AppendLine("## Pending Decisions");
-                foreach (var decision in _sessionState.DecisionsPending)
-                {
-                    sb.AppendLine($"- {decision.Question}");
-                }
                 sb.AppendLine();
+                sb.AppendLine($"**Notes:** {h.Notes}");
             }
-
-            sb.AppendLine("## Recent Activity");
-            sb.AppendLine("See Activity logs for details. Key recent actions:");
-            var recentActivities = GetRecentActivities(10);
-            foreach (var activity in recentActivities)
-            {
-                sb.AppendLine($"- [{activity.Timestamp:HH:mm}] {activity.Action}: {activity.Description}");
-            }
-
             return sb.ToString();
+        }
+
+        private static string OneLine(string? s, int max)
+        {
+            var t = string.Join(" ", (s ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+            return t.Length > max ? t[..max] + "..." : t;
         }
 
         #endregion

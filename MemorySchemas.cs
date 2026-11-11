@@ -359,6 +359,46 @@ namespace ClaudeDevStudio.Memory
 
     #endregion
 
+    #region Handoffs
+
+    /// <summary>
+    /// Where a session stopped and what comes next.
+    /// Files: HANDOFFS.jsonl (every handoff, the history) and session_handoff.md (the latest
+    /// one, rendered as short markdown; claudedev_load shows it first).
+    /// Source "explicit": written by Claude (record handoff, the claudedev_handoff tool).
+    /// Source "auto": written by the CLI from the session state (the handoff command, or a
+    /// context-usage warning). An automatic handoff never replaces an explicit one in
+    /// session_handoff.md; it is still kept in HANDOFFS.jsonl.
+    /// </summary>
+    public class Handoff
+    {
+        public const string Explicit = "explicit";
+        public const string Automatic = "auto";
+
+        [JsonPropertyName("id")]
+        public string Id { get; set; } = string.Empty; // HND001, HND002
+
+        [JsonPropertyName("timestamp")]
+        public DateTime Timestamp { get; set; }
+
+        [JsonPropertyName("source")]
+        public string Source { get; set; } = Explicit;
+
+        [JsonPropertyName("where_i_stopped")]
+        public string WhereIStopped { get; set; } = string.Empty;
+
+        [JsonPropertyName("next_step")]
+        public string NextStep { get; set; } = string.Empty;
+
+        [JsonPropertyName("open_questions")]
+        public List<string> OpenQuestions { get; set; } = new();
+
+        [JsonPropertyName("notes")]
+        public string? Notes { get; set; }
+    }
+
+    #endregion
+
     #region Performance
 
     /// <summary>

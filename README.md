@@ -32,7 +32,7 @@ The first time, CDS creates the project's memory. After that, Claude sees the re
 
 | Part | What it does |
 |---|---|
-| `claudedevstudio` server | The memory: load, record activity, record and check mistakes, stats, chat checkpoints. |
+| `claudedevstudio` server | The memory: load (with the project's ground truth), record activity, record and check mistakes, record decisions, handoffs between sessions, the ground-truth scaffold, stats, chat checkpoints. |
 | `cds-workbench` server | Visual Studio state, errors, output, debugger and commands (needs the VS Bridge); showing code and images in the Review Panel; sending a task to another AI provider; fetching a web page. |
 | VS Bridge | A Visual Studio extension that shares build errors, output and debugger state with Claude. It answers only programs on your own PC, not web pages. |
 | Review Panel | A local page (`http://127.0.0.1:63000`) where code and images from Claude appear. |
@@ -54,9 +54,18 @@ The workbench can send tasks to Together, Groq, DeepInfra, Fireworks or OpenRout
 
 Settings › Apps › ClaudeDevStudio › Uninstall (or the Uninstall shortcut in the Start menu). It removes the program and its two entries in Claude Desktop's settings (your other servers stay), and removes the VS Bridge from Visual Studio. **Your memory in `Documents\ClaudeDevStudio` is kept.** The AI keys file is removed with the program. Node.js and .NET stay installed.
 
-## The way of working CDS encourages
+## Working with ground truths
 
-Keep a `docs\GROUND_TRUTH.md` in each project (what it is, its status, decisions, known problems, the plan), and give Claude work as phased prompts (`docs\P1_prompt.md` → `docs\P1_OUTPUT.md`). CDS v1.4 will help set this up.
+CDS works best when each project keeps its state in one file, `docs\GROUND_TRUTH.md`: what the project is, its status (dated lines, newest last, ending with a **Next:** line), decisions, open questions, known problems and the plan.
+
+**What load shows**, in this order and kept short (it aims at 8,000 characters and never passes 12,000): the last handoff and how old it is; the ground truth's title, "Last updated" line, the end of its Status section and its Next line, and the questions still open; the newest `docs\P*_OUTPUT.md` (its first section and a list of the rest); then the recorded mistakes, decisions, patterns and recent activity. Anything cut says which file holds the rest.
+
+**No ground truth yet?** Load says so, and Claude offers `claudedev_scaffold`. With your OK it creates `docs\GROUND_TRUTH.md`, `docs\CONVENTIONS.md` (how code gets written: read before editing, back up, verify, no secrets) and `docs\HOW_WE_WORK.md` (the loop below) from short templates. It never overwrites a file, and it never runs without your OK: it's your repository.
+
+**The loop:**
+1. A planning session writes the next prompt, `docs\Pn_prompt.md`.
+2. Claude Code carries it out and writes `docs\Pn_OUTPUT.md` (your steps first, results with evidence, what wasn't done), then updates the ground truth.
+3. The planner checks the output and writes the next prompt. Before stopping, Claude writes a handoff (`claudedev_handoff`), so the next session starts where this one stopped.
 
 ## Problems and questions
 

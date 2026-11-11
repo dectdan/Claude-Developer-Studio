@@ -6,7 +6,10 @@
 //   node mcp-server\test\smoke.mjs <path\index.js> (tests another copy, e.g. the installed one)
 //   node mcp-server\test\smoke.mjs --cli bin\Release\net8.0\claudedev.exe
 //        (tests a freshly built CLI before it is installed: the server gets CDS_CLI_PATH,
-//         and the CLI checks added in P1 run too)
+//         and the CLI checks added in P1 and P3 run too)
+//
+// P3 adds throwaway projects of its own (a hand-made ground truth, a big project for the size
+// budget), all in %TEMP%; their memory folders are removed at the end too.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -33,6 +36,25 @@ fs.mkdirSync(scratch, { recursive: true });
 
 const docs = execFileSync('powershell.exe', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('MyDocuments')"], { encoding: 'utf8' }).trim();
 const memDir = path.join(docs, 'ClaudeDevStudio', 'Projects', scratchName);
+
+// More throwaway projects (P3): each is a folder in %TEMP% with a memory folder of the same name.
+const extraProjects = [];
+const makeProject = (suffix) => {
+  const name = `${scratchName}_${suffix}`;
+  const dir = path.join(os.tmpdir(), name);
+  fs.mkdirSync(dir, { recursive: true });
+  const mem = path.join(docs, 'ClaudeDevStudio', 'Projects', name);
+  extraProjects.push({ dir, mem });
+  return { dir, mem };
+};
+const write = (file, content) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, content, 'utf8'); };
+const listTree = (root) => {
+  const out = [];
+  const walk = (d, rel) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const r = rel ? `${rel}\\${e.name}` : e.name; out.push(r); if (e.isDirectory()) walk(path.join(d, e.name), r); } };
+  walk(root, '');
+  return out.sort();
+};
+const TOOL_COUNT = 12; // 9 before P3 + claudedev_scaffold, claudedev_handoff, claudedev_record_decision
 
 let passed = 0, failed = 0;
 const check = (label, ok, detail = '') => {
@@ -65,12 +87,13 @@ const call = async (name, args) => {
 
 try {
   const { tools } = await client.listTools();
-  check('lists 9 tools', tools.length === 9, tools.map(t => t.name).join(', '));
+  check(`lists ${TOOL_COUNT} tools`, tools.length === TOOL_COUNT, tools.map(t => t.name).join(', '));
   check('server sends instructions', /claudedev_load/.test(client.getInstructions() || ''));
 
   let r = await call('claudedev_load', { project_path: scratch + '\\' });
   check('load creates memory for a new project (trailing backslash ok)', !r.isError && /created just now/.test(r.text) && fs.existsSync(path.join(memDir, 'session_state.json')), r.text);
   check('memory is in the real Documents folder', r.text.includes(memDir), r.text);
+  const noGtLoad = r;
 
   r = await call('claudedev_record_activity', { project_path: scratch, action: 'code_change', description: 'Edited "Main.cs" in C:\\Program Files\\x\nsecond line', file: 'src\\Main.cs' });
   check('record_activity succeeds', !r.isError, r.text);
@@ -157,6 +180,169 @@ try {
   } else {
     console.log('\n(P1 CLI checks skipped: run with --cli <path to a newly built claudedev.exe>)');
   }
+
+  // ---- Checks added in P3: what load shows, scaffold, decisions, the size budget ----
+  // (index.js only, except the handoff checks, which need the new CLI: --cli)
+  console.log('\n-- P3 checks --');
+  const pad = (n) => String(n).padStart(2, '0');
+  const now = new Date();
+  const localToday = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const THREE = ['GROUND_TRUTH.md', 'CONVENTIONS.md', 'HOW_WE_WORK.md'];
+
+  check('load with no ground truth offers the scaffold (create only if the user agrees)',
+    /--- No ground truth ---/.test(noGtLoad.text) && /claudedev_scaffold/.test(noGtLoad.text) && /only if the user agrees/.test(noGtLoad.text),
+    noGtLoad.text);
+
+  // scaffold
+  const treeBefore = listTree(scratch);
+  r = await call('claudedev_scaffold', { project_path: scratch, summary: 'A throwaway project for the smoke test.' });
+  const treeAfter = listTree(scratch);
+  check('scaffold creates the three files',
+    !r.isError && THREE.every(f => fs.existsSync(path.join(scratch, 'docs', f))) && /Created: docs\\GROUND_TRUTH\.md, docs\\CONVENTIONS\.md, docs\\HOW_WE_WORK\.md/.test(r.text) && /sections 1–3/.test(r.text),
+    r.text);
+  const added = treeAfter.filter(x => !treeBefore.includes(x));
+  check('scaffold touches nothing outside docs\\',
+    treeBefore.length === 0 && added.length === 4 && added.every(x => x === 'docs' || x.startsWith('docs\\')),
+    `before: [${treeBefore.join(', ')}]\nadded: [${added.join(', ')}]`);
+  const scaffolded = fs.readFileSync(path.join(scratch, 'docs', 'GROUND_TRUTH.md'), 'utf8');
+  check('scaffold fills in the project, the date and the summary',
+    scaffolded.includes(`# ${scratchName} — Ground Truth`) && scaffolded.includes(`Last updated: ${localToday}`) &&
+    scaffolded.includes('A throwaway project for the smoke test.') && !/\{\{/.test(scaffolded),
+    scaffolded.slice(0, 600));
+  const snapshot = () => THREE.map(f => fs.readFileSync(path.join(scratch, 'docs', f), 'utf8')).join('\u0000');
+  const contentBefore = snapshot();
+  r = await call('claudedev_scaffold', { project_path: scratch, title: 'Another title' });
+  check('scaffold a second time skips all three and changes nothing',
+    !r.isError && /Created: nothing/.test(r.text) && (r.text.match(/already there, not changed/g) || []).length === 3 &&
+    snapshot() === contentBefore && listTree(scratch).join('|') === treeAfter.join('|'),
+    r.text);
+
+  r = await call('claudedev_load', { project_path: scratch });
+  {
+    const iStatus = r.text.indexOf('## 2. Status');
+    const iMem = r.text.indexOf('--- Mistakes to avoid');
+    check('load with a scaffolded ground truth shows its Status before the memory sections',
+      !r.isError && iStatus > 0 && iMem > iStatus && /\*\*Next:\*\* fill in sections 1–3/.test(r.text) &&
+      r.text.includes('--- Ground truth: docs\\GROUND_TRUTH.md ---') && !/No ground truth/.test(r.text) && !/No docs\\CONVENTIONS/.test(r.text),
+      r.text.slice(0, 2000));
+  }
+
+  // decisions (the installed v1.3.0 CLI can record them too)
+  r = await call('claudedev_record_decision', { project_path: scratch, decision: 'Keep the store as plain JSON lines', why: 'Easy to append and to read back by hand', alternatives: ['SQLite', 'one JSON file'], file: 'ClaudeMemory.cs' });
+  const r2 = await call('claudedev_record_decision', { project_path: scratch, decision: 'Keep load short', why: 'Context costs tokens every session' });
+  const decs = fs.existsSync(path.join(memDir, 'DECISIONS.jsonl'))
+    ? fs.readFileSync(path.join(memDir, 'DECISIONS.jsonl'), 'utf8').split('\n').filter(l => l.trim()).map(l => JSON.parse(l)) : [];
+  check('record_decision is written by the CLI with DEC### IDs (two decisions, two IDs)',
+    !r.isError && !r2.isError && decs.length === 2 && decs.every(d => /^DEC\d{3,}$/.test(d.id)) && new Set(decs.map(d => d.id)).size === 2 &&
+    decs[0].decision === 'Keep the store as plain JSON lines' && decs[0].chose === decs[0].decision &&
+    decs[0].reasoning === 'Easy to append and to read back by hand' && decs[0].alternatives_considered.join('|') === 'SQLite|one JSON file' && decs[0].file === 'ClaudeMemory.cs',
+    `${r.text}\n${r2.text}\n${JSON.stringify(decs)}`);
+  r = await call('claudedev_load', { project_path: scratch });
+  check('load shows the decisions with their reasons, newest first',
+    /--- Decisions \(newest 2 of 2\) ---/.test(r.text) && /DEC\d{3} Keep load short \| why: Context costs tokens/.test(r.text) &&
+    /Keep the store as plain JSON lines \| why: Easy to append/.test(r.text) && r.text.indexOf('Keep load short') < r.text.indexOf('Keep the store'),
+    r.text.slice(-1500));
+
+  r = await call('claudedev_handoff', { project_path: scratch, where_i_stopped: 'somewhere' });
+  check('handoff without next_step is refused', r.isError && /next_step/.test(r.text), r.text);
+
+  // handoffs (need the new CLI's "record ... handoff")
+  if (cliPath) {
+    r = await call('claudedev_handoff', { project_path: scratch, where_i_stopped: 'Smoke handoff: wrote the parser', next_step: 'Smoke handoff: test the parser', open_questions: ['Which cap?'], notes: 'Nothing else.' });
+    const hist = () => fs.existsSync(path.join(memDir, 'HANDOFFS.jsonl'))
+      ? fs.readFileSync(path.join(memDir, 'HANDOFFS.jsonl'), 'utf8').split('\n').filter(l => l.trim()).map(l => JSON.parse(l)) : [];
+    check('handoff is saved by the CLI (session_handoff.md and HANDOFFS.jsonl)',
+      !r.isError && /HND\d{3}/.test(r.text) && fs.existsSync(path.join(memDir, 'session_handoff.md')) && hist().length === 1 && hist()[0].source === 'explicit',
+      r.text);
+    r = await call('claudedev_load', { project_path: scratch });
+    const iH = r.text.indexOf('--- Last handoff (just now');
+    const iG = r.text.indexOf('--- Ground truth');
+    check('the next load shows the handoff first, with its age',
+      iH > 0 && iH < iG && iG < r.text.indexOf('--- Mistakes') && /explicit\) ---/.test(r.text) &&
+      /\*\*Where I stopped:\*\* Smoke handoff: wrote the parser/.test(r.text) && /\*\*Next step:\*\* Smoke handoff: test the parser/.test(r.text) && /- Which cap\?/.test(r.text),
+      r.text.slice(0, 1500));
+    const c = cli('handoff', scratch);
+    r = await call('claudedev_load', { project_path: scratch });
+    check('an automatic handoff (claudedev handoff) never replaces the explicit one',
+      c.code === 0 && /explicit handoff is kept/.test(c.out) && /wrote the parser/.test(r.text) && /explicit\) ---/.test(r.text) &&
+      hist().map(h => h.source).join(',') === 'explicit,auto',
+      `${c.out}\n${r.text.slice(0, 800)}`);
+  } else {
+    console.log('SKIP  handoff checks (need the new CLI: --cli): "handoff is saved by the CLI", "the next load shows the handoff first, with its age", "an automatic handoff never replaces the explicit one"');
+  }
+
+  // A hand-made ground truth: a numbered Status heading, a Next line near its top, a long log.
+  const hand = makeProject('handmade');
+  const statusLog = [];
+  for (let i = 1; i <= 80; i++) statusLog.push(`- **2026-01-${pad((i % 28) + 1)}, step ${i}:** did thing number ${i}, with enough words to make a line of about ninety.`);
+  write(path.join(hand.dir, 'docs', 'GROUND_TRUTH.md'), [
+    '# Handmade — Ground Truth', '', '*Last updated: 2026-02-02 (made by hand for the smoke test)*', '', '---', '',
+    '## 1. What This Is', '', 'A test project.', '', '---', '',
+    '## 2. Status', '', '**Next:** ship the handmade widget.', '', ...statusLog, '', '---', '',
+    '## 5. Open Questions', '', '1. ~~A settled question~~ **Decided:** yes.', '2. **Still open:** which colour for the widget?', '', '---', '',
+    '## 6. Known Problems', '', '1. Nothing yet.', '',
+  ].join('\r\n'));
+  const p1 = path.join(hand.dir, 'docs', 'P1_OUTPUT.md');
+  write(p1, '# P1 output: the older one\n\n## For the owner\n\nOld steps.\n');
+  const old = new Date(Date.now() - 3 * 86400000);
+  fs.utimesSync(p1, old, old);
+  write(path.join(hand.dir, 'docs', 'P2_OUTPUT.md'), '# P2 output: the newest one\n\n*2026-02-02.*\n\n## For the owner\n\n1. Run the newest step.\n\n## Results\n\nAll good.\n\n## Not done\n\nNothing.\n');
+  r = await call('claudedev_load', { project_path: hand.dir });
+  check('load with a hand-made "## 2. Status": the last Status lines and the Next line',
+    !r.isError && /## 2\. Status \(the last lines\)/.test(r.text) && /step 80:/.test(r.text) && !/step 1:/.test(r.text) &&
+    /Next: ship the handmade widget\./.test(r.text) && /Last updated: 2026-02-02/.test(r.text) && /\[\.\.\. earlier lines: docs\\GROUND_TRUTH\.md, line \d+\]/.test(r.text),
+    r.text.slice(0, 3500));
+  check('load shows only the still-open questions',
+    /which colour for the widget/.test(r.text) && !/A settled question/.test(r.text), r.text.slice(0, 4000));
+  check('load shows the newest Pn_OUTPUT.md: title, first section, the other headings',
+    /--- Newest output: docs\\P2_OUTPUT\.md/.test(r.text) && /# P2 output: the newest one/.test(r.text) && /Run the newest step/.test(r.text) &&
+    /Other sections: Results · Not done/.test(r.text) && !/P1 output/.test(r.text) && /No docs\\CONVENTIONS\.md or docs\\HOW_WE_WORK\.md/.test(r.text),
+    r.text.slice(0, 4500));
+
+  // The size budget: 500 activities, 100 mistakes, a 40 KB ground truth under another name, a handoff.
+  const big = makeProject('budget');
+  const filler = 'lorem ipsum dolor sit amet consectetur adipiscing elit ';
+  const bigLines = ['# Big — Ground Truth (READ FIRST)', '', '*Last updated: 2026-03-30*', '', '## 1. What This Is', '', filler.repeat(10), '', '## 2. Status', ''];
+  for (let i = 1; i <= 250; i++) bigLines.push(`- **2026-03-${pad((i % 28) + 1)}, entry ${i}:** ${filler.repeat(2)}`);
+  bigLines.push('', '**Next:** the big next step.', '', '## 3. Architecture', '');
+  while (bigLines.join('\n').length < 40 * 1024) bigLines.push(`- ${filler.repeat(3)}`);
+  const bigGt = path.join(big.dir, 'docs', 'BIG - GROUND TRUTH (READ FIRST).md');
+  write(bigGt, bigLines.join('\n'));
+  r = await call('claudedev_load', { project_path: big.dir }); // creates the memory
+  for (let d = 0; d < 5; d++) {
+    const lines = [];
+    for (let k = 0; k < 100; k++) {
+      const n = d * 100 + k;
+      lines.push(JSON.stringify({ id: `ACT2026030${d + 1}_${pad(k)}`, timestamp: new Date(Date.UTC(2026, 2, d + 1, 8, k)).toISOString(), action: 'code_change', description: `budget activity ${n}: ${filler.repeat(4)}`, file: 'src\\Some\\File.cs' }));
+    }
+    write(path.join(big.mem, 'Activity', `2026-03-0${d + 1}.jsonl`), lines.join('\n') + '\n');
+  }
+  write(path.join(big.mem, 'MISTAKES.jsonl'), Array.from({ length: 100 }, (_, k) => JSON.stringify({
+    id: `ERR${String(k + 1).padStart(3, '0')}`, timestamp: new Date(Date.UTC(2026, 2, 1, 9, k)).toISOString(),
+    mistake: `budget mistake ${k}: ${filler.repeat(3)}`, impact: filler, fix: filler, lesson: `budget lesson ${k}: ${filler.repeat(3)}`, severity: 'medium',
+  })).join('\n') + '\n');
+  write(path.join(big.mem, 'DECISIONS.jsonl'), Array.from({ length: 20 }, (_, k) => JSON.stringify({
+    id: `DEC${String(k + 1).padStart(3, '0')}`, timestamp: new Date(Date.UTC(2026, 2, 2, 9, k)).toISOString(), decision: `budget decision ${k}: ${filler.repeat(2)}`, chose: '', reasoning: filler.repeat(2), alternatives_considered: [],
+  })).join('\n') + '\n');
+  write(path.join(big.mem, 'PATTERNS.jsonl'), Array.from({ length: 20 }, (_, k) => JSON.stringify({ id: `PAT${String(k + 1).padStart(3, '0')}`, pattern: `budget pattern ${k}: ${filler.repeat(2)}`, confidence: 50 + k })).join('\n') + '\n');
+  const longNotes = filler.repeat(60);
+  if (cliPath) {
+    r = await call('claudedev_handoff', { project_path: big.dir, where_i_stopped: `budget handoff where: ${filler.repeat(3)}`, next_step: 'budget handoff next', notes: longNotes });
+    if (r.isError) check('budget: handoff saved', false, r.text);
+  } else {
+    write(path.join(big.mem, 'session_handoff.md'), `<!-- cds-handoff: explicit -->\n# Handoff: big\n*Written ${localToday} 08:00 (explicit) · HND001*\n\n**Where I stopped:** budget handoff where: ${filler.repeat(3)}\n\n**Next step:** budget handoff next\n\n**Notes:** ${longNotes}\n`);
+  }
+  r = await call('claudedev_load', { project_path: big.dir });
+  const iHandoff = r.text.indexOf('--- Last handoff');
+  const iStatus = r.text.indexOf('## 2. Status');
+  console.log(`      (budget project: load is ${r.text.length} characters; ground truth ${fs.statSync(bigGt).size} bytes)`);
+  check(`the budget: 500 activities, 100 mistakes, a 40 KB ground truth give a load of 12,000 characters or less (${r.text.length})`,
+    !r.isError && fs.statSync(bigGt).size >= 40 * 1024 && r.text.length <= 12000 &&
+    iHandoff > 0 && /budget handoff where/.test(r.text) && /budget handoff next/.test(r.text) &&
+    iStatus > iHandoff && /entry 250:/.test(r.text) && /\*\*Next:\*\* the big next step\./.test(r.text) &&
+    r.text.includes('--- Ground truth: docs\\BIG - GROUND TRUTH (READ FIRST).md ---') &&
+    /older in .*MISTAKES\.jsonl/.test(r.text) && /\[\.\.\. the rest: /.test(r.text),
+    r.text);
 } catch (e) {
   check('no exception', false, e.stack || e.message);
 } finally {
@@ -164,6 +350,10 @@ try {
   try { fs.rmSync(memDir, { recursive: true, force: true }); } catch { /* leave it */ }
   try { if (createdLegacy) fs.rmSync(legacyDir, { recursive: true, force: true }); } catch { /* leave it */ }
   try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* leave it */ }
+  for (const x of extraProjects) {
+    try { fs.rmSync(x.mem, { recursive: true, force: true }); } catch { /* leave it */ }
+    try { fs.rmSync(x.dir, { recursive: true, force: true }); } catch { /* leave it */ }
+  }
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

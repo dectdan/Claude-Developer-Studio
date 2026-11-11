@@ -79,8 +79,13 @@ Step '[5/7] MCP servers, Review Panel, scripts'
 $mcpSrc  = Join-Path $Root 'mcp-server'
 $mcpDest = Join-Path $Build 'mcp-server'
 New-Item -ItemType Directory -Force -Path $mcpDest | Out-Null
-foreach ($f in 'index.js', 'workbench.js', 'package.json', 'package-lock.json', 'manifest.json', 'qwen_config.template.json') {
+foreach ($f in 'index.js', 'workbench.js', 'cds-paths.js', 'package.json', 'package-lock.json', 'manifest.json', 'qwen_config.template.json') {
     Copy-Item (Join-Path $mcpSrc $f) $mcpDest
+}
+# The scaffold's templates (claudedev_scaffold); setup.nsi installs the staged folder recursively.
+New-Item -ItemType Directory -Force -Path (Join-Path $mcpDest 'templates') | Out-Null
+foreach ($f in 'GROUND_TRUTH.md', 'CONVENTIONS.md', 'HOW_WE_WORK.md') {
+    Copy-Item (Join-Path $mcpSrc "templates\$f") (Join-Path $mcpDest 'templates')
 }
 # The keys file is created from the template at install time, only if it doesn't exist.
 if (Test-Path (Join-Path $mcpDest 'qwen_config.json')) { Fail 'qwen_config.json must never be staged' }

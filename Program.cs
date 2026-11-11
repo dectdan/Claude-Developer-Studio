@@ -12,10 +12,11 @@ namespace ClaudeDevStudio
     /// Usage:
     ///   claudedev init <project_path>        Initialize memory system for project
     ///   claudedev load <project_path>        Load context (used by Claude at session start)
-    ///   claudedev record <type> <data>       Record activity/pattern/mistake/etc
-    ///   claudedev check <action>             Check if action matches prior mistake
+    ///   claudedev record <project_path> <type> <json>
+    ///                                        Record activity/pattern/mistake/decision/performance/handoff
+    ///   claudedev check <project_path> <action>  Check if action matches prior mistake
     ///   claudedev stats                      Show memory statistics
-    ///   claudedev handoff                    Generate session handoff document
+    ///   claudedev handoff                    Automatic handoff (never replaces an explicit one)
     ///   claudedev cleanup                    Run daily memory cleanup
     ///   claudedev monitor <project_path>     Monitor Visual Studio debug output
     ///   claudedev build <project_path>       Build project
@@ -168,7 +169,7 @@ namespace ClaudeDevStudio
             if (args.Length < 4)
             {
                 Console.WriteLine("Usage: claudedev record <project_path> <type> <json_data>");
-                Console.WriteLine("Types: activity, pattern, mistake, decision, performance");
+                Console.WriteLine("Types: activity, pattern, mistake, decision, performance, handoff");
                 return 1;
             }
 
@@ -212,11 +213,19 @@ namespace ClaudeDevStudio
 
                 case "decision":
                     var decision = System.Text.Json.JsonSerializer.Deserialize<Decision>(jsonData);
-                    if (decision != null)
-                    {
-                        memory.RecordDecision(decision);
-                        Console.WriteLine($"✓ Recorded decision: {decision.DecisionDescription}");
-                    }
+                    if (decision == null || string.IsNullOrWhiteSpace(decision.DecisionDescription))
+                        return Error("A decision needs \"decision\" (what was decided).");
+                    memory.RecordDecision(decision);
+                    Console.WriteLine($"✓ Recorded decision {decision.Id}: {decision.DecisionDescription}");
+                    break;
+
+                case "handoff":
+                    // {"where_i_stopped": "...", "next_step": "...", "open_questions": ["..."], "notes": "..."}
+                    var handoff = System.Text.Json.JsonSerializer.Deserialize<Handoff>(jsonData);
+                    if (handoff == null || string.IsNullOrWhiteSpace(handoff.WhereIStopped) || string.IsNullOrWhiteSpace(handoff.NextStep))
+                        return Error("A handoff needs \"where_i_stopped\" and \"next_step\".");
+                    memory.RecordHandoff(handoff);
+                    Console.WriteLine($"✓ Recorded handoff {handoff.Id}: {memory.HandoffPath}");
                     break;
 
                 case "performance":
@@ -335,25 +344,23 @@ namespace ClaudeDevStudio
 
             var memory = new ClaudeMemory(projectPath);
             memory.LoadContext();
-            
-            memory.UpdateTokenUsage(200000);
-            
-            var handoffPath = Path.Combine(
-                SessionStateManager.GetMemoryPath(Path.GetFileName(projectPath)),
-                "session_handoff.md"
-            );
 
-            if (File.Exists(handoffPath))
-            {
-                Console.WriteLine($"✓ Handoff document generated:");
-                Console.WriteLine($"  {handoffPath}");
-                Console.WriteLine();
-                Console.WriteLine(File.ReadAllText(handoffPath));
-            }
-            else
-            {
+            // An automatic handoff from the session state. It never replaces an explicit
+            // handoff (record <path> handoff, the claudedev_handoff tool) in session_handoff.md.
+            // (Before v1.4 this set the token counter to 200,000 to trigger the handoff, and
+            // that value stayed in session_state.json.)
+            var wrote = memory.WriteAutomaticHandoff(out var handoff);
+            var handoffPath = memory.HandoffPath;
+
+            if (!File.Exists(handoffPath))
                 return Error("Failed to generate handoff document");
-            }
+
+            Console.WriteLine(wrote
+                ? $"✓ Automatic handoff {handoff.Id} written:"
+                : $"✓ Automatic handoff {handoff.Id} saved in HANDOFFS.jsonl; the explicit handoff is kept:");
+            Console.WriteLine($"  {handoffPath}");
+            Console.WriteLine();
+            Console.WriteLine(File.ReadAllText(handoffPath));
 
             return 0;
         }
@@ -1063,10 +1070,13 @@ namespace ClaudeDevStudio
             Console.WriteLine("COMMANDS:");
             Console.WriteLine("  init <project_path>      Initialize memory system for a project");
             Console.WriteLine("  load <project_path>      Load context (used at session start)");
-            Console.WriteLine("  record <type> <data>     Record activity/pattern/mistake (JSON format)");
-            Console.WriteLine("  check <action>           Check if action matches prior mistake");
+            Console.WriteLine("  record <project_path> <type> <json>");
+            Console.WriteLine("                           Record an activity, pattern, mistake, decision, performance or handoff (JSON)");
+            Console.WriteLine("  check <project_path> <action>");
+            Console.WriteLine("                           Check if an action matches a prior mistake");
             Console.WriteLine("  stats [project_path]     Show memory statistics");
-            Console.WriteLine("  handoff [project_path]   Generate session handoff document");
+            Console.WriteLine("  handoff [project_path]   Write an automatic handoff from the session state");
+            Console.WriteLine("                           (never replaces one written with record ... handoff)");
             Console.WriteLine("  cleanup [project_path]   Run daily memory cleanup");
             Console.WriteLine();
             Console.WriteLine("  PROJECT MANAGEMENT:");

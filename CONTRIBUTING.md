@@ -1,300 +1,62 @@
 # Contributing to ClaudeDevStudio
 
-Thank you for your interest in contributing to ClaudeDevStudio! We welcome contributions from the community.
+Thank you for helping. CDS is free and open source (MIT); people install it on their own PCs, so every change has to work on a stranger's Windows, not just yours.
 
-## 📜 Copyright and Licensing
+By contributing you agree that your contribution is licensed under the project's licence (`LICENSE`: MIT, with its additional terms, including attribution to the original author and the grant to Anthropic).
 
-By contributing to ClaudeDevStudio, you agree that:
+## Before you start
 
-1. **You retain copyright** to your contribution
-2. **Your contribution is licensed** under the MIT License (same as the project)
-3. **You grant Anthropic** the same special rights as the main project (see LICENSE)
-4. **Attribution is maintained** to original author (Daniel E Gain)
+- **Bugs and ideas:** open an issue at [github.com/dectdan/Claude-Developer-Studio/issues](https://github.com/dectdan/Claude-Developer-Studio/issues). Say what you did, what happened, what you expected, your Windows version and the CDS version (`claudedev version`).
+- **Read `docs\GROUND_TRUTH.md` first.** It is the project's current state: the architecture, the decisions, the known problems, the plan, and the rules that have bitten before. Older documents in `docs\history\` describe states that no longer exist.
 
-All contributions become part of the MIT-licensed codebase and can be freely used, modified, and distributed by anyone.
+## The folder layout
 
-**Project Copyright:** Copyright © 2026 Daniel E Gain (danielegain@gmail.com)
+| Folder or file | What it is |
+|---|---|
+| root `*.cs`, `ClaudeDevStudio.csproj` | The CLI, `claudedev.exe` (.NET 8). It owns the memory format and does every write (`ClaudeMemory.cs`, `MemorySchemas.cs`, `Program.cs`). |
+| `mcp-server\` | The two MCP servers for Claude Desktop: `index.js` (`claudedevstudio`, the memory) and `workbench.js` (`cds-workbench`: VS Bridge, Review Panel, AI delegation). `cds-paths.js` finds the Documents folder for both. `templates\` holds the files `claudedev_scaffold` creates. `test\` holds the tests. |
+| `review-server\` | The Review Panel (`server.js`, Express on `127.0.0.1:63000`). |
+| `VSExtension\CdsVsBridge\` | The VS Bridge, a Visual Studio extension (VSIX). |
+| `ClaudeDevStudio.UI\` | The tray app (WinForms). |
+| `ClaudeDevStudio.Dashboard\` | The memory browser (Blazor WebView). |
+| `Installer\` | The NSIS installer: `setup.nsi`, `build-setup.ps1` (builds everything), and the helper scripts `cds-config.js`, `cds-path.ps1`, `cds-vsix.ps1`. |
+| `tools\` | `check-versions.ps1` (one version everywhere), `merge-memory-stores.mjs`, `sandbox-test\` (installer tests in Windows Sandbox), `phase\` (scripts that run a phase prompt headless). |
+| `docs\` | `GROUND_TRUTH.md`, the phase prompts and outputs, `releases\` (release notes), `history\`. |
+| `Directory.Build.props` | The version number, set once. |
 
----
+## Build
 
-## 🚀 How to Contribute
+Needs: Windows 10/11 x64, the .NET 8 SDK, Node.js with npm, NSIS (`choco install nsis -y`), and Visual Studio or Build Tools 2022+ with the extension SDK (for the VSIX).
 
-### Reporting Bugs
+- **The CLI only:** `dotnet build ClaudeDevStudio.csproj -c Release` (output `bin\Release\net8.0\claudedev.exe`).
+- **Everything and the installer:** `powershell -NoProfile -ExecutionPolicy Bypass -File Installer\build-setup.ps1`. It builds the CLI, tray app, Dashboard and VSIX from source, stages both servers and the Review Panel, checks the versions, and compiles `Installer\Output\ClaudeDevStudio-Setup.exe`. It stops at the first failure.
+- **The version** is set in `Directory.Build.props` and `mcp-server\package.json`; `tools\check-versions.ps1` checks that every place agrees.
 
-**Before submitting a bug report:**
-- Check existing [Issues](https://github.com/dectdan/Cloud-Developer-Studio/issues)
-- Make sure you're using the latest version
-- Collect relevant information (version, OS, error messages)
+A build must have 0 errors and no new warnings.
 
-**Good bug reports include:**
-- Clear, descriptive title
-- Steps to reproduce
-- Expected vs actual behavior
-- Screenshots if applicable
-- System information (Windows version, .NET version)
-- ClaudeDevStudio version (`claudedev --version`)
+## Test
 
-### Suggesting Features
+- **The memory server:** `node mcp-server\test\smoke.mjs` runs every tool over stdio the way Claude Desktop does, against the installed CLI, in throwaway projects in `%TEMP%` (it removes them afterwards). With a newly built CLI: `node mcp-server\test\smoke.mjs --cli bin\Release\net8.0\claudedev.exe` (adds the checks that need the new CLI). Every check must pass.
+- **What Claude would see:** `node mcp-server\test\show.mjs claudedev_load <project folder>` prints load's output and its length.
+- **The installer, as a new user:** `powershell -NoProfile -ExecutionPolicy Bypass -File tools\sandbox-test\run-sandbox-test.ps1` runs install, upgrade, uninstall and a redirected Documents folder in Windows Sandbox (Windows Pro or Enterprise, with the Windows Sandbox feature on). `node tools\sandbox-test\config-merge-test.js` tests the Claude Desktop config merge on throwaway files. Don't test the installer on your own PC; the sandbox is the test machine.
+- **The VS Bridge and Review Panel caller checks:** `node mcp-server\test\caller-check.mjs http://127.0.0.1:63000` (or `http://localhost:62000` with Visual Studio open).
 
-**Before suggesting features:**
-- Check [Discussions](https://github.com/dectdan/Cloud-Developer-Studio/discussions)
-- Make sure it aligns with project goals (helping Claude maintain development context)
-
-**Good feature requests include:**
-- Clear use case - what problem does it solve?
-- How it helps Claude be more effective
-- Potential implementation approach (optional)
-- Examples of similar features in other tools
-
-### Pull Requests
-
-**The Process:**
-
-1. **Fork the repository**
-   ```bash
-   git clone https://github.com/YOUR-USERNAME/Cloud-Developer-Studio.git
-   ```
-
-2. **Create a branch**
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-3. **Make your changes**
-   - Follow existing code style
-   - Add comments for complex logic
-   - Update documentation if needed
-
-4. **Test thoroughly**
-   - Build the project: `dotnet build -c Release`
-   - Test your changes manually
-   - Run on clean Windows VM if possible
-
-5. **Commit with clear messages**
-   ```bash
-   git commit -m "Add: Feature description"
-   git commit -m "Fix: Bug description"
-   git commit -m "Docs: Documentation update"
-   ```
-
-6. **Push to your fork**
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-
-7. **Open a Pull Request**
-   - Describe what you changed and why
-   - Reference any related issues
-   - Include screenshots for UI changes
-
----
-
-## 💻 Development Setup
-
-### Prerequisites
-
-- **Windows 10/11** (required for WinUI3)
-- **.NET 8 SDK** - [Download](https://dotnet.microsoft.com/download/dotnet/8.0)
-- **Visual Studio 2022** - Community edition is fine
-  - Workload: ".NET Desktop Development"
-  - Workload: "Windows App SDK"
-- **WiX Toolset v3.14** - For building installer (optional)
-- **Node.js 18+** - For MCP server (optional)
-
-### Building the Project
-
-```bash
-# Clone your fork
-git clone https://github.com/YOUR-USERNAME/Cloud-Developer-Studio.git
-cd Cloud-Developer-Studio
-
-# Build CLI
-dotnet build -c Release
-
-# Build TrayApp
-cd ClaudeDevStudio.UI
-dotnet build -c Release
-
-# Build Dashboard
-cd ../ClaudeDevStudio.Dashboard
-dotnet build -c Release
-
-# Build Installer (if you have WiX)
-cd ../Installer
-# See BUILD.md for detailed steps
-```
-
-### Project Structure
-
-```
-ClaudeDevStudio/
-├── Program.cs                    # CLI entry point
-├── ClaudeMemory.cs              # Core memory system
-├── VSDebugMonitor.cs            # DebugView integration
-├── UpdateChecker.cs             # Auto-update system
-├── BackupManager.cs             # Backup system
-├── SessionStateManager.cs       # Session management
-├── ClaudeDevStudio.UI/          # System Tray app
-│   └── Program.cs
-├── ClaudeDevStudio.Dashboard/   # WinUI3 Dashboard
-│   ├── MainWindow.xaml
-│   └── Views/
-├── mcp-server/                  # MCP server for Claude Desktop
-│   └── index.js
-├── Installer/                   # WiX installer
-│   └── Installer.wxs
-└── Bundled/                     # Bundled dependencies
-    └── DebugView/
-```
-
----
-
-## 📝 Coding Guidelines
-
-### C# Style
-
-- **Naming:** PascalCase for methods/classes, camelCase for private fields
-- **Indentation:** 4 spaces (no tabs)
-- **Braces:** Opening brace on same line for C#
-- **Comments:** XML docs for public APIs, inline comments for complex logic
-
-**Example:**
-```csharp
-/// <summary>
-/// Checks if an action matches a prior mistake
-/// </summary>
-public bool CheckMistake(string actionDescription)
-{
-    // Search through recorded mistakes
-    var mistakes = LoadMistakes();
-    
-    foreach (var mistake in mistakes)
-    {
-        if (IsSimilar(actionDescription, mistake.Description))
-        {
-            return true;
-        }
-    }
-    
-    return false;
-}
-```
-
-### JavaScript Style (MCP Server)
-
-- **ES Modules:** Use `import`/`export`, not `require`
-- **Async/await:** Prefer over callbacks
-- **Error handling:** Always use try/catch for async code
-
-### Git Commit Messages
-
-**Format:**
-```
-Type: Short description (50 chars max)
-
-Longer explanation if needed (72 chars per line).
-- Bullet points for multiple changes
-- Reference issues: Fixes #123
-
-Why this change is needed (optional).
-```
-
-**Types:**
-- `Add:` New feature
-- `Fix:` Bug fix
-- `Docs:` Documentation changes
-- `Refactor:` Code restructuring (no functionality change)
-- `Test:` Adding tests
-- `Build:` Build system changes
-- `Chore:` Maintenance tasks
-
----
-
-## 🧪 Testing
-
-### Manual Testing Checklist
-
-Before submitting a PR, test:
-
-**CLI:**
-- [ ] `claudedev init <path>` creates memory structure
-- [ ] `claudedev load <path>` loads context
-- [ ] `claudedev monitor <path>` starts DebugView
-- [ ] `claudedev update` checks for updates
-
-**TrayApp:**
-- [ ] Appears in system tray on startup
-- [ ] "Open Dashboard" launches Dashboard
-- [ ] "Check for Updates" works
-- [ ] Icon displays correctly
-
-**Dashboard:**
-- [ ] All tabs load without errors
-- [ ] Projects list shows initialized projects
-- [ ] Memory page displays activities
-- [ ] Settings save correctly
-
-**Installer:**
-- [ ] MSI installs without errors
-- [ ] All components installed to correct locations
-- [ ] PATH configured correctly
-- [ ] TrayApp auto-starts after install
-- [ ] Claude Desktop config updated
-
-**Uninstall:**
-- [ ] All files removed
-- [ ] Registry keys removed
-- [ ] PATH entry removed
-
----
-
-## 🎨 UI/UX Contributions
-
-For UI changes:
-
-1. **Follow WinUI3 design guidelines**
-2. **Maintain consistency** with existing interface
-3. **Consider accessibility** (keyboard navigation, screen readers)
-4. **Include screenshots** in PR showing before/after
-5. **Test on different screen resolutions**
-
----
-
-## 📚 Documentation Contributions
-
-Documentation improvements are highly valued!
-
-**Areas needing documentation:**
-- User guides and tutorials
-- Video walkthroughs
-- Troubleshooting guides
-- API documentation for MCP tools
-- Developer setup guides
-- Architecture explanations
-
-**Where to contribute:**
-- `README.md` - Main project overview
-- `docs/` folder - Detailed guides
-- Code comments - Inline documentation
-- GitHub Wiki - Community knowledge base
-
----
-
-## ❓ Questions?
-
-- **General questions:** [GitHub Discussions](https://github.com/dectdan/Cloud-Developer-Studio/discussions)
-- **Bug reports:** [GitHub Issues](https://github.com/dectdan/Cloud-Developer-Studio/issues)
-- **Feature ideas:** [GitHub Discussions - Ideas](https://github.com/dectdan/Cloud-Developer-Studio/discussions/categories/ideas)
-
----
-
-## 🙏 Thank You!
-
-Every contribution, no matter how small, helps make ClaudeDevStudio better for the entire community. We appreciate your time and effort!
-
-**Contributors will be recognized in:**
-- GitHub contributors list
-- Release notes
-- Project acknowledgments
-
-Happy coding! 🚀
+## How this repository works
+
+This project uses the method CDS teaches:
+
+- **`docs\GROUND_TRUTH.md`** is the single source of truth. Its Status section ends with a **Next:** line; decisions are dated with their reasons; known problems are listed worst first.
+- **Work comes in phases.** A phase is a prompt, `docs\Pn_prompt.md` (Identity, Why, Read first, Scope, Conventions, The work, Verification, On completion). Claude Code carries it out and writes `docs\Pn_OUTPUT.md`: the owner's steps first, then results with evidence, the decisions it made, and what wasn't done. Then the ground truth is updated.
+- **Conventions:** read a file before editing it; back up a tracked file before editing it (`<file>.bak_YYYYMMDD_HHMM`, ignored by git); change only what the work needs; never report a success you didn't check.
+
+You don't have to write a phase prompt for a pull request, but a change that alters behaviour should update the ground truth.
+
+## What a pull request should include
+
+- **What changed and why,** and the issue it fixes, if any.
+- **How you checked it:** the build (0 errors, no new warnings) and `smoke.mjs` (and `--cli` if you changed the CLI), with the counts. For installer changes, the sandbox run's result.
+- **Docs:** `docs\GROUND_TRUTH.md` updated if behaviour, architecture or a known problem changed; `README.md` if users see the change.
+- **Nothing private:** no API keys, tokens or personal paths. `mcp-server\qwen_config.json` holds a user's keys and is never committed; the repository has `qwen_config.template.json` with empty keys.
+- **Paths that work everywhere:** never build a path from `%USERPROFILE%\Documents` (Documents may be redirected); ask Windows, as `cds-paths.js` and the CLI do.
+- **Small tool descriptions:** each MCP tool's description is one line. Claude Desktop silently drops a server whose tool list is too large.
+- **The memory format stays the CLI's:** the servers read the memory files and call `claudedev.exe` to write them.
