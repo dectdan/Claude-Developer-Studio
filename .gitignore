@@ -38,3 +38,7 @@ Installer/build/
 !Releases/*.msi
 # Never commit large EXE installers - upload to GitHub releases manually
 Releases/*.exe
+
+docs/*_run.log
+docs/*_run.err
+docs/*_run.json
