@@ -88,14 +88,19 @@ namespace CdsVsBridge
             var req  = ctx.Request;
             var resp = ctx.Response;
             resp.ContentType = "application/json; charset=utf-8";
-            resp.Headers.Add("Access-Control-Allow-Origin", "*");
+            // No Access-Control-Allow-Origin header: web pages must not read these answers.
 
             try
             {
                 string body;
                 var path = req.Url?.AbsolutePath.TrimEnd('/') ?? "";
 
-                if (req.HttpMethod == "GET" && path == "/state")
+                if (!IsAllowedCaller(req, out var refusal))
+                {
+                    resp.StatusCode = 403;
+                    body = $@"{{""error"":""{refusal}""}}";
+                }
+                else if (req.HttpMethod == "GET" && path == "/state")
                     body = await GetStateJsonAsync();
                 else if (req.HttpMethod == "GET" && path == "/errors")
                     body = GetErrorsJson();
@@ -325,6 +330,33 @@ namespace CdsVsBridge
                     return $@"{{""error"":""{ex.Message}""}}";
                 }
             });
+        }
+
+        // ── Caller check ──────────────────────────────────────────────────────
+
+        // Only local programs (the cds-workbench MCP server uses Node's http, which sends
+        // no Origin header) may use the bridge. A web page open in a browser always sends
+        // an Origin header, so it is refused; a Host other than this port on localhost
+        // means DNS rebinding (a web site's name pointed at 127.0.0.1), so it is refused too.
+        private static readonly string[] AllowedHosts = { $"localhost:{Port}", $"127.0.0.1:{Port}" };
+
+        private static bool IsAllowedCaller(HttpListenerRequest req, out string refusal)
+        {
+            if (req.Headers["Origin"] != null)
+            {
+                refusal = "Forbidden: requests from web pages are not accepted";
+                return false;
+            }
+
+            var host = req.Headers["Host"] ?? "";
+            if (Array.IndexOf(AllowedHosts, host.Trim().ToLowerInvariant()) < 0)
+            {
+                refusal = "Forbidden: unexpected Host header";
+                return false;
+            }
+
+            refusal = "";
+            return true;
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────

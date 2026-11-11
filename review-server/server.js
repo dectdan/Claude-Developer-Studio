@@ -2,12 +2,35 @@
 const express = require('express');
 const path    = require('path');
 const app     = express();
-const PORT    = 63000;
+// CDS_REVIEW_PORT is for tests (e.g. mcp-server\test\caller-check.mjs on 63099); normal use is 63000.
+const PORT    = Number(process.env.CDS_REVIEW_PORT) || 63000;
 
 // In-memory item store (newest first)
 let reviewItems = [];
 let sseClients  = [];
 let nextId      = 1;
+
+// ── Caller check ──────────────────────────────────────────────────────────
+// The panel answers only itself and local programs (cds-workbench uses Node's http,
+// which sends no Origin header).
+// - Host must be this port on localhost: anything else is DNS rebinding (a web site's
+//   name pointed at 127.0.0.1).
+// - An Origin header other than the panel's own means another web page is calling.
+//   Browsers send Origin on every non-GET request and on cross-origin GETs, but not on
+//   the panel's own GETs (page, /events), so its own page keeps working.
+const ALLOWED_HOSTS   = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
+const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`]);
+app.use((req, res, next) => {
+  const host = String(req.headers.host || '').trim().toLowerCase();
+  if (!ALLOWED_HOSTS.has(host)) {
+    return res.status(403).json({ error: 'Forbidden: unexpected Host header' });
+  }
+  const origin = req.headers.origin;
+  if (origin !== undefined && !ALLOWED_ORIGINS.has(String(origin).toLowerCase())) {
+    return res.status(403).json({ error: 'Forbidden: requests from other web pages are not accepted' });
+  }
+  next();
+});
 
 app.use(express.json({ limit: '50mb' }));
 
@@ -16,7 +39,6 @@ app.get('/events', (req, res) => {
   res.setHeader('Content-Type',  'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection',    'keep-alive');
-  res.setHeader('Access-Control-Allow-Origin', '*');
   res.flushHeaders();
 
   // Send current items on connect

@@ -15,6 +15,12 @@ import http from 'http';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// The version is set in package.json beside this file (checked by tools\check-versions.ps1).
+const VERSION = (() => {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || 'unknown'; }
+  catch { return 'unknown'; }
+})();
+
 const CDS_INSTALL_PATH = path.join(
   process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || 'C:\\Users\\Default', 'AppData', 'Local'),
   'ClaudeDevStudio'
@@ -56,7 +62,7 @@ function fetchUrl(url) {
   return new Promise((resolve) => {
     const urlObj = new URL(url);
     const client = urlObj.protocol === 'https:' ? https : http;
-    client.get(url, { headers: { 'User-Agent': 'ClaudeDevStudio/1.1.0' } }, (res) => {
+    client.get(url, { headers: { 'User-Agent': `ClaudeDevStudio/${VERSION}` } }, (res) => {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => resolve({ success: true, statusCode: res.statusCode, headers: res.headers, body: data }));
@@ -67,7 +73,7 @@ function fetchUrl(url) {
 class WorkbenchServer {
   constructor() {
     this.server = new Server(
-      { name: 'cds-workbench', version: '1.1.0' },
+      { name: 'cds-workbench', version: VERSION },
       { capabilities: { tools: {} } }
     );
     this.setupHandlers();

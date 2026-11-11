@@ -1,6 +1,6 @@
 # ClaudeDevStudio — Ground Truth
 
-*Last updated: 2026-11-11 (producer session: full audit; split-memory bug found and fixed in source; not yet deployed)*
+*Last updated: 2026-11-11 (P1 done: CLI correctness, one version 1.3.0, VS Bridge and Review Panel caller checks; nothing deployed; VSIX install is Dan's step)*
 
 Read this first. It is the single source of truth for the project. Older status files are in `docs\history\` and describe states that no longer exist.
 
@@ -32,7 +32,9 @@ Read this first. It is the single source of truth for the project. Older status 
 
 - **2026-11-11 12:03, D1 done:** `index.js` v1.3.0 copied to the installed `mcp-server` (hash matches source; previous copy kept as `index.js.bak_20261111_1203`); smoke test against the installed copy 16/16. Dan restarting Claude Desktop.
 
-**Next:** confirm in a fresh chat after the restart (`claudedev_load` on any project). Then Dan decides on the merge (section 8 Q2), then P1 (section 9).
+- **2026-11-11, P1 done (Claude Code, `docs\P1_OUTPUT.md`):** in source only, nothing deployed. CLI: unique IDs, keyword mistake matching (same rule as `index.js`), UTF-8 output and `Program.cs` mojibake repaired, `load` saves the session (new session after 8 h). One version 1.3.0 (`Directory.Build.props`, `tools\check-versions.ps1`: 16 places agree). VS Bridge and Review Panel refuse web pages and foreign Hosts. `index.js`: `CDS_CLI_PATH` for tests; "older entries" note only when shown. `smoke.mjs --cli` 24/24; installed CLI 16/16; `caller-check.mjs` 7/7 on the Review Panel (port 63099). Warnings unchanged (CLI 42, TrayApp 23, Dashboard 9, VSIX 12).
+
+**Next:** Dan installs the new VSIX and runs `caller-check.mjs http://localhost:62000` (`docs\P1_OUTPUT.md`, top). Then P2 (section 9). The merge (section 8 Q2) is still Dan's call.
 
 ---
 
@@ -108,18 +110,18 @@ Read this first. It is the single source of truth for the project. Older status 
    - The CLI wrote to `[Documents]` (OneDrive); the MCP server read and wrote `%USERPROFILE%\Documents`. Two stores: 42 project folders in one, 32 in the other.
    - The MCP server called the CLI with the wrong arguments: `init` got the memory folder instead of the project folder ("Project path does not exist"); `record` and `check` left out the project path (the CLI printed its usage and did nothing); `stats` got no path (the CLI used its working folder, which is why the OneDrive store has project folders named `system32` and `app-1.1.2998`); `load` never called the CLI and looked for a `CURRENT_SESSION_STATE.md` nothing writes.
    - Effect: only v1.2.x's fallback files were ever saved; patterns, decisions, session state and the mistake check were bypassed. **No data was lost:** both stores are intact and backed up.
-2. **VS Bridge has no caller check (security).** `localhost:62000` accepts `build.*`, `debugger.*`, `navigate` and `evaluate` from any program, and answers any web page (`Access-Control-Allow-Origin: *`). A page open in Dan's browser while VS runs could read build state and output, or drive the debugger (`evaluate` runs code when VS is paused). Fix: drop the `*` header and refuse requests that carry an `Origin` header (browsers always send one; Node never does), or require a token from a file. Needs a VSIX rebuild. The Review Panel (`127.0.0.1:63000`) has the same `*` header; lower risk (it only displays).
+2. **FIXED IN SOURCE (P1); VS Bridge pending Dan's VSIX install.** Both servers dropped the `*` header and answer 403 to a foreign `Origin` or `Host` (the VS Bridge's foreign Host is also refused with 400 by HTTP.sys). Review Panel checked with `mcp-server\test\caller-check.mjs` (7/7). Original problem: **VS Bridge has no caller check (security).** `localhost:62000` accepts `build.*`, `debugger.*`, `navigate` and `evaluate` from any program, and answers any web page (`Access-Control-Allow-Origin: *`). A page open in Dan's browser while VS runs could read build state and output, or drive the debugger (`evaluate` runs code when VS is paused). Fix: drop the `*` header and refuse requests that carry an `Origin` header (browsers always send one; Node never does), or require a token from a file. Needs a VSIX rebuild. The Review Panel (`127.0.0.1:63000`) has the same `*` header; lower risk (it only displays).
 3. **Sysinternals DebugView executables are in the public repo** (`Bundled\Dbgview.exe`, `Dbgview64a.exe`, `dbgview64.exe`). Microsoft's Sysinternals licensing FAQ says its utilities may not be distributed in your software or on your website. The installer does not ship them. Remove from the repo (and, Dan's call, from history).
 4. **The debug monitor can't work on other PCs.** `VSDebugMonitor.cs` needs `dbgview64.exe` in `%LOCALAPPDATA%\ClaudeDevStudio\DebugView` (the installer never puts it there) or the hardcoded `D:\Tools\DebugView`. Decide: document "install DebugView yourself", or drop `monitor` (the VS Bridge covers build errors and output).
-5. **CLI mistake IDs repeat.** `RecordMistake` numbers from `_index.TotalMistakes`, but `record` never loads the index, so every mistake is `ERR001` (same for `PAT001`, decisions).
-6. **CLI mistake matching is too strict** (whole-sentence containment). v1.3.0 adds a keyword check in MCP; the CLI's own `MatchesAction` should be fixed too.
-7. **CLI output is double-encoded:** the C# sources contain mojibake (`âœ“` for ✓, `âš ï¸` for ⚠). v1.3.0 cleans the known ones; fix the source files' encoding.
-8. **Version numbers disagree:** `ClaudeDevStudio.csproj` 1.1.0, CLI help text 1.1.1, `package.json`/`manifest.json` 1.2.0, both servers 1.1.0 (memory server now 1.3.0), installer 1.2.1. One version, one place.
+5. **FIXED (P1):** each ID is the file's highest + 1 (`NextIdNumber`); old duplicate IDs stay in the stores. Original problem: **CLI mistake IDs repeat.** `RecordMistake` numbers from `_index.TotalMistakes`, but `record` never loads the index, so every mistake is `ERR001` (same for `PAT001`, decisions).
+6. **FIXED (P1):** `MistakeMatching` in `MemorySchemas.cs` uses the `index.js` rule (they must stay in step). Original problem: **CLI mistake matching is too strict** (whole-sentence containment). v1.3.0 adds a keyword check in MCP; the CLI's own `MatchesAction` should be fixed too.
+7. **FIXED (P1):** UTF-8 console output; the mojibake was only in `Program.cs` (104 sequences), now real symbols. Original problem: **CLI output is double-encoded:** the C# sources contain mojibake (`âœ“` for ✓, `âš ï¸` for ⚠). v1.3.0 cleans the known ones; fix the source files' encoding.
+8. **FIXED (P1):** 1.3.0 in `Directory.Build.props`; everything else follows or is checked by `tools\check-versions.ps1` (unused MSIX/WiX files listed in `docs\P1_OUTPUT.md`). Original problem: **Version numbers disagree:** `ClaudeDevStudio.csproj` 1.1.0, CLI help text 1.1.1, `package.json`/`manifest.json` 1.2.0, both servers 1.1.0 (memory server now 1.3.0), installer 1.2.1. One version, one place.
 9. **`.github\workflows\release.yml` still builds `VoiceServer`**, removed in v1.1.1. Not checked whether the workflow currently passes.
 10. **`deploy.ps1` is outdated and unsafe:** it predates the split (never copies `workbench.js`), deploys whatever CLI is in `bin\Release`, and overwrites the installed `qwen_config.json` (Dan's API keys) with the source folder's copy. Don't use it until fixed.
 11. **Old binaries and dead code tracked in git:** `Releases\*.msi` (13 + 14 MB), `Installer\Output\*.wixpdb`, `mcp-server\claudedev.exe`, the `MCP\` folder (an earlier server), the `VoiceServer\` folder, many stale `Installer\*.md` (WiX era).
 12. **`vs_get_output` returns the Build pane only** (SynapseBridge P203): the Debug pane still needs a screenshot. Feature request.
-13. **`load` reports a stale session** (e.g. "Session: 2026-02-14_07-26"): nothing updates `session_state.json` after `init`. Either update it on load or drop the line.
+13. **FIXED (P1):** `LoadContext` saves the session state; a load more than 8 h after the last activity starts a new session ID. Original problem: **`load` reports a stale session** (e.g. "Session: 2026-02-14_07-26"): nothing updates `session_state.json` after `init`. Either update it on load or drop the line.
 
 ---
 
@@ -130,7 +132,7 @@ Read this first. It is the single source of truth for the project. Older status 
 3. **The debug monitor:** keep it (and tell users to install DebugView themselves) or remove `monitor` now that the VS Bridge exists?
 4. **DebugView in git history:** remove the three executables from the current tree only, or also rewrite history (a force-push to a public repo)?
 5. **Old MSIs and `wixpdb` in the repo (~30 MB):** remove from the tree (they stay in history and in GitHub releases)?
-6. **Next version number:** 1.3.0 for this fix (memory server already says 1.3.0)?
+6. ~~**Next version number:** 1.3.0 for this fix (memory server already says 1.3.0)?~~ Settled by the P1 prompt: 1.3.0, set once in `Directory.Build.props`.
 
 ---
 
@@ -145,7 +147,7 @@ Read this first. It is the single source of truth for the project. Older status 
 
 | Step | What | Who |
 |---|---|---|
-| **P1** | **Correctness and security in the code.** CLI: unique mistake/pattern/decision IDs; keyword `MatchesAction` (same rule as `index.js`); UTF-8 console output and the mojibake in the C# sources; `load` saves `session_state.json`. One version number everywhere. VS Bridge and Review Panel caller checks (section 7 item 2). `index.js`: the test-only CLI override and the "older entries" note. Smoke test grows. | Claude Code (`docs\P1_prompt.md`) |
+| **P1** | ✓ **Done 2026-11-11** (`docs\P1_OUTPUT.md`); VSIX install + bridge caller check is Dan's step. **Next: P2.** **Correctness and security in the code.** CLI: unique mistake/pattern/decision IDs; keyword `MatchesAction` (same rule as `index.js`); UTF-8 console output and the mojibake in the C# sources; `load` saves `session_state.json`. One version number everywhere. VS Bridge and Review Panel caller checks (section 7 item 2). `index.js`: the test-only CLI override and the "older entries" note. Smoke test grows. | Claude Code (`docs\P1_prompt.md`) |
 | **P2** | **A fresh install that just works.** Repo clean-up (DebugView executables, old MSIs, `wixpdb`, `mcp-server\claudedev.exe`, `MCP\`, `VoiceServer\`); `release.yml`; a safe `deploy.ps1`; README for strangers; installer build; **clean-VM test as a new user** (no D:, no OneDrive, no VS, no keys; then with Documents redirected); release v1.3.0. | Claude Code, then Dan publishes |
 
 **v1.4.0 — memory that finds Claude, and teaches the method:**
@@ -171,7 +173,7 @@ node D:\Projects\ClaudeDevStudio\mcp-server\test\smoke.mjs "$inst\index.js"   # 
 ```
 Then quit Claude Desktop completely (tray icon › Quit, not just close the window) and reopen it. **Rollback:** copy the `.bak_` file back, or `D:\Backups\ClaudeDevStudio\2026-11-11_memory_before_fix\index.js.installed_before_fix`.
 
-**Test the memory server any time:** `node mcp-server\test\smoke.mjs` (16 checks, real CLI, a throwaway project in %TEMP%, cleans up after itself; it adds a few lines to the chat mirror). `node mcp-server\test\show.mjs claudedev_load <project>` prints what Claude would see (read-only tools only).
+**Test the memory server any time:** `node mcp-server\test\smoke.mjs` (16 checks, real CLI, a throwaway project in %TEMP%, cleans up after itself; it adds a few lines to the chat mirror). **A newly built CLI, before installing it:** `node mcp-server\test\smoke.mjs --cli bin\Release\net8.0\claudedev.exe` (16 + 8 P1 checks). **Versions:** `powershell -File tools\check-versions.ps1`. **Caller checks:** `node mcp-server\test\caller-check.mjs http://127.0.0.1:63000` (Review Panel) or `http://localhost:62000` (VS Bridge, VS open). **VSIX build:** VS MSBuild, not `dotnet build` (command in `docs\P1_OUTPUT.md`, Build notes). `node mcp-server\test\show.mjs claudedev_load <project>` prints what Claude would see (read-only tools only).
 
 **Full installer build:** `Set-Location D:\Projects\ClaudeDevStudio\Installer; .\build-setup.ps1` → `Installer\Output\ClaudeDevStudio-Setup.exe` (~138 MB, 5–8 min for NSIS compression; poll the file size until it stops changing). **Always rebuild the source before the installer** (v1.0.1 shipped old binaries). Test on the Hyper-V Windows 11 VM (`D:\VMs`) before publishing. Releases are published by hand on GitHub with the EXE attached.
 
@@ -196,4 +198,4 @@ Then quit Claude Desktop completely (tray icon › Quit, not just close the wind
 | Prompt | Date | What |
 |---|---|---|
 | — | 2026-11-11 | Producer session: audit, backups, `index.js` v1.3.0 and its smoke test, merge script (dry run), this ground truth, `docs\` reorganised; v1.3.0 memory server deployed (D1) and confirmed after restart. |
-| P1 | 2026-11-11 | Written: correctness and security in the code. |
+| P1 | 2026-11-11 | Done: unique CLI IDs, keyword mistake matching, UTF-8 output, `load` saves the session; one version 1.3.0; VS Bridge and Review Panel caller checks; `smoke.mjs --cli` 24/24, `caller-check.mjs` 7/7. Output: `docs\P1_OUTPUT.md`. VSIX install pending (Dan). |

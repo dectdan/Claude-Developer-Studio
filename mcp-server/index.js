@@ -18,10 +18,18 @@ import { execFile, execFileSync, spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 
-const VERSION = '1.3.0';
+// The version is set in package.json beside this file (checked by tools\check-versions.ps1).
+const VERSION = (() => {
+  try { return JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version || 'unknown'; }
+  catch { return 'unknown'; }
+})();
 const HOME = process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\Default';
 const LOCAL = process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local');
-const CLAUDEDEV_PATH = path.join(LOCAL, 'ClaudeDevStudio', 'CLI', 'claudedev.exe');
+// CDS_CLI_PATH is for tests only (mcp-server\test\smoke.mjs --cli): it points the server at
+// a freshly built claudedev.exe instead of the installed one. Normal use never sets it.
+const CLAUDEDEV_PATH = process.env.CDS_CLI_PATH
+  ? path.resolve(process.env.CDS_CLI_PATH)
+  : path.join(LOCAL, 'ClaudeDevStudio', 'CLI', 'claudedev.exe');
 
 // Where v1.2.x of this server wrote its own fallback files. Read-only from now on,
 // so nothing written there in the past is lost before the stores are merged.
@@ -143,6 +151,10 @@ function hasRealContent(md) {
   return md.split('\n').some(l => /^\s*[-*]\s+\S/.test(l) && !/Project path:/i.test(l));
 }
 
+// Which memory folder each collected entry was read from (so load can tell whether
+// anything it shows came from the old store).
+const entrySource = new WeakMap();
+
 // Activities and mistakes from the CLI's files plus v1.2.x's one-file-per-entry
 // fallback files (Activity\<time>_activity.json / _mistake.json), from both stores.
 function collectEntries(dirs) {
@@ -150,7 +162,8 @@ function collectEntries(dirs) {
   const mistakes = [];
   for (const dir of dirs) {
     if (!dir || !fs.existsSync(dir)) continue;
-    mistakes.push(...readJsonLines(path.join(dir, 'MISTAKES.jsonl')));
+    const from = (list) => { for (const e of list) if (e && typeof e === 'object') entrySource.set(e, dir); return list; };
+    mistakes.push(...from(readJsonLines(path.join(dir, 'MISTAKES.jsonl'))));
     const actDir = path.join(dir, 'Activity');
     if (!fs.existsSync(actDir)) continue;
     let files = [];
@@ -158,11 +171,11 @@ function collectEntries(dirs) {
     for (const f of files) {
       const full = path.join(actDir, f);
       if (f.endsWith('.jsonl')) {
-        activities.push(...readJsonLines(full));
+        activities.push(...from(readJsonLines(full)));
       } else if (f.endsWith('_activity.json') || f.endsWith('_mistake.json')) {
         try {
           const o = JSON.parse(fs.readFileSync(full, 'utf8').replace(/^\uFEFF/, ''));
-          (f.endsWith('_mistake.json') ? mistakes : activities).push(o);
+          (f.endsWith('_mistake.json') ? mistakes : activities).push(...from([o]));
         } catch { /* skip */ }
       }
     }
@@ -193,6 +206,8 @@ const day = (ts) => (ts ? String(ts).slice(0, 10) : '????-??-??');
 // Keyword overlap between a planned action and recorded mistakes. Words of 4+ letters,
 // minus common ones; a mistake matches when it shares at least 3 such words with the
 // plan and they make up at least 30% of the smaller of the two word sets.
+// MUST STAY IN STEP with the CLI's MistakeMatching in MemorySchemas.cs: same word
+// pattern, same stop words, same thresholds, so the CLI and MCP agree.
 const STOP = new Set(('that this with from have been were into when then than they them their there these those ' +
   'what which while will would should could about after before because does done just only also very more most ' +
   'some such each other over same make made using used file files code instead').split(' '));
@@ -237,9 +252,12 @@ function buildContext(projectPath, cliLoad, createdNow) {
   const dirs = legacy !== dir ? [dir, legacy] : [dir];
   const { activities, mistakes } = collectEntries(dirs);
 
+  const shownMistakes = mistakes.slice(0, 25);
+  const shownActivities = activities.slice(0, 15);
+
   if (mistakes.length) {
     parts.push(`\n--- Mistakes to avoid (${mistakes.length}, newest first) ---`);
-    for (const m of mistakes.slice(0, 25)) {
+    for (const m of shownMistakes) {
       parts.push(`- [${day(m.timestamp)}] ${oneLine(m.mistake, 200)} | lesson: ${oneLine(m.lesson, 200)}`);
     }
   }
@@ -259,14 +277,17 @@ function buildContext(projectPath, cliLoad, createdNow) {
 
   if (activities.length) {
     parts.push(`\n--- Recent activity (${Math.min(15, activities.length)} of ${activities.length}, newest first) ---`);
-    for (const a of activities.slice(0, 15)) {
+    for (const a of shownActivities) {
       parts.push(`- [${day(a.timestamp)}] ${a.action || 'activity'}: ${oneLine(a.description, 250)}${a.file ? ` (${oneLine(a.file, 120)})` : ''}`);
     }
   } else {
     parts.push('\n(No recorded activity yet.)');
   }
 
-  if (legacy !== dir && fs.existsSync(legacy)) {
+  // Only when something listed above really came from the old store.
+  const showsLegacy = legacy !== dir &&
+    [...shownMistakes, ...shownActivities].some(e => entrySource.get(e) === legacy);
+  if (showsLegacy) {
     parts.push(`\nNote: older entries were also read from ${legacy} (written by CDS v1.2.x). They are shown above; nothing there is changed.`);
   }
   return parts.join('\n');

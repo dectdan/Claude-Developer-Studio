@@ -166,13 +166,27 @@ namespace ClaudeDevStudio.Memory
             var loadTime = (DateTime.Now - startTime).TotalSeconds;
             Console.WriteLine($"✓ Context loaded in {loadTime:F1} seconds");
 
-            // Update session state
-            _sessionState.LastActivity = DateTime.Now;
+            // A load after a long gap is a new session: give it a new ID.
+            var now = DateTime.Now;
+            // Compared in UTC: the file may hold a local time with an offset or a UTC time.
+            if (string.IsNullOrEmpty(_sessionState.SessionId) ||
+                now.ToUniversalTime() - _sessionState.LastActivity.ToUniversalTime() > SessionGap)
+            {
+                _sessionState.SessionId = $"{now:yyyy-MM-dd_HH-mm}";
+                _sessionState.Started = now;
+            }
+
+            // Update session state and save it, so the next load sees this session.
+            _sessionState.LastActivity = now;
             if (_sessionState.ContextUsage != null)
             {
                 _sessionState.ContextUsage.TokensUsed = 0; // Reset for new session
             }
+            SaveSessionState();
         }
+
+        // Longer than this since the last activity starts a new session on load.
+        private static readonly TimeSpan SessionGap = TimeSpan.FromHours(8);
 
         private void LoadSessionState()
         {
@@ -400,11 +414,12 @@ namespace ClaudeDevStudio.Memory
 
         public void RecordPattern(Pattern pattern)
         {
-            pattern.Id = $"PAT{(_index.TotalPatterns + 1):D3}";
+            var patternsPath = Path.Combine(_memoryPath, "PATTERNS.jsonl");
+            var prefix = pattern.IsAntipattern ? "ANTI" : "PAT";
+            pattern.Id = $"{prefix}{NextIdNumber(patternsPath, prefix):D3}";
             pattern.Created = DateTime.Now;
             pattern.LastSeen = DateTime.Now;
 
-            var patternsPath = Path.Combine(_memoryPath, "PATTERNS.jsonl");
             AppendJsonLine(patternsPath, pattern);
 
             _index.TotalPatterns++;
@@ -433,10 +448,10 @@ namespace ClaudeDevStudio.Memory
 
         public void RecordMistake(Mistake mistake)
         {
-            mistake.Id = $"ERR{(_index.TotalMistakes + 1):D3}";
+            var mistakesPath = Path.Combine(_memoryPath, "MISTAKES.jsonl");
+            mistake.Id = $"ERR{NextIdNumber(mistakesPath, "ERR"):D3}";
             mistake.Timestamp = DateTime.Now;
 
-            var mistakesPath = Path.Combine(_memoryPath, "MISTAKES.jsonl");
             AppendJsonLine(mistakesPath, mistake);
 
             _index.TotalMistakes++;
@@ -454,8 +469,16 @@ namespace ClaudeDevStudio.Memory
                 return new MistakeCheck { ShouldProceed = true };
             }
 
+            // The best match: the highest share of overlapping keywords (same rule as
+            // index.js similarMistakes). Equal scores: the newest mistake wins.
             var mistakes = ReadJsonLines<Mistake>(mistakesPath);
-            var priorMistake = mistakes.FirstOrDefault(m => m.MatchesAction(actionDescription));
+            var priorMistake = mistakes
+                .Select(m => (m, score: m.MatchScore(actionDescription)))
+                .Where(x => x.score > 0)
+                .OrderByDescending(x => x.score)
+                .ThenByDescending(x => x.m.Timestamp)
+                .Select(x => x.m)
+                .FirstOrDefault();
 
             if (priorMistake != null)
             {
@@ -480,10 +503,10 @@ namespace ClaudeDevStudio.Memory
 
         public void RecordDecision(Decision decision)
         {
-            decision.Id = $"DEC{(_index.TotalDecisions + 1):D3}";
+            var decisionsPath = Path.Combine(_memoryPath, "DECISIONS.jsonl");
+            decision.Id = $"DEC{NextIdNumber(decisionsPath, "DEC"):D3}";
             decision.Timestamp = DateTime.Now;
 
-            var decisionsPath = Path.Combine(_memoryPath, "DECISIONS.jsonl");
             AppendJsonLine(decisionsPath, decision);
 
             _index.TotalDecisions++;
@@ -607,6 +630,49 @@ namespace ClaudeDevStudio.Memory
         {
             var json = JsonSerializer.Serialize(obj, JsonOptions);
             File.AppendAllText(filePath, json + Environment.NewLine);
+        }
+
+        /// <summary>
+        /// The next free number for IDs of the form PREFIX### in a JSONL file: the highest
+        /// existing number + 1 (1 for a new file). Reads the file itself, so it doesn't
+        /// depend on the index having been built, and it continues from entries written by
+        /// tools\merge-memory-stores.mjs. A line that can't be read is skipped.
+        /// </summary>
+        private static int NextIdNumber(string filePath, string prefix)
+        {
+            var max = 0;
+            if (!File.Exists(filePath))
+                return 1;
+
+            foreach (var line in File.ReadLines(filePath))
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    if (doc.RootElement.ValueKind != JsonValueKind.Object ||
+                        !doc.RootElement.TryGetProperty("id", out var idProp) ||
+                        idProp.ValueKind != JsonValueKind.String)
+                        continue;
+
+                    var id = idProp.GetString() ?? string.Empty;
+                    if (id.Length > prefix.Length &&
+                        id.StartsWith(prefix, StringComparison.Ordinal) &&
+                        id.Skip(prefix.Length).All(char.IsAsciiDigit) &&
+                        int.TryParse(id.AsSpan(prefix.Length), out var n) &&
+                        n > max)
+                    {
+                        max = n;
+                    }
+                }
+                catch (JsonException)
+                {
+                    // Unreadable line: skip it.
+                }
+            }
+
+            return max + 1;
         }
 
         private List<T> ReadJsonLines<T>(string filePath)

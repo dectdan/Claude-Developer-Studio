@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace ClaudeDevStudio.Memory
 {
@@ -251,12 +253,63 @@ namespace ClaudeDevStudio.Memory
         public int RepeatCount { get; set; } = 0; // How many times made same mistake
 
         /// <summary>
-        /// Check if a proposed action matches this mistake
+        /// Check if a proposed action matches this mistake (keyword overlap; see MistakeMatching).
         /// </summary>
-        public bool MatchesAction(string actionDescription)
+        public bool MatchesAction(string actionDescription) => MatchScore(actionDescription) > 0;
+
+        /// <summary>
+        /// How well a proposed action matches this mistake: the share of shared keywords,
+        /// or 0 when it is not a match.
+        /// </summary>
+        public double MatchScore(string actionDescription) =>
+            MistakeMatching.Score(actionDescription, $"{MistakeDescription} {Lesson}");
+    }
+
+    /// <summary>
+    /// The keyword rule for "does this plan look like a recorded mistake".
+    /// MUST STAY IN STEP with mcp-server\index.js (STOP, keywords, similarMistakes):
+    /// same word pattern, same stop words, same thresholds, so the CLI and MCP agree.
+    /// Words: runs of 4+ characters from [a-z0-9_.-], lower-cased, minus the stop words.
+    /// A mistake's words come from its mistake + lesson. It matches when it shares at
+    /// least 3 words with the plan and they make up at least 30% of the smaller word set.
+    /// </summary>
+    public static class MistakeMatching
+    {
+        public const int MinSharedWords = 3;
+        public const double MinShare = 0.3;
+
+        private static readonly HashSet<string> StopWords = new HashSet<string>(
+            ("that this with from have been were into when then than they them their there these those " +
+             "what which while will would should could about after before because does done just only also very more most " +
+             "some such each other over same make made using used file files code instead").Split(' '));
+
+        private static readonly Regex Word = new Regex(@"[a-z0-9_.\-]{4,}", RegexOptions.Compiled);
+
+        public static HashSet<string> Keywords(string? text)
         {
-            // Simple similarity check - can be enhanced with ML later
-            return actionDescription.Contains(MistakeDescription, StringComparison.OrdinalIgnoreCase);
+            var words = new HashSet<string>();
+            foreach (Match m in Word.Matches((text ?? string.Empty).ToLowerInvariant()))
+            {
+                if (!StopWords.Contains(m.Value))
+                    words.Add(m.Value);
+            }
+            return words;
+        }
+
+        /// <summary>
+        /// The share of shared keywords (shared / smaller word set), or 0 when the
+        /// texts don't match under the rule above.
+        /// </summary>
+        public static double Score(string plan, string mistakeText)
+        {
+            var planWords = Keywords(plan);
+            var words = Keywords(mistakeText);
+            if (words.Count == 0)
+                return 0;
+
+            var shared = words.Count(w => planWords.Contains(w));
+            var score = (double)shared / Math.Max(1, Math.Min(words.Count, planWords.Count));
+            return shared >= MinSharedWords && score >= MinShare ? score : 0;
         }
     }
 
