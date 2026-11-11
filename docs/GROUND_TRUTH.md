@@ -81,6 +81,9 @@ Read this first. It is the single source of truth for the project. Older status 
 - **Back up data before any change** that could touch it (2026-11-11: "they're projects you're working on").
 - **Same methodology as SongSpark and Takehouse** (2026-11-11): this ground truth, phased Claude Code prompts `docs\Pn_prompt.md` → `docs\Pn_OUTPUT.md`, `.bak_YYYYMMDD_HHMM` backups before edits, root kept clean.
 - **Claude may fix what it finds** (2026-11-11: "if you find something you want to fix or change, just do it"), carefully, without breaking what other sessions depend on.
+- **CDS teaches the method** (2026-11-11). Every project should have a `docs\` folder with a `GROUND_TRUTH.md`, basic instructions for writing code, how outputs are reported (`Pn_prompt.md` → `Pn_OUTPUT.md`), and the working conventions. When Claude walks into a project without them, CDS must say so and offer to create them. CDS is public, so this is how other people's projects get pushed toward ground truths.
+- **A fresh install on a stranger's PC must simply work** (2026-11-11). No assumptions about Dan's drives, folders, keys or tools.
+- **Efficiency is the point** (2026-11-11). Dan runs heavy engineering on a Max plan and rarely passes ~80% of his allowance because the method is efficient; fewer tokens for the same result is good for the user and for Anthropic. CDS must keep what it puts into context short and useful: state and next steps first, history on request.
 
 ---
 
@@ -135,14 +138,25 @@ Read this first. It is the single source of truth for the project. Older status 
 
 | Step | What | Who |
 |---|---|---|
-| **D1** | Deploy `index.js` v1.3.0 (section 10), restart Claude Desktop, then in a chat: `claudedev_load` on any project and `claudedev_stats` | Dan (5 min) |
-| **D2** | Merge the stores: back up, `--apply`, re-run `mcp-server\test\smoke.mjs` | Dan or producer |
-| **P1** | **CLI fixes, release v1.3.0:** unique mistake/pattern/decision IDs; `MatchesAction` keyword matching; fix the mojibake in the C# sources; set UTF-8 console output; one version number (Directory.Build.props or a VERSION file read by csproj, package.json, both servers, setup.nsi); `load` updates `session_state.json`; rebuild CLI; `build-setup.ps1`; VM test; release | Claude Code |
-| **P2** | **VS Bridge and Review Panel caller checks** (section 7 item 2): no `*` CORS; refuse requests with an `Origin` header; rebuild the VSIX; test from Node (works) and from a browser page (refused) | Claude Code |
-| **P3** | **Repo clean-up:** remove DebugView executables, `Releases\*.msi`, `wixpdb`, `mcp-server\claudedev.exe`, `MCP\`, `VoiceServer\`; fix `release.yml`; rewrite `deploy.ps1` (copy both servers, never `qwen_config.json`); move stale `Installer\*.md` to `docs\history`; refresh README | Claude Code |
-| **P4** | Debug monitor decision (section 8 Q3); `vs_get_output` Debug pane | Claude Code |
+| **D1** | ✓ Done 2026-11-11 12:03: `index.js` v1.3.0 deployed; confirmed after the restart (`claudedev_load` on SongSpark read the real store) | Producer + Dan |
+| **D2** | Merge the stores: back up, `--apply`, re-run `mcp-server\test\smoke.mjs` | Waiting for Dan's go-ahead |
 
-**Not in this plan (ideas):** prune or archive old activity (SmartScribe has 700+ entries); `load` currently shows the newest 15 activities and 25 mistakes, which is enough for now.
+**v1.3.0 — make the public release correct and safe** (today's public installer still ships the broken v1.2.x memory server):
+
+| Step | What | Who |
+|---|---|---|
+| **P1** | **Correctness and security in the code.** CLI: unique mistake/pattern/decision IDs; keyword `MatchesAction` (same rule as `index.js`); UTF-8 console output and the mojibake in the C# sources; `load` saves `session_state.json`. One version number everywhere. VS Bridge and Review Panel caller checks (section 7 item 2). `index.js`: the test-only CLI override and the "older entries" note. Smoke test grows. | Claude Code (`docs\P1_prompt.md`) |
+| **P2** | **A fresh install that just works.** Repo clean-up (DebugView executables, old MSIs, `wixpdb`, `mcp-server\claudedev.exe`, `MCP\`, `VoiceServer\`); `release.yml`; a safe `deploy.ps1`; README for strangers; installer build; **clean-VM test as a new user** (no D:, no OneDrive, no VS, no keys; then with Documents redirected); release v1.3.0. | Claude Code, then Dan publishes |
+
+**v1.4.0 — memory that finds Claude, and teaches the method:**
+
+| Step | What |
+|---|---|
+| **P3** | **The method.** On `load`, look for `docs\GROUND_TRUTH.md`; if present, lead with its Status and Next and the latest `Pn_OUTPUT.md`; if missing, say so plainly and offer `claudedev_scaffold`, which creates `docs\GROUND_TRUTH.md`, `docs\CONVENTIONS.md` (how to write code, back up, verify, report) and `docs\HOW_WE_WORK.md` (the `Pn_prompt` → `Pn_OUTPUT` loop) from generic templates, never overwriting. Server `instructions` explain the method. |
+| **P4** | **Handoffs and decisions.** `claudedev_handoff` (where I stopped, next step, open questions; shown first on load) and `claudedev_record_decision` (decision + why; the CLI already stores them). |
+| **P5** | **Claude Code hooks** (opt-in, from the installer or TrayApp): SessionStart → load; PreCompact and SessionEnd → automatic handoff; PostToolUse on edits → a light activity line. Memory happens whether or not Claude remembers to call it. |
+| **P6** | **Search and shared lessons.** `claudedev_search` across all projects' history; a machine-wide lessons file (e.g. "Documents may be redirected", "PowerShell files get curly quotes") checked in every project. Old activity stays in full; load keeps showing only what matters. |
+| **P7** | Debug monitor decision (section 8 Q3); `vs_get_output` Debug pane. |
 
 ---
 
@@ -181,4 +195,5 @@ Then quit Claude Desktop completely (tray icon › Quit, not just close the wind
 
 | Prompt | Date | What |
 |---|---|---|
-| — | 2026-11-11 | Producer session: audit, backups, `index.js` v1.3.0 and its smoke test, merge script (dry run), this ground truth, `docs\` reorganised. |
+| — | 2026-11-11 | Producer session: audit, backups, `index.js` v1.3.0 and its smoke test, merge script (dry run), this ground truth, `docs\` reorganised; v1.3.0 memory server deployed (D1) and confirmed after restart. |
+| P1 | 2026-11-11 | Written: correctness and security in the code. |
