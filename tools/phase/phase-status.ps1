@@ -19,7 +19,11 @@ $mins = [int]((Get-Date) - [datetime]$m.started).TotalMinutes
 
 $events = @()
 if (Test-Path $log) {
-  foreach ($line in [IO.File]::ReadAllLines($log)) {
+  # The running session holds the log open for writing: read it with shared access.
+  $fs = [IO.File]::Open($log, 'Open', 'Read', 'ReadWrite')
+  $sr = New-Object IO.StreamReader($fs, [Text.Encoding]::UTF8)
+  $all = $sr.ReadToEnd(); $sr.Close()
+  foreach ($line in ($all -split "`n")) {
     if ($line.Trim()) { try { $events += ($line | ConvertFrom-Json) } catch { } }
   }
 }
