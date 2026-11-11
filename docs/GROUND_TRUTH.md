@@ -30,7 +30,9 @@ Read this first. It is the single source of truth for the project. Older status 
   - **Merge script written, dry run only:** `tools\merge-memory-stores.mjs`. It would add 1,917 activities, 210 mistakes, 36 files (5 as renamed copies), 1,082 chat-mirror lines; 0 unreadable; never changes the old store. Waiting for Dan.
   - **Repo tidied:** 28 old status/report files moved (`git mv`) to `docs\history\`; release notes to `docs\releases\`; `Program.cs.broken`, `temp_mistake.json` and an old `index.js` backup to `docs\history\attic\`. Nothing deleted. Committed locally, not pushed.
 
-**Next:** Dan reads section 8 (open questions), then deploys v1.3.0 and decides on the merge. Then P1 (section 9).
+- **2026-11-11 12:03, D1 done:** `index.js` v1.3.0 copied to the installed `mcp-server` (hash matches source; previous copy kept as `index.js.bak_20261111_1203`); smoke test against the installed copy 16/16. Dan restarting Claude Desktop.
+
+**Next:** confirm in a fresh chat after the restart (`claudedev_load` on any project). Then Dan decides on the merge (section 8 Q2), then P1 (section 9).
 
 ---
 
