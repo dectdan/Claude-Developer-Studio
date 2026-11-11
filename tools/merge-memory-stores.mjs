@@ -63,9 +63,22 @@ for (const name of fs.existsSync(projectsDir) ? fs.readdirSync(projectsDir) : []
     if (/_activity\.json$|_mistake\.json$/.test(base)) {
       let o;
       try { o = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); } catch { plan.bad++; continue; }
-      const ts = toIso(o.timestamp || base.slice(0, 19).replace(/T(\d\d)-(\d\d)-(\d\d)/, 'T$1:$2:$3'));
+      // Entry time: its own timestamp, else the time in its file name, else the file's
+      // modified time (never "now", which would make a re-run add it again).
+      // Some old files hold times with dashes ("2026-06-15T10-00-00.000Z"); read those too.
+      const dashed = (s) => new Date(String(s ?? '').replace(/T(\d\d)-(\d\d)-(\d\d)/, 'T$1:$2:$3'));
+      const own = dashed(o.timestamp);
+      const fromName = dashed(base.slice(0, 19));
+      const ts = !isNaN(own) ? own.toISOString()
+        : !isNaN(fromName) ? fromName.toISOString()
+        : fs.statSync(file).mtime.toISOString();
       if (base.endsWith('_mistake.json')) {
-        const e = { id: `ERR${String(++misCount).padStart(3, '0')}`, timestamp: ts, mistake: o.mistake || '', impact: o.impact || '', fix: o.fix || '', lesson: o.lesson || '', severity: o.severity || 'medium' };
+        // A few "mistake" files were written in the activity format; keep their text.
+        const e = {
+          id: `ERR${String(++misCount).padStart(3, '0')}`, timestamp: ts,
+          mistake: o.mistake || o.description || '', impact: o.impact || o.outcome || '',
+          fix: o.fix || '', lesson: o.lesson || '', severity: o.severity || 'medium',
+        };
         if (haveMis.has(keyOf(e, 'mistake'))) { plan.dupes++; misCount--; continue; }
         haveMis.add(keyOf(e, 'mistake'));
         plan.mistakes++;

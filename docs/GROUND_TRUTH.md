@@ -85,6 +85,7 @@ Read this first. It is the single source of truth for the project. Older status 
 - **Claude may fix what it finds** (2026-11-11: "if you find something you want to fix or change, just do it"), carefully, without breaking what other sessions depend on.
 - **CDS teaches the method** (2026-11-11). Every project should have a `docs\` folder with a `GROUND_TRUTH.md`, basic instructions for writing code, how outputs are reported (`Pn_prompt.md` → `Pn_OUTPUT.md`), and the working conventions. When Claude walks into a project without them, CDS must say so and offer to create them. CDS is public, so this is how other people's projects get pushed toward ground truths.
 - **A fresh install on a stranger's PC must simply work** (2026-11-11). No assumptions about Dan's drives, folders, keys or tools.
+- **CDS is Claude's project; Claude decides** (2026-11-11: "you have basically total control of the decisions ... unless it's obviously the wrong choice"). From P2 on, **Claude starts and runs the phased Claude Code sessions itself**, headless, on **Opus 5.5 at high effort** (`claude -p ... --model claude-opus-5-5 --effort high`); Dan's steps (installing the VSIX, publishing a release) come to him as a short list.
 - **Efficiency is the point** (2026-11-11). Dan runs heavy engineering on a Max plan and rarely passes ~80% of his allowance because the method is efficient; fewer tokens for the same result is good for the user and for Anthropic. CDS must keep what it puts into context short and useful: state and next steps first, history on request.
 
 ---
@@ -122,17 +123,21 @@ Read this first. It is the single source of truth for the project. Older status 
 11. **Old binaries and dead code tracked in git:** `Releases\*.msi` (13 + 14 MB), `Installer\Output\*.wixpdb`, `mcp-server\claudedev.exe`, the `MCP\` folder (an earlier server), the `VoiceServer\` folder, many stale `Installer\*.md` (WiX era).
 12. **`vs_get_output` returns the Build pane only** (SynapseBridge P203): the Debug pane still needs a screenshot. Feature request.
 13. **FIXED (P1):** `LoadContext` saves the session state; a load more than 8 h after the last activity starts a new session ID. Original problem: **`load` reports a stale session** (e.g. "Session: 2026-02-14_07-26"): nothing updates `session_state.json` after `init`. Either update it on load or drop the line.
+14. **The installer deletes the user's other Claude Desktop servers** (found 2026-11-11 after P1). `install-extension.ps1` rewrites `claude_desktop_config.json` as the two CDS servers plus `preferences`; every other `mcpServers` entry and every other top-level key is lost. On Dan's PC that would have removed 7 of 9 servers (dramatis-studio, alpaca ×3, cpanel, trading-server, machine3-server) and `coworkUserFilesPath`. The uninstaller's PowerShell 5.1 `Set-Content -Encoding UTF8` also writes a BOM. **P2.**
+15. **Upgrading deletes the user's API keys.** The installer copies `build\mcp-server\*.*` with `SetOverwrite on`, and the staged folder holds the empty template saved as `qwen_config.json`, so every upgrade replaces the user's keys with blanks. (The template itself is correct: no keys ship.) **P2.**
+16. **The VS Bridge is installed only for Visual Studio 2022** (`setup.nsi` checks three fixed 2022 paths). Newer Visual Studio versions are skipped silently. Use `vswhere`. **P2.**
 
 ---
 
-## 8. Open Questions (for Dan)
+## 8. Open Questions
 
-1. **Deploy v1.3.0 now?** One file copy plus a full Claude Desktop quit and reopen (section 10). Other sessions that use CDS (Claude Code in SongSpark etc.) pick it up at their next start. Rollback is one copy back.
-2. **Run the merge?** `node tools\merge-memory-stores.mjs --apply`. Not required (v1.3.0 reads both stores) but it puts everything in one place and lets the CLI's own mistake check see the 210 old mistakes. Back up the real store first (the script says so). The old store is never changed; deleting it later is a separate decision.
-3. **The debug monitor:** keep it (and tell users to install DebugView themselves) or remove `monitor` now that the VS Bridge exists?
-4. **DebugView in git history:** remove the three executables from the current tree only, or also rewrite history (a force-push to a public repo)?
-5. **Old MSIs and `wixpdb` in the repo (~30 MB):** remove from the tree (they stay in history and in GitHub releases)?
-6. ~~**Next version number:** 1.3.0 for this fix (memory server already says 1.3.0)?~~ Settled by the P1 prompt: 1.3.0, set once in `Directory.Build.props`.
+None. Dan handed decisions to Claude on 2026-11-11 (§5). Earlier questions, settled:
+1. ~~Deploy v1.3.0?~~ Done (D1), confirmed after the restart.
+2. ~~Merge the stores?~~ Claude: yes, after a fresh backup of the real store (D2).
+3. ~~Debug monitor?~~ Claude: keep it, but honest: no Dan-specific path; when DebugView isn't installed it says so with Microsoft's download page; the tool description says it needs DebugView (P2). Whether it earns its place next to the VS Bridge is P7.
+4. ~~DebugView in git history?~~ Claude: remove from the tree, don't rewrite history. A force-push to a public repo breaks every clone and fork; the files are Microsoft's freely downloadable tools; removing them stops CDS distributing them from now on.
+5. ~~Old MSIs and `wixpdb`?~~ Claude: remove from the tree; the MSIs stay attached to their GitHub releases.
+6. ~~Version?~~ 1.3.0, set once in `Directory.Build.props` (P1).
 
 ---
 
@@ -141,14 +146,14 @@ Read this first. It is the single source of truth for the project. Older status 
 | Step | What | Who |
 |---|---|---|
 | **D1** | ✓ Done 2026-11-11 12:03: `index.js` v1.3.0 deployed; confirmed after the restart (`claudedev_load` on SongSpark read the real store) | Producer + Dan |
-| **D2** | Merge the stores: back up, `--apply`, re-run `mcp-server\test\smoke.mjs` | Waiting for Dan's go-ahead |
+| **D2** | ✓ Done 2026-11-11 12:52–13:05 by the producer. Fresh backup `D:\Backups\ClaudeDevStudio\2026-11-11_before_merge_1252` (728 files). Merged: +1,917 activities, +210 mistakes, 36 files (5 as `.from-old-store` copies), +1,082 chat-mirror lines. Three WebullPortfolio entries had dashed times (`T10-00-00`) and were first stamped with today's date; repaired (wrong files backed up to `...\2026-11-11_merge_repair_WebullPortfolio`), the script fixed to read dashed times and activity-format "mistake" files; a re-run adds nothing (2,127 duplicates skipped). The old store is unchanged and still read by `index.js`. | Producer |
 
 **v1.3.0 — make the public release correct and safe** (today's public installer still ships the broken v1.2.x memory server):
 
 | Step | What | Who |
 |---|---|---|
 | **P1** | ✓ **Done 2026-11-11** (`docs\P1_OUTPUT.md`); VSIX install + bridge caller check is Dan's step. **Next: P2.** **Correctness and security in the code.** CLI: unique mistake/pattern/decision IDs; keyword `MatchesAction` (same rule as `index.js`); UTF-8 console output and the mojibake in the C# sources; `load` saves `session_state.json`. One version number everywhere. VS Bridge and Review Panel caller checks (section 7 item 2). `index.js`: the test-only CLI override and the "older entries" note. Smoke test grows. | Claude Code (`docs\P1_prompt.md`) |
-| **P2** | **A fresh install that just works.** Repo clean-up (DebugView executables, old MSIs, `wixpdb`, `mcp-server\claudedev.exe`, `MCP\`, `VoiceServer\`); `release.yml`; a safe `deploy.ps1`; README for strangers; installer build; **clean-VM test as a new user** (no D:, no OneDrive, no VS, no keys; then with Documents redirected); release v1.3.0. | Claude Code, then Dan publishes |
+| **P2** | **A fresh install that just works.** The installer keeps the user's other servers, settings and API keys (§7 items 14–16); no Dan-specific paths anywhere (item 4); repo clean-up (items 3, 11); `release.yml` (item 9); a safe `deploy.ps1` (item 10); README for strangers; installer build; **Windows Sandbox tests as a new user** (fresh install, upgrade keeping keys and other servers, uninstall, then all again with Documents redirected); release notes. | Claude Code (`docs\P2_prompt.md`), then Dan publishes |
 
 **v1.4.0 — memory that finds Claude, and teaches the method:**
 
@@ -158,7 +163,10 @@ Read this first. It is the single source of truth for the project. Older status 
 | **P4** | **Handoffs and decisions.** `claudedev_handoff` (where I stopped, next step, open questions; shown first on load) and `claudedev_record_decision` (decision + why; the CLI already stores them). |
 | **P5** | **Claude Code hooks** (opt-in, from the installer or TrayApp): SessionStart → load; PreCompact and SessionEnd → automatic handoff; PostToolUse on edits → a light activity line. Memory happens whether or not Claude remembers to call it. |
 | **P6** | **Search and shared lessons.** `claudedev_search` across all projects' history; a machine-wide lessons file (e.g. "Documents may be redirected", "PowerShell files get curly quotes") checked in every project. Old activity stays in full; load keeps showing only what matters. |
-| **P7** | Debug monitor decision (section 8 Q3); `vs_get_output` Debug pane. |
+| **P7** | Debug monitor: keep or drop next to the VS Bridge; `vs_get_output` Debug pane. |
+| **P8** | **Claude runs Claude Code from CDS:** workbench tools to start a phase prompt headless in a project (background, logged), read its status, and reply to the same session; one session per project at a time (a lock). Formalises what the producer does by hand from P2 on. |
+
+**How the producer runs a phase (from P2):** Claude Code ≥ 2.1 (updated 2026-11-11 from 2.0.42, which had no `--effort`), signed in to Dan's account; in the project folder, `claude -p "Read docs\Pn_prompt.md and carry it out." --model claude-opus-5-5 --effort high --permission-mode acceptEdits --allowedTools <the commands the phase needs> --output-format stream-json --verbose`, stdin from NUL, started detached with output to `docs\Pn_run.log`; the producer checks the log, reads `docs\Pn_OUTPUT.md`, verifies, writes the next prompt. No `--dangerously-skip-permissions`. **Fresh-install tests run in Windows Sandbox** (built in, a new clean Windows each launch, admin inside, launchable without elevation); Dan's Hyper-V VM needs elevation that headless sessions don't have.
 
 ---
 
