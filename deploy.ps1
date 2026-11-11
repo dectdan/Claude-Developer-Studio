@@ -5,8 +5,9 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File deploy.ps1
 #
 # It copies: the CLI's whole build output (published fresh from the source), mcp-server\
-# index.js, workbench.js, cds-paths.js (both servers import it), package.json,
-# package-lock.json, templates\*.md (claudedev_scaffold's), and the Review Panel's
+# index.js, workbench.js, cds-paths.js (both servers import it), cds-context.js (index.js
+# and the Claude Code hook import it), cds-hook.js, package.json, package-lock.json,
+# templates\*.md (claudedev_scaffold's), Installer\cds-claude-code.js, and the Review Panel's
 # server.js, package.json, package-lock.json. Only files whose content differs are copied;
 # each file it replaces is backed up first under _deploy_backups\<time>\ in the installed copy.
 # It never touches the user's API keys file or Claude Desktop's config: only the files
@@ -74,10 +75,14 @@ Remove-Item $cliStage -Recurse -Force
 
 # ---- Both MCP servers ----
 Write-Step 'MCP servers'
-foreach ($f in 'index.js', 'workbench.js', 'cds-paths.js', 'package.json', 'package-lock.json',
+foreach ($f in 'index.js', 'workbench.js', 'cds-paths.js', 'cds-context.js', 'cds-hook.js', 'package.json', 'package-lock.json',
               'templates\GROUND_TRUTH.md', 'templates\CONVENTIONS.md', 'templates\HOW_WE_WORK.md') {
     Deploy-File (Join-Path $Src "mcp-server\$f") "mcp-server\$f"
 }
+
+# ---- The Claude Code setup script (claudedev claude-code runs it from the install folder) ----
+Write-Step 'Claude Code setup script'
+Deploy-File (Join-Path $Src 'Installer\cds-claude-code.js') 'cds-claude-code.js'
 
 # ---- Review Panel ----
 Write-Step 'Review Panel'

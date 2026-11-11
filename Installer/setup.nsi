@@ -11,6 +11,12 @@
 ; - the user PATH: cds-path.ps1 adds or removes only CDS's CLI folder (NSIS strings are
 ;   1024 characters, too short to read and rewrite a long PATH safely);
 ; - the TrayApp auto-start entry is written on a first install only.
+;
+; Claude Code (from v1.4.0) is opt-in: cds-claude-code.js adds CDS's hooks and servers to the
+; user's Claude Code settings only when the finish page's unticked box is ticked, or a silent
+; install is given /CLAUDECODE=1. An install where it is already set up refreshes its paths
+; (setup --if-set-up never turns it on). The uninstaller takes out only CDS's entries.
+;   ClaudeDevStudio-Setup.exe /S /CLAUDECODE=1
 
 Unicode True
 SetCompressor /SOLID lzma
@@ -19,7 +25,7 @@ SetCompressor /SOLID lzma
 ; Metadata
 ;---------------------------------------------------------------------------
 !define PRODUCT_NAME      "ClaudeDevStudio"
-!define PRODUCT_VERSION   "1.3.0"
+!define PRODUCT_VERSION   "1.4.0"
 !define PRODUCT_PUBLISHER "Daniel E Gain"
 !define PRODUCT_URL       "https://github.com/dectdan/Claude-Developer-Studio"
 !define INSTALL_DIR       "$LocalAppData\ClaudeDevStudio"
@@ -35,9 +41,11 @@ SetCompressor /SOLID lzma
 !include "LogicLib.nsh"
 !include "x64.nsh"
 !include "WinMessages.nsh"
+!include "FileFunc.nsh"
 
 Var NodeExe       ; full path to node.exe, or "" when there is none
 Var FinishText    ; the finish page text (set at the end of the install)
+Var ClaudeCode    ; "1" when /CLAUDECODE=1 was given
 
 ;---------------------------------------------------------------------------
 ; MUI Settings
@@ -54,6 +62,14 @@ Var FinishText    ; the finish page text (set at the end of the install)
 !define MUI_FINISHPAGE_TEXT_LARGE
 !define MUI_FINISHPAGE_RUN          "$LocalAppData\ClaudeDevStudio\TrayApp\ClaudeDevStudio.TrayApp.exe"
 !define MUI_FINISHPAGE_RUN_TEXT     "Start ClaudeDevStudio now"
+; The installer runs elevated; the tray app must not, so Explorer (the user's own, un-elevated
+; shell) starts it.
+!define MUI_FINISHPAGE_RUN_FUNCTION StartTrayAppUnelevated
+; The second box: Claude Code, unticked (opt-in).
+!define MUI_FINISHPAGE_SHOWREADME          ""
+!define MUI_FINISHPAGE_SHOWREADME_TEXT     "Also set up Claude Code (optional; undo any time)"
+!define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
+!define MUI_FINISHPAGE_SHOWREADME_FUNCTION FinishClaudeCodeSetup
 !define MUI_FINISHPAGE_LINK         "View on GitHub"
 !define MUI_FINISHPAGE_LINK_LOCATION "${PRODUCT_URL}"
 
@@ -94,6 +110,43 @@ FunctionEnd
 
 Function un.FindNode
   !insertmacro FIND_NODE
+FunctionEnd
+
+Function .onInit
+  StrCpy $ClaudeCode ""
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/CLAUDECODE=" $R1
+  ${IfNot} ${Errors}
+    StrCpy $ClaudeCode $R1
+  ${EndIf}
+FunctionEnd
+
+Function StartTrayAppUnelevated
+  Exec '"$WINDIR\explorer.exe" "${INSTALL_DIR}\TrayApp\ClaudeDevStudio.TrayApp.exe"'
+FunctionEnd
+
+; Claude Code setup (cds-claude-code.js, run with Node). Result in install.log; never fails the install.
+Function RunClaudeCodeSetup
+  ${If} $NodeExe == ""
+  ${OrIfNot} ${FileExists} "${INSTALL_DIR}\cds-claude-code.js"
+    StrCpy $0 "nonode"
+    Return
+  ${EndIf}
+  nsExec::ExecToLog '"$NodeExe" "${INSTALL_DIR}\cds-claude-code.js" setup --node "$NodeExe" --mcp "${INSTALL_DIR}\mcp-server" --log "${INSTALL_DIR}\install.log"'
+  Pop $0
+FunctionEnd
+
+; The finish page's "Also set up Claude Code" box.
+Function FinishClaudeCodeSetup
+  Call RunClaudeCodeSetup
+  ${If} $0 == "0"
+    MessageBox MB_ICONINFORMATION "Claude Code is set up for ClaudeDevStudio. New Claude Code sessions load the project's memory at the start.$\r$\n$\r$\nTo undo: the tray app's $\"Remove from Claude Code$\", or claudedev claude-code remove.$\r$\nDetails: ${INSTALL_DIR}\install.log" /SD IDOK
+  ${ElseIf} $0 == "nonode"
+    MessageBox MB_ICONEXCLAMATION "Claude Code was not set up: Node.js was not found. Install Node.js LTS, then run: claudedev claude-code setup" /SD IDOK
+  ${Else}
+    MessageBox MB_ICONEXCLAMATION "Claude Code was not set up (code $0); nothing in its settings was changed if a file was not valid JSON.$\r$\nDetails: ${INSTALL_DIR}\install.log" /SD IDOK
+  ${EndIf}
 FunctionEnd
 
 ; Each install step goes to the details list and to install.log (silent installs too).
@@ -139,7 +192,7 @@ Section "Install" SecMain
     ${STEP} "Installing bundled .NET 8 Desktop Runtime..."
     SetOutPath "$TEMP"
     File "build\windowsdesktop-runtime-8-x64.exe"
-    ExecWait '"$TEMP\windowsdesktop-runtime-8-x64.exe" /install /quiet /norestart' $0
+    ExecWait '"$TEMP\windowsdesktop-runtime-8-x64.exe" /install /quiet /norestart /log "$TEMP\ClaudeDevStudio-dotnet-install.log"' $0
     Delete "$TEMP\windowsdesktop-runtime-8-x64.exe"
     ${STEP} ".NET 8 Desktop Runtime install done (code $0)."
     ${If} $0 != 0
@@ -168,8 +221,14 @@ Section "Install" SecMain
 
   ;--- Step 3: Windows App Runtime 1.8 (required for WinUI 3 Dashboard) ---
   ${STEP} "Checking Windows App Runtime..."
-  ReadRegStr $0 HKLM "SOFTWARE\Microsoft\WindowsAppRuntime\1.8" ""
-  ${If} $0 != ""
+  ; Its installer registers MSIX packages (the Microsoft.WindowsAppRuntime.1.8 framework and
+  ; MicrosoftCorporationII.WinAppRuntime.Main.1.8), not a registry key: ask Windows for those.
+  ; (Before v1.4.0 this read HKLM\SOFTWARE\Microsoft\WindowsAppRuntime\1.8, which no installer
+  ; writes, so the runtime was reinstalled every time.)
+  nsExec::ExecToStack `"${POWERSHELL}" -NoProfile -NonInteractive -Command "$$f = Get-AppxPackage -Name Microsoft.WindowsAppRuntime.1.8 | Where-Object { $$_.Architecture -eq 'X64' }; $$m = Get-AppxPackage -Name MicrosoftCorporationII.WinAppRuntime.Main.1.8; if ($$f -and $$m) { exit 0 } else { exit 1 }"`
+  Pop $0
+  Pop $1
+  ${If} $0 == "0"
     ${STEP} "Windows App Runtime 1.8 already installed."
   ${Else}
     ${STEP} "Installing bundled Windows App Runtime 1.8..."
@@ -204,6 +263,7 @@ Section "Install" SecMain
 
   SetOutPath "${INSTALL_DIR}"
   File "build\cds-config.js"
+  File "build\cds-claude-code.js"
   File "build\cds-vsix.ps1"
   File "build\cds-path.ps1"
   ; Scripts from v1.2.x that are no longer used
@@ -233,7 +293,7 @@ Section "Install" SecMain
 
   ;--- Step 8: Claude Desktop's config: add CDS's two entries, keep everything else ---
   Delete "${INSTALL_DIR}\${MANUAL_FILE}"
-  StrCpy $FinishText "ClaudeDevStudio is installed.$\r$\n$\r$\nQuit Claude Desktop fully (tray icon, Quit) and reopen it. Then ask Claude: $\"Load CDS for C:\path\to\my\project$\".$\r$\n$\r$\nIf you use Visual Studio, reopen it too."
+  StrCpy $FinishText "ClaudeDevStudio is installed.$\r$\n$\r$\nQuit Claude Desktop fully (tray icon, Quit) and reopen it. Then ask Claude: $\"Load CDS for C:\path\to\my\project$\".$\r$\n$\r$\nIf you use Visual Studio, reopen it too.$\r$\n$\r$\nOptional: if you use Claude Code, the second box below adds CDS's servers and four hooks to your Claude Code settings, so its sessions load the project's memory by themselves (backed up first; undo from the tray app)."
   ${If} $NodeExe == ""
     StrCpy $FinishText "ClaudeDevStudio's files are installed, but Node.js was not found, so it could not add itself to Claude Desktop.$\r$\n$\r$\nInstall Node.js LTS from https://nodejs.org and run this installer again."
     ${STEP} "Node.js not found: Claude Desktop's config not changed."
@@ -246,6 +306,17 @@ Section "Install" SecMain
     ${ElseIf} $0 != "0"
       StrCpy $FinishText "ClaudeDevStudio is installed, but it could not update Claude Desktop's settings file (code $0). See ${INSTALL_DIR}\install.log.$\r$\n$\r$\nRun this installer again, or add the claudedevstudio and cds-workbench servers to ${CLAUDE_CONFIG} by hand."
     ${EndIf}
+  ${EndIf}
+
+  ;--- Step 8b: Claude Code (opt-in) ---
+  ${If} $ClaudeCode == "1"
+    ${STEP} "Setting up Claude Code (/CLAUDECODE=1)..."
+    Call RunClaudeCodeSetup
+    ${STEP} "Claude Code setup done (code $0)."
+  ${ElseIf} $NodeExe != ""
+    ; Already set up by the user: refresh the paths (never turns it on).
+    nsExec::ExecToLog '"$NodeExe" "${INSTALL_DIR}\cds-claude-code.js" setup --if-set-up --node "$NodeExe" --mcp "${INSTALL_DIR}\mcp-server" --log "${INSTALL_DIR}\install.log"'
+    Pop $0
   ${EndIf}
 
   ;--- Step 9: Create data directories ---
@@ -318,6 +389,16 @@ Section "Uninstall"
     ${EndIf}
   ${EndIf}
 
+  ;--- Claude Code: take out only CDS's hooks and servers (nothing to do if never set up) ---
+  ${If} $NodeExe != ""
+  ${AndIf} ${FileExists} "${INSTALL_DIR}\cds-claude-code.js"
+    nsExec::ExecToLog '"$NodeExe" "${INSTALL_DIR}\cds-claude-code.js" remove --log "$8"'
+    Pop $0
+    ${If} $0 != "0"
+      MessageBox MB_ICONEXCLAMATION "ClaudeDevStudio's Claude Code hooks and servers could not be removed automatically (code $0).$\r$\nRemove the hooks that run cds-hook.js from %USERPROFILE%\.claude\settings.json, and run: claude mcp remove claudedevstudio --scope user (and cds-workbench).$\r$\n$\r$\nDetails: $8" /SD IDOK
+    ${EndIf}
+  ${EndIf}
+
   ;--- Remove the CLI from the user PATH (the rest of PATH is kept) ---
   ${If} ${FileExists} "${INSTALL_DIR}\cds-path.ps1"
     nsExec::ExecToLog '"${POWERSHELL}" -NoProfile -ExecutionPolicy Bypass -File "${INSTALL_DIR}\cds-path.ps1" -Action remove -Dir "${INSTALL_DIR}\CLI" -Log "$8"'
@@ -333,6 +414,9 @@ Section "Uninstall"
   RMDir /r "${INSTALL_DIR}\review-server"
   RMDir /r "${INSTALL_DIR}\VSExtension"
   Delete   "${INSTALL_DIR}\cds-config.js"
+  Delete   "${INSTALL_DIR}\cds-claude-code.js"
+  Delete   "${INSTALL_DIR}\hooks.log"
+  Delete   "${INSTALL_DIR}\hook_cache.json"
   Delete   "${INSTALL_DIR}\cds-vsix.ps1"
   Delete   "${INSTALL_DIR}\cds-path.ps1"
   Delete   "${INSTALL_DIR}\install.log"

@@ -7,7 +7,13 @@
 #   C:\cds\mcptest    mcp-server\test (read-only)
 #   C:\cds\results    tools\sandbox-test\results\<run> (writable)
 #
-# Scenarios, in order: A fresh install, B upgrade, C uninstall, D Documents redirected.
+#   C:\cds\downloads  Installer\downloads (read-only; the bundled runtimes, for scenario N)
+#
+# Scenarios, in order: N the .NET 8 Desktop Runtime installer timed on its own (installed, then
+# removed again), S why signed MSIs are slow here (diagnostic: connectivity, signature-check
+# timings, a verbose msiexec of the Node.js MSI), A fresh install, B upgrade, C uninstall, D Documents redirected, E Claude Code
+# setup (P4). Which ones run is in C:\cds\results\run-config.json (written by
+# run-sandbox-test.ps1; default A,B,C,D,E). B-E need the ones before them.
 # Writes results.json (each check: scenario, name, PASS/FAIL, evidence) after every check
 # and sandbox.log, copies the installer's logs, then shuts the sandbox down.
 
@@ -27,6 +33,19 @@ $PlainDocs = Join-Path $Profile0 'Documents'
 $Redirected = Join-Path $Profile0 'RedirectedDocs'
 $UserShellFolders = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
 $ShellFolders     = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
+$Downloads = 'C:\cds\downloads'
+$ExpectVersion = '1.4.0'
+$Scenarios = @('A', 'B', 'C', 'D', 'E')
+$RunConfig = Join-Path 'C:\cds\results' 'run-config.json'
+if (Test-Path $RunConfig) {
+    try {
+        $rc = Get-Content $RunConfig -Raw | ConvertFrom-Json
+        if ($rc.scenarios) { $Scenarios = @($rc.scenarios -split ',' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }) }
+        if ($rc.expectVersion) { $ExpectVersion = [string]$rc.expectVersion }
+    } catch { }
+}
+function Want([string]$S) { return $Scenarios -contains $S }
+$VersionPattern = 'v' + [regex]::Escape($ExpectVersion)
 
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
 $LogFile = Join-Path $Res 'sandbox.log'
@@ -124,13 +143,14 @@ function Check-Config([string]$Scenario, [string]$Expect, [string]$Label) {
     Check $Scenario $Label ([bool]$j.ok) $ev
 }
 
-function Run-Installer([string]$Scenario) {
+function Run-Installer([string]$Scenario, [string]$Switches = '/S') {
     $setup = Join-Path $Work 'ClaudeDevStudio-Setup.exe'
     $t0 = Get-Date
     $logPath = Join-Path $Inst 'install.log'
     $seen = 0
     if (Test-Path $logPath) { $seen = @(Get-Content -LiteralPath $logPath).Count }
-    $p = Start-Process -FilePath $setup -ArgumentList '/S' -PassThru
+    $script:InstallLogStart = $seen
+    $p = Start-Process -FilePath $setup -ArgumentList $Switches -PassThru
     $null = $p.Handle   # keeps the exit code readable after the process ends
     $code = $null
     while ($true) {
@@ -145,8 +165,62 @@ function Run-Installer([string]$Scenario) {
         if (((Get-Date) - $t0).TotalSeconds -gt 1800) { try { $p.Kill() } catch { }; $code = -999; break }
     }
     $secs = [int]((Get-Date) - $t0).TotalSeconds
-    Check $Scenario 'installer /S exits 0' ($code -eq 0) "exit $code after $secs s"
+    Check $Scenario "installer $Switches exits 0" ($code -eq 0) "exit $code after $secs s"
     if (Test-Path (Join-Path $Inst 'install.log')) { Copy-Item (Join-Path $Inst 'install.log') (Join-Path $Res "$Scenario-install.log") -Force }
+    $dl = Join-Path $env:TEMP 'ClaudeDevStudio-dotnet-install.log'
+    if (Test-Path $dl) { Copy-Item $dl (Join-Path $Res "$Scenario-dotnet-install.log") -Force }
+}
+
+# The lines this scenario's install added to install.log.
+function Get-InstallLogLines {
+    $logPath = Join-Path $Inst 'install.log'
+    if (-not (Test-Path $logPath)) { return @() }
+    return @(Get-Content -LiteralPath $logPath | Select-Object -Skip $script:InstallLogStart)
+}
+
+# Runs Uninstall.exe /S and waits for its temp copy to finish. Returns @{ code; running; secs }.
+function Run-Uninstaller {
+    $un = Join-Path $Inst 'Uninstall.exe'
+    $t0 = Get-Date
+    $r = Invoke-Tool $un '/S' 120
+    # The NSIS uninstaller copies itself to %TEMP%\~nsu*.tmp\ and runs from there, so
+    # Uninstall.exe returns at once: wait until no process runs from that folder.
+    $deadline = (Get-Date).AddMinutes(10)
+    $names = @{}
+    do {
+        Start-Sleep -Seconds 2
+        $copies = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $path = $null; try { $path = $_.Path } catch { }
+            ($path -and $path -like '*\~nsu*') -or $_.Name -like 'Au_*' -or $_.Name -like 'Un_*' })
+        foreach ($c in $copies) { $names[$c.Name] = $c.Path }
+        $running = $copies.Count
+    } while (($running -gt 0 -or ((Get-Date) - $t0).TotalSeconds -lt 6) -and (Get-Date) -lt $deadline)
+    Log "    uninstaller copies seen: $(($names.GetEnumerator() | ForEach-Object { "$($_.Key) ($($_.Value))" }) -join ', ')"
+    if ($names.Count -eq 0) {
+        # Not seen (finished very fast, or another name): wait for Uninstall.exe to go instead.
+        $until = (Get-Date).AddMinutes(3)
+        while ((Test-Path $un) -and (Get-Date) -lt $until) { Start-Sleep -Seconds 2 }
+    }
+    Start-Sleep -Seconds 2
+    return @{ code = $r.code; running = $running; secs = [int]((Get-Date) - $t0).TotalSeconds }
+}
+
+# Biggest gaps between consecutive timestamped lines of a Burn (.NET installer) log.
+function Get-LogGaps([string]$File, [int]$Top = 4) {
+    if (-not (Test-Path $File)) { return 'no log' }
+    $prev = $null; $prevLine = ''
+    $gaps = New-Object System.Collections.Generic.List[object]
+    foreach ($line in Get-Content -LiteralPath $File) {
+        $m = [regex]::Match($line, '\]\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)\]')
+        if (-not $m.Success) { continue }
+        $t = [datetime]::ParseExact($m.Groups[1].Value, 's', $null)
+        if ($prev) { $gaps.Add([pscustomobject]@{ secs = ($t - $prev).TotalSeconds; before = $prevLine; after = $line }) }
+        $prev = $t; $prevLine = $line
+    }
+    return (($gaps | Sort-Object secs -Descending | Select-Object -First $Top | ForEach-Object {
+        $b = $_.before; if ($b.Length -gt 160) { $b = $b.Substring(0, 160) }
+        $a = $_.after; if ($a.Length -gt 160) { $a = $a.Substring(0, 160) }
+        "$([int]$_.secs) s between [$b] and [$a]" }) -join ' || ')
 }
 
 function Check-Program([string]$Scenario) {
@@ -154,11 +228,12 @@ function Check-Program([string]$Scenario) {
               'mcp-server\index.js', 'mcp-server\workbench.js', 'mcp-server\package.json', 'mcp-server\qwen_config.template.json',
               'mcp-server\node_modules\@modelcontextprotocol\sdk\package.json', 'review-server\server.js',
               'review-server\node_modules\express\package.json', 'VSExtension\CdsVsBridge.vsix',
-              'cds-config.js', 'cds-vsix.ps1', 'cds-path.ps1', 'Uninstall.exe')
+              'mcp-server\cds-paths.js', 'mcp-server\cds-context.js', 'mcp-server\cds-hook.js',
+              'cds-config.js', 'cds-claude-code.js', 'cds-vsix.ps1', 'cds-path.ps1', 'Uninstall.exe')
     $missing = @($need | Where-Object { -not (Test-Path (Join-Path $Inst $_)) })
     Check $Scenario 'program files are in place' ($missing.Count -eq 0) $(if ($missing.Count) { "missing: $($missing -join ', ')" } else { "$($need.Count) files present under $Inst" })
     $v = Invoke-Tool (Join-Path $Inst 'CLI\claudedev.exe') 'version' 60
-    Check $Scenario 'claudedev version prints 1.3.0' ($v.code -eq 0 -and $v.out -match 'v1\.3\.0') "exit $($v.code): $(($v.out -split "`n")[0])"
+    Check $Scenario "claudedev version prints $ExpectVersion" ($v.code -eq 0 -and $v.out -match $VersionPattern) "exit $($v.code): $(($v.out -split "`n")[0])"
     $nv = Invoke-Tool $Node '--version' 60
     Check $Scenario 'Node.js is installed' ($nv.code -eq 0) "$Node $($nv.out)"
 }
@@ -265,11 +340,73 @@ try {
     $cliDir = Join-Path $Inst 'CLI'
     Log "Seeded config ($($seedBytes.Length) bytes) and user PATH ($($seedPath.Length) chars)."
 
+    $Info.scenarios = $Scenarios -join ','
+    $ClaudeSettings = Join-Path $env:USERPROFILE '.claude\settings.json'
+    $ClaudeJson = Join-Path $env:USERPROFILE '.claude.json'
+
+    # ---------------------------------------------------------------- N. .NET runtime timing
+    if (Want 'N') {
+    $S = 'N'
+    Log '=== N. The .NET 8 Desktop Runtime installer on its own ==='
+    $exe = Join-Path $Downloads 'windowsdesktop-runtime-8-x64.exe'
+    $Info.dotnetInstaller = (Get-Item $exe -ErrorAction SilentlyContinue).VersionInfo.ProductVersion
+    $nlog = Join-Path $Res 'N-dotnet-quiet.log'
+    $t0 = Get-Date
+    $r = Invoke-Tool $exe "/install /quiet /norestart /log `"$nlog`"" 1800
+    $secs = [int]((Get-Date) - $t0).TotalSeconds
+    $Info.dotnetInstallSeconds = $secs
+    Check $S ".NET runtime /install /quiet /norestart (network adapters up: $($Info.network))" ($r.code -eq 0 -or $r.code -eq 3010) "exit $($r.code) after $secs s; biggest gaps in its log: $(Get-LogGaps $nlog)"
+    $ulog = Join-Path $Res 'N-dotnet-uninstall.log'
+    $t0 = Get-Date
+    $r = Invoke-Tool $exe "/uninstall /quiet /norestart /log `"$ulog`"" 1800
+    $secs = [int]((Get-Date) - $t0).TotalSeconds
+    $left = @(Get-ChildItem "$env:ProgramFiles\dotnet\shared\Microsoft.WindowsDesktop.App" -ErrorAction SilentlyContinue | ForEach-Object Name) -join ', '
+    Check $S '.NET runtime /uninstall /quiet (so A installs it again through the installer)' (($r.code -eq 0 -or $r.code -eq 3010) -and -not $left) "exit $($r.code) after $secs s; left: $left; biggest gaps: $(Get-LogGaps $ulog 2)"
+    }
+
+    # ---------------------------------------------------------------- S. why signed MSIs are slow here
+    # (diagnostic only, P4: each MSI spends ~120 s in Windows Installer's "SOFTWARE RESTRICTION
+    # POLICY: Verifying package" step, with networking on or off)
+    if (Want 'S') {
+    $S = 'S'
+    Log '=== S. Signature checks and connectivity ==='
+    foreach ($u in 'http://www.msftconnecttest.com/connecttest.txt', 'http://crl.microsoft.com/pki/crl/products/MicCodSigPCA2011.crl', 'http://ocsp.digicert.com', 'http://ctldl.windowsupdate.com/msdownload/update/v3/static/trustedr/en/authrootstl.cab') {
+        $t0 = Get-Date
+        # (not $res: PowerShell names ignore case, and $Res is the results folder)
+        $answer = try { $w = Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 30; "HTTP $($w.StatusCode), $($w.RawContentLength) bytes" } catch { "error: $($_.Exception.Message)" }
+        Check $S "reach $u" $true "$([int]((Get-Date) - $t0).TotalMilliseconds) ms: $answer"
+    }
+    $sac = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -ErrorAction SilentlyContinue).VerifiedAndReputablePolicyState
+    $srp = Test-Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers'
+    $svc = (Get-Service AppIDSvc, CryptSvc, wuauserv -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Name)=$($_.Status)/$($_.StartType)" }) -join ', '
+    Check $S 'policy state' $true "Smart App Control VerifiedAndReputablePolicyState: $sac (0 off, 1 on, 2 evaluation); SRP policy key: $srp; services: $svc"
+    foreach ($f in (Join-Path $Downloads 'windowsdesktop-runtime-8-x64.exe'), (Get-ChildItem $Downloads -Filter 'node-v*-x64.msi' | Select-Object -First 1 -ExpandProperty FullName)) {
+        $t0 = Get-Date
+        $sig = Get-AuthenticodeSignature -FilePath $f
+        Check $S "Get-AuthenticodeSignature $(Split-Path $f -Leaf)" $true "$([int]((Get-Date) - $t0).TotalMilliseconds) ms: $($sig.Status), $($sig.SignerCertificate.Subject)"
+    }
+    $nodeMsi = Get-ChildItem $Downloads -Filter 'node-v*-x64.msi' | Select-Object -First 1 -ExpandProperty FullName
+    $mlog = Join-Path $Res 'S-node-msiexec.log'
+    $t0 = Get-Date
+    $r = Invoke-Tool 'msiexec.exe' "/i `"$nodeMsi`" /quiet /norestart /l*v `"$mlog`"" 900
+    $secs = [int]((Get-Date) - $t0).TotalSeconds
+    $srpLines = @()
+    if (Test-Path $mlog) { $srpLines = @(Get-Content $mlog | Where-Object { $_ -match 'SOFTWARE RESTRICTION POLICY' } | ForEach-Object { $_.Substring(0, [Math]::Min(120, $_.Length)) }) }
+    Check $S "msiexec Node.js MSI: $secs s" ($r.code -eq 0) "exit $($r.code); $($srpLines -join ' || ')"
+    $r = Invoke-Tool 'msiexec.exe' "/x `"$nodeMsi`" /quiet /norestart" 900
+    }
+
     # ---------------------------------------------------------------- A. fresh install
+    if (Want 'A') {
     $S = 'A'
     Log '=== A. Fresh install ==='
     Run-Installer $S
+    $al = Get-InstallLogLines
+    $Info.installLogA = ($al | Where-Object { $_ -match '\.NET|Node|Windows App Runtime' }) -join ' / '
     Check-Program $S
+    Check $S 'a silent install without /CLAUDECODE=1 leaves Claude Code alone (opt-in)' ((-not (Test-Path $ClaudeSettings)) -and (-not (Test-Path $ClaudeJson))) "settings.json exists: $(Test-Path $ClaudeSettings); .claude.json exists: $(Test-Path $ClaudeJson)"
+    $dl = Join-Path $Res 'A-dotnet-install.log'
+    if (Test-Path $dl) { $Info.dotnetGapsA = Get-LogGaps $dl }
     Check-Config $S 'expect-cds' 'config: both CDS entries (full node.exe path, files exist); keep-me, preferences, someOtherSetting unchanged; no BOM'
     $bak = @(Get-ChildItem $CfgDir -Filter 'claude_desktop_config.json.bak-cds-*')
     $bakSame = $bak.Count -ge 1 -and ([System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($bak[0].FullName)) -eq [System.Convert]::ToBase64String($seedBytes))
@@ -291,8 +428,10 @@ try {
     Check $S 'claudedev configure-claude (tray app "Link Claude Desktop") exits 0' ($cc.code -eq 0) "exit $($cc.code): $(($cc.out -split "`n") -join ' / ')"
     Check-Config $S 'expect-cds' 'config after configure-claude: still everything kept, each CDS entry once'
     Stop-CdsProcesses
+    }
 
     # ---------------------------------------------------------------- B. upgrade
+    if (Want 'B') {
     $S = 'B'
     Log '=== B. Upgrade ==='
     $set = Node-Json "`"$Kit\check-config.js`" setkey `"$Inst\mcp-server\qwen_config.json`" groq sandbox-test-key"
@@ -300,6 +439,11 @@ try {
     $memDir = Join-Path $docsA 'ClaudeDevStudio\Projects\SandboxProj'
     $memBefore = Get-TreeSnapshot $memDir
     Run-Installer $S
+    $bl = Get-InstallLogLines
+    $war = @($bl | Where-Object { $_ -match 'Windows App Runtime' })
+    Check $S 'upgrade: the Windows App Runtime is found, not installed again' (($war -join ' ') -match 'already installed' -and -not (($war -join ' ') -match 'Installing bundled')) ($war -join ' / ')
+    $net = @($bl | Where-Object { $_ -match '\.NET 8' })
+    Check $S 'upgrade: the .NET 8 Desktop Runtime is found, not installed again' (($net -join ' ') -match 'found' -and -not (($net -join ' ') -match 'Installing bundled')) ($net -join ' / ')
     $k = Node-Json "`"$Kit\check-config.js`" keys `"$Inst\mcp-server\qwen_config.json`" groq sandbox-test-key"
     Check $S 'the API key is still there after the upgrade (others still empty)' ([bool]$k.ok) "empty: $($k.keysEmpty -join ', ') $($k.problems -join ' | ')"
     Check-Config $S 'expect-cds' 'config: keep-me, preferences, someOtherSetting unchanged; each CDS entry once'
@@ -307,10 +451,12 @@ try {
     Check $S 'memory from A untouched' (($memBefore -eq $memAfter) -and $memBefore -ne '(missing)') "$(@($memBefore -split "`n").Count) items in $memDir, same before and after"
     Check-Path $S ($pathBeforeCds + ';' + $cliDir) 'user PATH: CLI folder still there once, rest unchanged'
     $v = Invoke-Tool (Join-Path $Inst 'CLI\claudedev.exe') 'version' 60
-    Check $S 'claudedev version still 1.3.0' ($v.code -eq 0 -and $v.out -match 'v1\.3\.0') (($v.out -split "`n")[0])
+    Check $S "claudedev version still $ExpectVersion" ($v.code -eq 0 -and $v.out -match $VersionPattern) (($v.out -split "`n")[0])
     Stop-CdsProcesses
+    }
 
     # ---------------------------------------------------------------- C. uninstall
+    if (Want 'C') {
     $S = 'C'
     Log '=== C. Uninstall ==='
     $bakBefore = @(Get-ChildItem $CfgDir -Filter 'claude_desktop_config.json.bak-cds-*').Count
@@ -355,8 +501,10 @@ try {
     $menu = Test-Path (Join-Path ([Environment]::GetFolderPath('Programs')) 'ClaudeDevStudio')
     Check $S 'registry entries and Start menu folder removed' ((-not $reg) -and (-not $menu)) "registry left: $reg; Start menu folder left: $menu"
     Check $S 'kept on purpose: Node.js and .NET runtime still installed' ((Test-Path $Node) -and (Test-Path "$env:ProgramFiles\dotnet\shared\Microsoft.WindowsDesktop.App")) "node: $(Test-Path $Node); .NET Desktop: $(@(Get-ChildItem "$env:ProgramFiles\dotnet\shared\Microsoft.WindowsDesktop.App" -ErrorAction SilentlyContinue | ForEach-Object Name) -join ', ')"
+    }
 
     # ---------------------------------------------------------------- D. Documents redirected
+    if (Want 'D') {
     $S = 'D'
     Log '=== D. Documents redirected ==='
     $plainBefore = Get-TreeSnapshot $PlainDocs
@@ -375,6 +523,71 @@ try {
     $plainAfter = Get-TreeSnapshot $PlainDocs
     $diff = @(Compare-Object @($plainBefore -split "`n") @($plainAfter -split "`n") | ForEach-Object { "$($_.SideIndicator) $($_.InputObject)" })
     Check $S 'nothing CDS-related created or changed in C:\Users\WDAGUtilityAccount\Documents' ($diff.Count -eq 0) $(if ($diff.Count) { $diff -join ' | ' } else { "$(@($plainBefore -split "`n").Count) items, same before and after D" })
+    }
+
+    # ---------------------------------------------------------------- E. Claude Code setup (P4)
+    if (Want 'E') {
+    $S = 'E'
+    Log '=== E. Claude Code setup ==='
+    if (-not (Test-Path (Join-Path $Inst 'CLI\claudedev.exe'))) { Run-Installer $S }
+    $cli = Join-Path $Inst 'CLI\claudedev.exe'
+    # 1. Seed Claude Code's files as a user who already has a hook, permissions, another key and another server.
+    New-Item -ItemType Directory -Force -Path (Split-Path $ClaudeSettings) | Out-Null
+    $seedS = Join-Path $Work 'seed-settings.json'
+    $seedC = Join-Path $Work 'seed-claude.json'
+    $sText = "{`n  `"permissions`": {`n    `"allow`": [`n      `"Bash(npm run lint)`"`n    ]`n  },`n  `"hooks`": {`n    `"PostToolUse`": [`n      {`n        `"matcher`": `"Write`",`n        `"hooks`": [`n          {`n            `"type`": `"command`",`n            `"command`": `"echo formatted`"`n          }`n        ]`n      }`n    ]`n  },`n  `"spinnerTipsEnabled`": false`n}`n"
+    $cText = "{`n  `"numStartups`": 3,`n  `"mcpServers`": {`n    `"keep-me`": {`n      `"type`": `"stdio`",`n      `"command`": `"cmd`",`n      `"args`": [`n        `"/c`",`n        `"echo`"`n      ],`n      `"env`": {}`n    }`n  }`n}`n"
+    foreach ($pair in @(@($seedS, $sText), @($ClaudeSettings, $sText), @($seedC, $cText), @($ClaudeJson, $cText))) { [System.IO.File]::WriteAllText($pair[0], $pair[1], $Utf8) }
+    $ccFiles = { param($mode) Node-Json "`"$Kit\claude-code-check.js`" files `"$ClaudeSettings`" `"$ClaudeJson`" `"$seedS`" `"$seedC`" $mode `"$Inst`"" }
+    $bakCount = { @(Get-ChildItem (Split-Path $ClaudeSettings) -Filter 'settings.json.bak-cds-*').Count + @(Get-ChildItem $env:USERPROFILE -Force -Filter '.claude.json.bak-cds-*').Count }
+    $claudeOnPath = [bool](Get-Command claude.exe -ErrorAction SilentlyContinue)
+    Check $S 'no Claude Code here (claude.exe not on PATH): setup edits ~/.claude.json itself' (-not $claudeOnPath) "claude.exe on PATH: $claudeOnPath"
+
+    # 2. Setup
+    $r = Invoke-Tool $cli 'claude-code setup' 120
+    Check $S 'claudedev claude-code setup exits 0' ($r.code -eq 0) "exit $($r.code): $(($r.out -split "`n") -join ' / ')"
+    $j = & $ccFiles 'expect-cds'
+    Check $S 'CDS hooks (4) and servers (2) there once each; everything seeded unchanged; no BOM' ([bool]$j.ok) "hooks: $($j.cdsHooks -join ', '); servers: $($j.servers -join ', '); BOM $($j.bom); problems: $($j.problems -join ' | ')"
+    $b1 = & $bakCount
+    Check $S 'both files backed up first' ($b1 -eq 2) "$b1 backup(s)"
+
+    # 3. Setup again: no change
+    $hs1 = (Get-FileHash $ClaudeSettings).Hash + (Get-FileHash $ClaudeJson).Hash
+    $r = Invoke-Tool $cli 'claude-code setup' 120
+    $hs2 = (Get-FileHash $ClaudeSettings).Hash + (Get-FileHash $ClaudeJson).Hash
+    Check $S 'setup a second time changes nothing (same bytes, no new backup)' ($r.code -eq 0 -and $hs1 -eq $hs2 -and (& $bakCount) -eq $b1) "exit $($r.code); same: $($hs1 -eq $hs2); backups $(& $bakCount)"
+    $r = Invoke-Tool $cli 'claude-code status' 120
+    Check $S 'claudedev claude-code status reports it set up' ($r.code -eq 0 -and ($r.out -split "`n" | Where-Object { $_ -match ': set up' }).Count -eq 4) (($r.out -split "`n") -join ' / ')
+
+    # 4. The hook commands exactly as written in settings.json, with sample stdin
+    $proj = 'C:\cds-projects\SandboxProjE'
+    New-Item -ItemType Directory -Force -Path (Join-Path $proj 'src'), (Join-Path $proj '.git') | Out-Null
+    $hk = Node-Json "`"$Kit\claude-code-check.js`" hooks `"$ClaudeSettings`" `"$proj`" `"$McpTest\fixtures\transcript-sample.jsonl`" `"$(Get-Docs)`""
+    foreach ($c in @($hk.checks)) { Check $S "hook as written: $($c.name)" ([bool]$c.ok) $c.evidence }
+    if (-not $hk.checks) { Check $S 'hook checks ran' $false "$($hk.problems -join ' | ')" }
+
+    # 5. Remove: back to exactly the seed
+    $r = Invoke-Tool $cli 'claude-code remove' 120
+    $j = & $ccFiles 'expect-seed'
+    Check $S 'claudedev claude-code remove: both files byte for byte as seeded' ($r.code -eq 0 -and $j.ok) "exit $($r.code); $($j.problems -join ' | ') / $(($r.out -split "`n") -join ' / ')"
+
+    # 6. The uninstaller runs remove too
+    $r = Invoke-Tool $cli 'claude-code setup' 120
+    $j = & $ccFiles 'expect-cds'
+    Check $S 'set up again before the uninstall' ($r.code -eq 0 -and $j.ok) "$($j.problems -join ' | ')"
+    Stop-CdsProcesses
+    $u = Run-Uninstaller
+    $j = & $ccFiles 'expect-seed'
+    Check $S 'the uninstaller takes CDS out of Claude Code: both files byte for byte as seeded' ($u.code -eq 0 -and $u.running -eq 0 -and $j.ok) "uninstaller exit $($u.code) after $($u.secs) s; $($j.problems -join ' | ')"
+    $unLog = Join-Path $env:TEMP 'ClaudeDevStudio-uninstall.log'
+    if (Test-Path $unLog) { Copy-Item $unLog (Join-Path $Res 'E-uninstall.log') -Force }
+
+    # 7. A silent install with /CLAUDECODE=1 sets it up
+    Run-Installer $S '/S /CLAUDECODE=1'
+    $j = & $ccFiles 'expect-cds'
+    Check $S 'a silent install with /CLAUDECODE=1 sets Claude Code up (seeded entries kept)' ([bool]$j.ok) "hooks: $($j.cdsHooks -join ', '); $($j.problems -join ' | ')"
+    Stop-CdsProcesses
+    }
 } catch {
     Check 'X' 'test script ran without an exception' $false "$($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)"
 }

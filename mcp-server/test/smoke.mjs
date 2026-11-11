@@ -343,6 +343,157 @@ try {
     r.text.includes('--- Ground truth: docs\\BIG - GROUND TRUTH (READ FIRST).md ---') &&
     /older in .*MISTAKES\.jsonl/.test(r.text) && /\[\.\.\. the rest: /.test(r.text),
     r.text);
+
+  // ---- Checks added in P4: the Claude Code hook (cds-hook.js beside the server) ----
+  // Run directly, as Claude Code runs it: node cds-hook.js <event>, the input JSON on stdin.
+  // CLAUDE_PROJECT_DIR is always set or removed explicitly (this test may itself run inside a
+  // Claude Code session, whose own project must never be touched); the hook's log goes to %TEMP%.
+  console.log('\n-- P4 checks (the Claude Code hook) --');
+  const hookPath = path.join(path.dirname(serverPath), 'cds-hook.js');
+  if (!fs.existsSync(hookPath)) {
+    console.log(`SKIP  hook checks (no ${hookPath}; it is new in v1.4.0): session-start, the skipped folders, post-tool-use, session-end`);
+  } else {
+    const hookLog = path.join(os.tmpdir(), `${scratchName}_hooks.log`);
+    const hook = (event, input, projectDir) => {
+      const env = { ...process.env, CDS_HOOK_LOG: hookLog };
+      delete env.CLAUDE_PROJECT_DIR;
+      if (projectDir) env.CLAUDE_PROJECT_DIR = projectDir;
+      if (cliPath) env.CDS_CLI_PATH = cliPath;
+      const t0 = Date.now();
+      const stdin = typeof input === 'string' ? input : JSON.stringify(input);
+      const res = spawnSync(process.execPath, [hookPath, event], { input: stdin, encoding: 'utf8', env, windowsHide: true, timeout: 30000 });
+      return { code: res.status, out: res.stdout || '', err: res.stderr || '', ms: Date.now() - t0 };
+    };
+    const base = (cwd, ev) => ({ session_id: `smoke-${scratchName}`, transcript_path: '', cwd, hook_event_name: ev });
+    const memOf = (dir) => path.join(docs, 'ClaudeDevStudio', 'Projects', path.basename(dir));
+    // (For a drive root the CLI's project name is empty, i.e. the Projects folder itself: its list of names.)
+    const snapshotDir = (d) => !path.basename(d) || /[\\/]Projects$/.test(d) ? fs.readdirSync(d).join('|') : fs.existsSync(d) ? listTree(d).map(x => { const f = path.join(d, x); const s = fs.statSync(f); return `${x}|${s.isFile() ? s.size : 'd'}|${s.mtimeMs}`; }).join('\n') : '(none)';
+
+    // session-start on a project with a ground truth (the scratch project, scaffolded above)
+    let h = hook('session-start', { ...base(scratch, 'SessionStart'), source: 'startup' }, scratch);
+    console.log(`      (session-start: ${h.ms} ms, ${h.out.length} characters)`);
+    check(`hook session-start prints load's context: starts with the project header, 9,500 characters or less (${h.out.length}, ${h.ms} ms)`,
+      h.code === 0 && h.out.startsWith(`=== ClaudeDevStudio: ${scratchName} ===`) && h.out.length <= 9500 &&
+      h.out.includes('--- Ground truth: docs\\GROUND_TRUTH.md ---') && /Loaded at session start by the ClaudeDevStudio hook/.test(h.out),
+      `exit ${h.code}\n${h.out.slice(0, 600)}\n${h.err}`);
+    check(`hook session-start is fast (under 2 s: ${h.ms} ms)`, h.ms < 2000, `${h.ms} ms`);
+
+    // The budget project (a 40 KB ground truth, 500 activities): still 9,500 or less
+    h = hook('session-start', { ...base(big.dir, 'SessionStart'), source: 'compact' }, big.dir);
+    check(`hook session-start keeps a big project to 9,500 characters or less (${h.out.length})`,
+      h.code === 0 && h.out.startsWith('=== ClaudeDevStudio: ') && h.out.length <= 9500 && /budget handoff where/.test(h.out), `${h.out.length}\n${h.out.slice(-400)}`);
+
+    // A new project (package.json only): session-start creates its memory, like load
+    const fresh = makeProject('hooknew');
+    write(path.join(fresh.dir, 'package.json'), '{ "name": "hooknew" }\n');
+    h = hook('session-start', { ...base(fresh.dir, 'SessionStart'), source: 'startup' }, fresh.dir);
+    check('hook session-start creates the memory of a new project on first use',
+      h.code === 0 && fs.existsSync(path.join(fresh.mem, 'session_state.json')) && /created just now/.test(h.out) && /--- No ground truth ---/.test(h.out), `${h.out.slice(0, 500)}\n${h.err}`);
+
+    // Folders that are never a project: nothing printed, no memory folder created or changed
+    const sys32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+    const home = process.env.USERPROFILE || os.homedir();
+    for (const [label, dir, viaEnv] of [['C:\\Windows\\System32 (cwd only)', sys32, false], ['C:\\Windows\\System32 (CLAUDE_PROJECT_DIR)', sys32, true], ['the home folder', home, true], ['a drive root', path.parse(home).root, true]]) {
+      const mem = memOf(dir);
+      const before = snapshotDir(mem);
+      h = hook('session-start', { ...base(dir, 'SessionStart'), source: 'startup' }, viaEnv ? dir : null);
+      const h2 = hook('session-end', { ...base(dir, 'SessionEnd'), reason: 'other', transcript_path: path.join(here, 'fixtures', 'transcript-sample.jsonl') }, viaEnv ? dir : null);
+      check(`hook skips ${label}: no output, exit 0, no memory folder created or changed`,
+        h.code === 0 && h2.code === 0 && h.out === '' && h2.out === '' && snapshotDir(mem) === before,
+        `exit ${h.code}/${h2.code}, output ${h.out.length}+${h2.out.length}\nbefore: ${before.slice(0, 300)}\nafter: ${snapshotDir(mem).slice(0, 300)}`);
+    }
+    const plain = makeProject('notaproject'); // no .git, docs, solution or manifest
+    h = hook('session-start', { ...base(plain.dir, 'SessionStart'), source: 'startup' }, plain.dir);
+    check('hook skips a folder that does not look like a project (no memory created)', h.code === 0 && h.out === '' && !fs.existsSync(plain.mem), h.out.slice(0, 300));
+
+    // post-tool-use: one activity line per file per session
+    const edits = () => {
+      const dir = path.join(fresh.mem, 'Activity');
+      return fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'))
+        .flatMap(f => fs.readFileSync(path.join(dir, f), 'utf8').split('\n').filter(l => l.trim()).map(l => JSON.parse(l)))
+        .filter(a => a.action === 'file_edit') : [];
+    };
+    const ptu = (tool, file, session = `smoke-${scratchName}`) => hook('post-tool-use', {
+      ...base(fresh.dir, 'PostToolUse'), session_id: session, tool_name: tool,
+      tool_input: tool === 'NotebookEdit' ? { notebook_path: file } : { file_path: file },
+      tool_response: { filePath: file, success: true },
+    }, fresh.dir);
+    const fa = path.join(fresh.dir, 'src', 'a.js'), fb = path.join(fresh.dir, 'src', 'b.js');
+    const rs = [ptu('Edit', fa), ptu('Edit', fa), ptu('Write', fb), ptu('MultiEdit', fa), ptu('Read', fb), ptu('Edit', path.join(os.tmpdir(), 'outside.js'))];
+    // two at once for the same file, as async hooks can be
+    const env2 = { ...process.env, CDS_HOOK_LOG: hookLog, CLAUDE_PROJECT_DIR: fresh.dir, ...(cliPath ? { CDS_CLI_PATH: cliPath } : {}) };
+    const race = JSON.stringify({ ...base(fresh.dir, 'PostToolUse'), session_id: `smoke-race-${scratchName}`, tool_name: 'Edit', tool_input: { file_path: fb }, tool_response: { success: true } });
+    const { spawn } = await import('child_process');
+    const runAsync = () => new Promise(res => { const c = spawn(process.execPath, [hookPath, 'post-tool-use'], { env: env2, windowsHide: true }); c.on('exit', code => res(code)); c.stdin.end(race); });
+    const raceCodes = await Promise.all([runAsync(), runAsync(), runAsync()]);
+    const e1 = edits();
+    const forSession = (s) => e1.filter(a => a.description && a.description.includes('(Claude Code'));
+    const files = e1.map(a => a.file).sort();
+    check('hook post-tool-use records one activity line per file per session',
+      rs.every(x => x.code === 0 && x.out === '') && raceCodes.every(c => c === 0) &&
+      e1.length === 3 && files.join('|') === ['src\\a.js', 'src\\b.js', 'src\\b.js'].join('|') &&
+      forSession().length === 3 && e1.every(a => /^Edited src\\[ab]\.js \(Claude Code, (Edit|Write)\)$/.test(a.description)),
+      `exit codes ${rs.map(x => x.code).join(',')} / race ${raceCodes.join(',')}\n${JSON.stringify(e1, null, 1)}`);
+
+    // session-end: an automatic handoff from the transcript, within 1.5 s
+    const fixture = fs.readFileSync(path.join(here, 'fixtures', 'transcript-sample.jsonl'), 'utf8');
+    const transcriptFor = (dir) => {
+      const f = path.join(os.tmpdir(), `${scratchName}_${path.basename(dir)}_transcript.jsonl`);
+      fs.writeFileSync(f, fixture.replace(/\{\{PROJECT\}\}/g, dir.replace(/\\/g, '\\\\')), 'utf8');
+      extraProjects.push({ dir: f, mem: f });
+      return f;
+    };
+    const history = (mem) => fs.existsSync(path.join(mem, 'HANDOFFS.jsonl'))
+      ? fs.readFileSync(path.join(mem, 'HANDOFFS.jsonl'), 'utf8').split('\n').filter(l => l.trim()).map(l => JSON.parse(l)) : [];
+    const handoffMd = (mem) => fs.existsSync(path.join(mem, 'session_handoff.md')) ? fs.readFileSync(path.join(mem, 'session_handoff.md'), 'utf8') : '';
+    if (cliPath) {
+      h = hook('session-end', { ...base(fresh.dir, 'SessionEnd'), reason: 'prompt_input_exit', transcript_path: transcriptFor(fresh.dir) }, fresh.dir);
+      const hist = history(fresh.mem);
+      const md = handoffMd(fresh.mem);
+      console.log(`      (session-end: ${h.ms} ms)`);
+      check(`hook session-end writes an automatic handoff within 1.5 s (${h.ms} ms)`,
+        h.code === 0 && h.out === '' && h.ms < 1500 && hist.length === 1 && hist[0].source === 'auto' &&
+        /^<!-- cds-handoff: auto -->/.test(md) && /from the Claude Code session \(session end\)/.test(md) &&
+        md.includes("The last request: \"Now add tests for the parser's error cases, please.\"") && !md.includes('system-reminder') &&
+        md.includes('Files edited in this session (3): src\\parser.js, test\\parser.test.js, notes\\explore.ipynb') &&
+        !md.includes('not-counted') && md.includes('Added three error-case tests') && md.includes(`claude --resume smoke-${scratchName}`),
+        `exit ${h.code}, ${h.ms} ms\n${md}\n${h.err}`);
+      r = await call('claudedev_load', { project_path: fresh.dir });
+      check('the next load shows the automatic handoff first', /--- Last handoff \(just now, .*automatic\) ---/.test(r.text) && r.text.indexOf('--- Last handoff') < r.text.indexOf('--- No ground truth'), r.text.slice(0, 900));
+
+      // pre-compact: same, prints nothing (its stdout would steer the compaction summary)
+      h = hook('pre-compact', { ...base(fresh.dir, 'PreCompact'), trigger: 'auto', custom_instructions: null, transcript_path: transcriptFor(fresh.dir) }, fresh.dir);
+      check('hook pre-compact writes an automatic handoff and prints nothing',
+        h.code === 0 && h.out === '' && history(fresh.mem).length === 2 && /before compaction/.test(handoffMd(fresh.mem)), `${h.out}\n${handoffMd(fresh.mem).slice(0, 300)}`);
+
+      // never replaces an explicit handoff (the scratch project has one from the P3 checks)
+      const mdBefore = handoffMd(memDir);
+      const n = history(memDir).length;
+      h = hook('session-end', { ...base(scratch, 'SessionEnd'), reason: 'other', transcript_path: transcriptFor(scratch) }, scratch);
+      const after = history(memDir);
+      check('hook session-end never replaces an explicit handoff (it goes to HANDOFFS.jsonl only)',
+        h.code === 0 && /^<!-- cds-handoff: explicit -->/.test(mdBefore) && handoffMd(memDir) === mdBefore &&
+        after.length === n + 1 && after[after.length - 1].source === 'auto' && /Claude Code session/.test(after[after.length - 1].where_i_stopped),
+        `exit ${h.code}\n${handoffMd(memDir).slice(0, 300)}\n${JSON.stringify(after[after.length - 1])}`);
+    } else {
+      console.log('SKIP  hook session-end/pre-compact handoff checks (need the new CLI: --cli): "writes an automatic handoff within 1.5 s", "the next load shows it", "pre-compact prints nothing", "never replaces an explicit handoff"');
+    }
+
+    // An unreadable transcript: nothing written, exit 0, a line in the hook log
+    const nBefore = history(fresh.mem).length;
+    const mdBefore2 = handoffMd(fresh.mem);
+    const logBefore = fs.existsSync(hookLog) ? fs.readFileSync(hookLog, 'utf8').length : 0;
+    const hMissing = hook('session-end', { ...base(fresh.dir, 'SessionEnd'), reason: 'other', transcript_path: path.join(os.tmpdir(), `${scratchName}_missing.jsonl`) }, fresh.dir);
+    const hDir = hook('pre-compact', { ...base(fresh.dir, 'PreCompact'), trigger: 'manual', transcript_path: os.tmpdir() }, fresh.dir);
+    const hJunk = hook('session-end', 'not json at all', fresh.dir);
+    const logAfter = fs.existsSync(hookLog) ? fs.readFileSync(hookLog, 'utf8') : '';
+    check('hook with an unreadable transcript writes nothing, exits 0 and logs the reason (not to stdout)',
+      [hMissing, hDir, hJunk].every(x => x.code === 0 && x.out === '' && x.err === '') &&
+      history(fresh.mem).length === nBefore && handoffMd(fresh.mem) === mdBefore2 &&
+      /the transcript could not be read/.test(logAfter.slice(logBefore)),
+      `exit ${hMissing.code}/${hDir.code}/${hJunk.code}\nlog: ${logAfter.slice(logBefore)}`);
+    try { fs.rmSync(hookLog, { force: true }); fs.rmSync(path.join(os.tmpdir(), 'hook_cache.json'), { force: true }); } catch { /* leave it */ }
+  }
 } catch (e) {
   check('no exception', false, e.stack || e.message);
 } finally {

@@ -15,6 +15,16 @@ namespace ClaudeDevStudio.Dashboard.Views
             LoadSettings();
         }
 
+        // The install folder: the installer writes HKCU\Software\ClaudeDevStudio\InstallDir
+        // (setup.nsi). Before v1.4.0 this page read InstallPath and TrayAppPath, which nothing writes.
+        private static string InstallDir()
+        {
+            var dir = Registry.CurrentUser.OpenSubKey(@"Software\ClaudeDevStudio")?.GetValue("InstallDir") as string;
+            if (string.IsNullOrEmpty(dir))
+                dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClaudeDevStudio");
+            return dir;
+        }
+
         private void LoadSettings()
         {
             // Load auto-start setting
@@ -33,8 +43,7 @@ namespace ClaudeDevStudio.Dashboard.Views
             // Check DebugView status
             try
             {
-                var installPath = Registry.CurrentUser.OpenSubKey(@"Software\ClaudeDevStudio")
-                    ?.GetValue("InstallPath") as string;
+                var installPath = InstallDir();
                 if (!string.IsNullOrEmpty(installPath))
                 {
                     var debugViewPath = Path.Combine(installPath, "DebugView", "dbgview64.exe");
@@ -85,11 +94,10 @@ namespace ClaudeDevStudio.Dashboard.Views
                 if (toggle.IsOn)
                 {
                     // Enable auto-start
-                    var trayAppPath = Registry.CurrentUser.OpenSubKey(@"Software\ClaudeDevStudio")
-                        ?.GetValue("TrayAppPath") as string;
-                    if (!string.IsNullOrEmpty(trayAppPath))
+                    var installDir = InstallDir();
+                    if (!string.IsNullOrEmpty(installDir))
                     {
-                        var exePath = Path.Combine(trayAppPath, "ClaudeDevStudio.TrayApp.exe");
+                        var exePath = Path.Combine(installDir, "TrayApp", "ClaudeDevStudio.TrayApp.exe");
                         key?.SetValue("ClaudeDevStudio", $"\"{exePath}\"");
                     }
                 }

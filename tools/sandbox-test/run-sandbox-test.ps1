@@ -2,19 +2,25 @@
 # Run on the host, no elevation needed:
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\sandbox-test\run-sandbox-test.ps1 [-TimeoutMinutes 60]
+#        [-Scenarios A,B,C,D,E] [-Networking]
 #
 # Writes tools\sandbox-test\results\<run>\sandbox.wsb, launches it, waits for the sandbox
 # to write results.json (finished), then prints the checks. The sandbox has networking
-# disabled (the installer must be self-contained) and sees the installer folder and the
-# test scripts read-only; only results\<run>\ is writable. The test script shuts the
-# sandbox down when it is done. After the time limit the sandbox is closed and the run
-# is reported as a timeout. Only one Windows Sandbox can run at a time.
+# disabled (the installer must be self-contained) unless -Networking is given, and sees the
+# installer folder, the bundled runtimes (Installer\downloads) and the test scripts read-only;
+# only results\<run>\ is writable. -Scenarios picks the scenarios (in-sandbox.ps1: N .NET timing,
+# A install, B upgrade, C uninstall, D Documents redirected, E Claude Code setup); they are
+# written to results\<run>\run-config.json. The test script shuts the sandbox down when it is
+# done. After the time limit the sandbox is closed and the run is reported as a timeout. Only
+# one Windows Sandbox can run at a time.
 #
 # Exit codes: 0 all checks passed, 1 a check failed, 2 timeout, 3 could not start.
 
 param(
     [string]$InstallerDir = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'Installer\Output'),
-    [int]$TimeoutMinutes = 60
+    [int]$TimeoutMinutes = 60,
+    [string[]]$Scenarios = @('A', 'B', 'C', 'D', 'E'),
+    [switch]$Networking
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,10 +43,17 @@ if (-not (Test-Path $setup)) { Write-Host "Installer not found: $setup (build it
 if ((Get-SandboxProcs).Count -gt 0) { Write-Host 'A Windows Sandbox is already running; only one can run at a time. Close it first.' -ForegroundColor Red; exit 3 }
 
 New-Item -ItemType Directory -Force -Path $Results | Out-Null
+$Downloads = Join-Path $Repo 'Installer\downloads'
+New-Item -ItemType Directory -Force -Path $Downloads | Out-Null
+$version = ([regex]::Match((Get-Content (Join-Path $Repo 'Directory.Build.props') -Raw), '<Version>\s*([^<\s]+)')).Groups[1].Value
+$scenarioList = (($Scenarios -join ',') -split ',' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }) -join ','
+$runConfig = [ordered]@{ scenarios = $scenarioList; networking = [bool]$Networking; expectVersion = $version }
+[System.IO.File]::WriteAllText((Join-Path $Results 'run-config.json'), ($runConfig | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))
+$net = if ($Networking) { 'Enable' } else { 'Disable' }
 $esc = { param($s) [System.Security.SecurityElement]::Escape($s) }
 $wsb = @"
 <Configuration>
-  <Networking>Disable</Networking>
+  <Networking>$net</Networking>
   <vGPU>Disable</vGPU>
   <ClipboardRedirection>Disable</ClipboardRedirection>
   <MemoryInMB>6144</MemoryInMB>
@@ -48,6 +61,7 @@ $wsb = @"
     <MappedFolder><HostFolder>$(& $esc (Resolve-Path $InstallerDir).Path)</HostFolder><SandboxFolder>C:\cds\installer</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
     <MappedFolder><HostFolder>$(& $esc $Kit)</HostFolder><SandboxFolder>C:\cds\kit</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
     <MappedFolder><HostFolder>$(& $esc $McpTest)</HostFolder><SandboxFolder>C:\cds\mcptest</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
+    <MappedFolder><HostFolder>$(& $esc $Downloads)</HostFolder><SandboxFolder>C:\cds\downloads</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
     <MappedFolder><HostFolder>$(& $esc $Results)</HostFolder><SandboxFolder>C:\cds\results</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>
   </MappedFolders>
   <LogonCommand>
@@ -63,6 +77,7 @@ Write-Host "Run $Run"
 Write-Host "  Installer : $setup"
 Write-Host "  SHA-256   : $installerHash"
 Write-Host "  Results   : $Results"
+Write-Host "  Scenarios : $scenarioList; networking $net; expects version $version"
 Write-Host "  Time limit: $TimeoutMinutes min"
 $started = Get-Date
 Start-Process -FilePath $exe -ArgumentList "`"$wsbPath`""

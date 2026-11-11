@@ -36,9 +36,29 @@ The first time, CDS creates the project's memory. After that, Claude sees the re
 | `cds-workbench` server | Visual Studio state, errors, output, debugger and commands (needs the VS Bridge); showing code and images in the Review Panel; sending a task to another AI provider; fetching a web page. |
 | VS Bridge | A Visual Studio extension that shares build errors, output and debugger state with Claude. It answers only programs on your own PC, not web pages. |
 | Review Panel | A local page (`http://127.0.0.1:63000`) where code and images from Claude appear. |
-| Tray app | Starts with Windows; opens the Dashboard; **Configure AI Keys**. |
+| Tray app | Starts with Windows; opens the Dashboard; **Configure AI Keys**; **Set up Claude Code** (optional, below). |
 | Dashboard | Browse the memory. |
 | `claudedev` | The command-line tool that reads and writes the memory. |
+
+## Claude Code (optional)
+
+If you also use [Claude Code](https://code.claude.com), CDS can work there by itself, without Claude having to remember to call it. **It is off until you turn it on.**
+
+**What it does,** in each Claude Code session started in a project folder (one with `.git`, `docs\`, a solution or project file, or `package.json`/`pyproject.toml`/`Cargo.toml`/`go.mod`):
+- when the session starts, Claude gets the same context as `claudedev_load` (the last handoff, the ground truth's status, recent mistakes);
+- before the context is compacted and when the session ends, an automatic handoff is saved (the last request, the files edited, Claude's last reply). It never replaces a handoff Claude wrote itself;
+- each file Claude edits gets one line in the project's activity (once per file per session);
+- Claude Code gets the CDS tools (both servers).
+
+It never blocks Claude Code: the hook always succeeds, does nothing outside project folders, and writes any error to `%LOCALAPPDATA%\ClaudeDevStudio\hooks.log`.
+
+**Turn it on:** the tray app's **Set up Claude Code…**, or `claudedev claude-code setup`, or tick "Also set up Claude Code" on the installer's last page (silent installs: `ClaudeDevStudio-Setup.exe /S /CLAUDECODE=1`). Start a new Claude Code session afterwards. **Check it:** `claudedev claude-code status`. **Turn it off:** the tray app's **Remove from Claude Code…**, or `claudedev claude-code remove`; uninstalling CDS does it too.
+
+**What it changes** (each file is backed up first as `<file>.bak-cds-<date>`; everything else in it is kept; a file that isn't valid JSON is left alone):
+- `%USERPROFILE%\.claude\settings.json`: four entries under `"hooks"` (`SessionStart`, `PreCompact`, `SessionEnd`, `PostToolUse`), each running `node.exe …\ClaudeDevStudio\mcp-server\cds-hook.js`. Remove takes out only entries that run `cds-hook.js`.
+- Claude Code's user-scope MCP servers: `claudedevstudio` and `cds-workbench`, added with `claude mcp add --scope user` when `claude.exe` is on your PATH, otherwise written to the `"mcpServers"` of `%USERPROFILE%\.claude.json`.
+
+(`CLAUDE_CONFIG_DIR`, if you set it, moves both files, as it does for Claude Code.)
 
 ## Where your data lives
 
@@ -52,7 +72,7 @@ The workbench can send tasks to Together, Groq, DeepInfra, Fireworks or OpenRout
 
 ## Uninstall
 
-Settings › Apps › ClaudeDevStudio › Uninstall (or the Uninstall shortcut in the Start menu). It removes the program and its two entries in Claude Desktop's settings (your other servers stay), and removes the VS Bridge from Visual Studio. **Your memory in `Documents\ClaudeDevStudio` is kept.** The AI keys file is removed with the program. Node.js and .NET stay installed.
+Settings › Apps › ClaudeDevStudio › Uninstall (or the Uninstall shortcut in the Start menu). It removes the program and its two entries in Claude Desktop's settings (your other servers stay), CDS's hooks and servers from Claude Code if you set that up (the rest of your Claude Code settings stay), and the VS Bridge from Visual Studio. **Your memory in `Documents\ClaudeDevStudio` is kept.** The AI keys file is removed with the program. Node.js and .NET stay installed.
 
 ## Working with ground truths
 

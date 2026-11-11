@@ -395,6 +395,12 @@ namespace ClaudeDevStudio.Memory
 
         [JsonPropertyName("notes")]
         public string? Notes { get; set; }
+
+        // Who wrote an automatic handoff when it isn't the CLI's session state, e.g.
+        // "from the Claude Code session (session end)" for the Claude Code hook (P4).
+        [JsonPropertyName("origin")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Origin { get; set; }
     }
 
     #endregion

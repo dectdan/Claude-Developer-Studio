@@ -53,7 +53,7 @@
                                NavigateUri="mailto:danielegain@gmail.com"
                                HorizontalAlignment="Center"/>
                 <HyperlinkButton Content="GitHub Repository" 
-                               NavigateUri="https://github.com/dectdan/Cloud-Developer-Studio"
+                               NavigateUri="https://github.com/dectdan/Claude-Developer-Studio"
                                HorizontalAlignment="Center"/>
             </StackPanel>
             

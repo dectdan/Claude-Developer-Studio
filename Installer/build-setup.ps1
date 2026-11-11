@@ -79,7 +79,7 @@ Step '[5/7] MCP servers, Review Panel, scripts'
 $mcpSrc  = Join-Path $Root 'mcp-server'
 $mcpDest = Join-Path $Build 'mcp-server'
 New-Item -ItemType Directory -Force -Path $mcpDest | Out-Null
-foreach ($f in 'index.js', 'workbench.js', 'cds-paths.js', 'package.json', 'package-lock.json', 'manifest.json', 'qwen_config.template.json') {
+foreach ($f in 'index.js', 'workbench.js', 'cds-paths.js', 'cds-context.js', 'cds-hook.js', 'package.json', 'package-lock.json', 'manifest.json', 'qwen_config.template.json') {
     Copy-Item (Join-Path $mcpSrc $f) $mcpDest
 }
 # The scaffold's templates (claudedev_scaffold); setup.nsi installs the staged folder recursively.
@@ -99,26 +99,39 @@ foreach ($f in 'server.js', 'package.json', 'package-lock.json') { Copy-Item (Jo
 Push-Location $rvDest
 try { Run 'review-server npm ci' 'npm.cmd' @('ci', '--omit=dev', '--no-audit', '--no-fund') } finally { Pop-Location }
 
-foreach ($f in 'cds-config.js', 'cds-vsix.ps1', 'cds-path.ps1') { Copy-Item (Join-Path $Installer $f) $Build }
+foreach ($f in 'cds-config.js', 'cds-claude-code.js', 'cds-vsix.ps1', 'cds-path.ps1') { Copy-Item (Join-Path $Installer $f) $Build }
 Ok 'Staged'
 
 # ---- 6. Runtimes the installer bundles (so it installs with no network) ----
 Step '[6/7] Bundled runtimes'
+# Node.js: the Active LTS line's latest release (v26 "Lithium", LTS from 2026-10-28; checked on
+# nodejs.org/dist/index.json 2026-11-11). Installed only when the PC has no Node.js.
+$NodeVersion = '26.13.1'
+# Cache: the downloaded file's own name (a new version is downloaded, never an old one reused);
+# File: the name setup.nsi installs it from.
 $bundles = @(
-    @{ Name = 'Node.js 22.14.0 LTS';          File = 'node-lts-x64.msi';                 Url = 'https://nodejs.org/dist/v22.14.0/node-v22.14.0-x64.msi' },
-    @{ Name = '.NET 8 Desktop Runtime';       File = 'windowsdesktop-runtime-8-x64.exe'; Url = 'https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe' },
-    @{ Name = 'Windows App Runtime 1.8';      File = 'WinAppRuntime.exe';                Url = 'https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe' }
+    @{ Name = "Node.js $NodeVersion LTS";     Cache = "node-v$NodeVersion-x64.msi";     File = 'node-lts-x64.msi';                 Url = "https://nodejs.org/dist/v$NodeVersion/node-v$NodeVersion-x64.msi"; Sums = "https://nodejs.org/dist/v$NodeVersion/SHASUMS256.txt" },
+    @{ Name = '.NET 8 Desktop Runtime';       Cache = 'windowsdesktop-runtime-8-x64.exe'; File = 'windowsdesktop-runtime-8-x64.exe'; Url = 'https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe' },
+    @{ Name = 'Windows App Runtime 1.8';      Cache = 'WinAppRuntime.exe';                File = 'WinAppRuntime.exe';                Url = 'https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe' }
 )
 foreach ($b in $bundles) {
-    $cached = Join-Path $Downloads $b.File
+    $cached = Join-Path $Downloads $b.Cache
     if (Test-Path $cached) {
         Write-Host "  $($b.Name): cached"
     } else {
         Write-Host "  $($b.Name): downloading $($b.Url)"
         Invoke-WebRequest -Uri $b.Url -OutFile $cached -UseBasicParsing
+        if ($b.Sums) {
+            # Node.js publishes SHA-256 sums beside each release: the download must match.
+            $sums = (Invoke-WebRequest -Uri $b.Sums -UseBasicParsing).Content -split "`n"
+            $want = ($sums | Where-Object { $_ -match "\s$([regex]::Escape($b.Cache))\s*$" } | ForEach-Object { ($_ -split '\s+')[0] }) | Select-Object -First 1
+            $got = (Get-FileHash $cached -Algorithm SHA256).Hash
+            if (-not $want -or $got -ne $want.ToUpper()) { Remove-Item $cached -Force; Fail "$($b.Cache): SHA-256 $got does not match SHASUMS256.txt ($want); deleted it" }
+            Ok "$($b.Cache): SHA-256 matches SHASUMS256.txt"
+        }
     }
     $sig = Get-AuthenticodeSignature -FilePath $cached
-    if ($sig.Status -ne 'Valid') { Remove-Item $cached -Force; Fail "$($b.File): signature $($sig.Status); deleted it, run the build again" }
+    if ($sig.Status -ne 'Valid') { Remove-Item $cached -Force; Fail "$($b.Cache): signature $($sig.Status); deleted it, run the build again" }
     Copy-Item $cached (Join-Path $Build $b.File)
     Ok "$($b.Name): signed by $($sig.SignerCertificate.GetNameInfo('SimpleName', $false))"
 }

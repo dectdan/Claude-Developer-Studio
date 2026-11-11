@@ -30,6 +30,7 @@ namespace ClaudeDevStudio.TrayApp
     {
         private NotifyIcon? _trayIcon;
         private ContextMenuStrip? _contextMenu;
+        private ToolStripMenuItem _claudeCodeItem = null!;
         private Process? _mcpServerProcess;
         private UpdateInfo? _availableUpdate;
         private static readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
@@ -51,6 +52,9 @@ namespace ClaudeDevStudio.TrayApp
             _contextMenu.Items.Add("View Activity", null, OnViewActivity);
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add("Link Claude Desktop...", null, OnLinkClaudeDesktop);
+            _claudeCodeItem = new ToolStripMenuItem("Set up Claude Code...", null, OnClaudeCode);
+            _contextMenu.Items.Add(_claudeCodeItem);
+            _contextMenu.Opening += (s, e) => _claudeCodeItem.Text = ClaudeCodeIsSetUp() ? "Remove from Claude Code..." : "Set up Claude Code...";
             _contextMenu.Items.Add("Configure AI Keys...", null, OnConfigureAiKeys);
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add("Pending Approvals (0)", null, OnPendingApprovals);
@@ -424,12 +428,98 @@ namespace ClaudeDevStudio.TrayApp
             }
         }
 
+        // Claude Code's user settings (CLAUDE_CONFIG_DIR moves it, as it does for Claude Code).
+        private static string ClaudeCodeSettingsPath()
+        {
+            var dir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+            if (string.IsNullOrEmpty(dir))
+                dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
+            return Path.Combine(dir, "settings.json");
+        }
+
+        // Set up = a CDS hook (a command that runs cds-hook.js) is in Claude Code's user settings.
+        private static bool ClaudeCodeIsSetUp()
+        {
+            try
+            {
+                var f = ClaudeCodeSettingsPath();
+                return File.Exists(f) && File.ReadAllText(f).Contains("cds-hook.js", StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
+        // "Set up Claude Code..." / "Remove from Claude Code...": explains, asks, then runs
+        // claudedev claude-code setup | remove and shows what it did. Opt-in: never done silently.
+        private void OnClaudeCode(object? sender, EventArgs e)
+        {
+            var setUp = ClaudeCodeIsSetUp();
+            var question = setUp
+                ? "Remove ClaudeDevStudio from Claude Code?\n\n" +
+                  "This takes out only what \"Set up Claude Code\" added: the claudedevstudio and cds-workbench servers " +
+                  "(user scope) and the four hooks that run cds-hook.js. Everything else in your Claude Code settings stays. " +
+                  "Your memory in Documents\\ClaudeDevStudio is kept."
+                : "Set up Claude Code to use ClaudeDevStudio?\n\n" +
+                  "Claude Code sessions will then:\n" +
+                  "  - get the CDS tools (the claudedevstudio and cds-workbench servers, user scope);\n" +
+                  "  - load the project's memory and ground truth when a session starts;\n" +
+                  "  - save an automatic handoff before compaction and when a session ends;\n" +
+                  "  - note each file edited (once per file per session).\n\n" +
+                  "It adds four hooks to " + ClaudeCodeSettingsPath() + " and two servers to Claude Code's ~/.claude.json, " +
+                  "backs both files up first, and keeps everything else in them. Only folders that look like projects are used.\n\n" +
+                  "You can undo it from this menu (Remove from Claude Code) or with: claudedev claude-code remove";
+            if (MessageBox.Show(question, setUp ? "Remove from Claude Code" : "Set up Claude Code",
+                    MessageBoxButtons.OKCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.OK)
+                return;
+
+            try
+            {
+                var claudedev = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ClaudeDevStudio", "CLI", "claudedev.exe");
+                var psi = new ProcessStartInfo(claudedev)
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+                psi.ArgumentList.Add("claude-code");
+                psi.ArgumentList.Add(setUp ? "remove" : "setup");
+                using var p = Process.Start(psi);
+                if (p == null) throw new InvalidOperationException("claudedev.exe did not start");
+                var errTask = p.StandardError.ReadToEndAsync();
+                var output = p.StandardOutput.ReadToEnd();
+                var finished = p.WaitForExit(120000);
+                var msg = (output + errTask.Result).Trim();
+                var ok = finished && p.ExitCode == 0;
+                MessageBox.Show(
+                    msg + (ok && !setUp ? "\n\nStart a new Claude Code session to use it." : ""),
+                    ok ? (setUp ? "Removed from Claude Code" : "Claude Code set up") : "Not done",
+                    MessageBoxButtons.OK, ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Could not run claudedev claude-code:\n{ex.Message}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        // The Dashboard folder: InstallDir (written by the installer) + Dashboard. (Before v1.4.0
+        // this read a DashboardPath value that nothing writes.)
+        private static string DashboardDir()
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\ClaudeDevStudio", false);
+            var dir = key?.GetValue("InstallDir") as string;
+            if (string.IsNullOrEmpty(dir))
+                dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClaudeDevStudio");
+            return Path.Combine(dir, "Dashboard");
+        }
+
         private void OnOpenDashboard(object? sender, EventArgs e)
         {
             try
             {
-                using var key = Registry.CurrentUser.OpenSubKey(@"Software\ClaudeDevStudio", false);
-                var dashboardPath = key?.GetValue("DashboardPath") as string;
+                var dashboardPath = DashboardDir();
 
                 if (!string.IsNullOrEmpty(dashboardPath))
                 {
@@ -488,8 +578,7 @@ namespace ClaudeDevStudio.TrayApp
             // Launch Dashboard and navigate to Settings
             try
             {
-                using var key = Registry.CurrentUser.OpenSubKey(@"Software\ClaudeDevStudio", false);
-                var dashboardPath = key?.GetValue("DashboardPath") as string;
+                var dashboardPath = DashboardDir();
 
                 if (!string.IsNullOrEmpty(dashboardPath))
                 {
@@ -525,8 +614,9 @@ namespace ClaudeDevStudio.TrayApp
 
         private void OnAbout(object? sender, EventArgs e)
         {
-            var version = UpdateChecker.CheckForUpdatesAsync().Result?.CurrentVersion ?? "1.0.0";
-            
+            // The product version (Directory.Build.props); About no longer asks GitHub for it.
+            var version = typeof(TrayApplication).Assembly.GetName().Version?.ToString(3) ?? "unknown";
+
             MessageBox.Show(
                 $"ClaudeDevStudio v{version}\n\n" +
                 "Memory & Development System for Claude AI\n\n" +
@@ -539,7 +629,7 @@ namespace ClaudeDevStudio.TrayApp
                 "• Project memory & context preservation\n" +
                 "• Auto-backup to Documents folder\n" +
                 "• Claude Desktop integration via MCP\n\n" +
-                "GitHub: github.com/dectdan/Cloud-Developer-Studio",
+                "GitHub: github.com/dectdan/Claude-Developer-Studio",
                 "About ClaudeDevStudio",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);

@@ -351,9 +351,26 @@ namespace ClaudeDevStudio.Memory
         public bool WriteAutomaticHandoff(out Handoff handoff)
         {
             handoff = BuildAutomaticHandoff();
+            return RecordAutomaticHandoff(handoff);
+        }
+
+        /// <summary>
+        /// An automatic handoff built by someone else (record &lt;path&gt; handoff &lt;json&gt; --auto,
+        /// used by the Claude Code hook). Same rule as WriteAutomaticHandoff: always appended to
+        /// HANDOFFS.jsonl; written to session_handoff.md only when that file doesn't hold an
+        /// explicit handoff. Returns false when the explicit one was kept.
+        /// </summary>
+        public bool RecordAutomaticHandoff(Handoff handoff)
+        {
             handoff.Id = $"HND{NextIdNumber(HandoffHistoryPath, "HND"):D3}";
             handoff.Timestamp = DateTime.Now;
             handoff.Source = Handoff.Automatic;
+            handoff.WhereIStopped = (handoff.WhereIStopped ?? string.Empty).Trim();
+            handoff.NextStep = (handoff.NextStep ?? string.Empty).Trim();
+            handoff.OpenQuestions = (handoff.OpenQuestions ?? new List<string>())
+                .Where(q => !string.IsNullOrWhiteSpace(q)).Select(q => q.Trim()).ToList();
+            handoff.Notes = string.IsNullOrWhiteSpace(handoff.Notes) ? null : handoff.Notes.Trim();
+            handoff.Origin = string.IsNullOrWhiteSpace(handoff.Origin) ? null : handoff.Origin.Trim();
 
             AppendJsonLine(HandoffHistoryPath, handoff);
             if (LatestHandoffIsExplicit())
@@ -417,7 +434,8 @@ namespace ClaudeDevStudio.Memory
             var sb = new StringBuilder();
             sb.AppendLine(explicitOne ? HandoffMarkerExplicit : HandoffMarkerAuto);
             sb.AppendLine($"# Handoff: {_projectName}");
-            sb.AppendLine($"*Written {h.Timestamp:yyyy-MM-dd HH:mm} ({(explicitOne ? "explicit" : "automatic, from the session state")}) · {h.Id}*");
+            var kind = explicitOne ? "explicit" : $"automatic, {h.Origin ?? "from the session state"}";
+            sb.AppendLine($"*Written {h.Timestamp:yyyy-MM-dd HH:mm} ({kind}) · {h.Id}*");
             sb.AppendLine();
             sb.AppendLine($"**Where I stopped:** {h.WhereIStopped}");
             sb.AppendLine();

@@ -126,10 +126,10 @@
                                NavigateUri="mailto:danielegain@gmail.com"
                                FontSize="14"/>
                 <HyperlinkButton Content="GitHub Repository" 
-                               NavigateUri="https://github.com/dectdan/Cloud-Developer-Studio"
+                               NavigateUri="https://github.com/dectdan/Claude-Developer-Studio"
                                FontSize="14"/>
                 <HyperlinkButton Content="Report a Bug" 
-                               NavigateUri="https://github.com/dectdan/Cloud-Developer-Studio/issues"
+                               NavigateUri="https://github.com/dectdan/Claude-Developer-Studio/issues"
                                FontSize="14"/>
             </StackPanel>
         </StackPanel>

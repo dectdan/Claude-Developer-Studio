@@ -72,6 +72,7 @@ namespace ClaudeDevStudio
                     "sync" => SyncProject(args),
                     "update" => UpdateCommand(args),
                     "configure-claude" or "link-claude" => ConfigureClaude(),
+                    "claude-code" => ClaudeCodeCommand(args),
                     "version" or "--version" or "-v" => ShowVersion(),
                     "help" or "--help" or "-h" => ShowHelp(),
                     _ => Error($"Unknown command: {command}")
@@ -178,7 +179,9 @@ namespace ClaudeDevStudio
                 return Error($"Project path does not exist: {projectPath}");
 
             var type = args[2].ToLower();
-            var jsonData = string.Join(" ", args.Skip(3));
+            // --auto (handoffs only): an automatic handoff, which never replaces an explicit one.
+            var automatic = args.Skip(3).Any(a => a == "--auto");
+            var jsonData = string.Join(" ", args.Skip(3).Where(a => a != "--auto"));
 
             var memory = new ClaudeMemory(projectPath);
 
@@ -220,12 +223,22 @@ namespace ClaudeDevStudio
                     break;
 
                 case "handoff":
-                    // {"where_i_stopped": "...", "next_step": "...", "open_questions": ["..."], "notes": "..."}
+                    // {"where_i_stopped": "...", "next_step": "...", "open_questions": ["..."], "notes": "...", "origin": "..."}
                     var handoff = System.Text.Json.JsonSerializer.Deserialize<Handoff>(jsonData);
                     if (handoff == null || string.IsNullOrWhiteSpace(handoff.WhereIStopped) || string.IsNullOrWhiteSpace(handoff.NextStep))
                         return Error("A handoff needs \"where_i_stopped\" and \"next_step\".");
-                    memory.RecordHandoff(handoff);
-                    Console.WriteLine($"✓ Recorded handoff {handoff.Id}: {memory.HandoffPath}");
+                    if (automatic)
+                    {
+                        var wrote = memory.RecordAutomaticHandoff(handoff);
+                        Console.WriteLine(wrote
+                            ? $"✓ Recorded automatic handoff {handoff.Id}: {memory.HandoffPath}"
+                            : $"✓ Automatic handoff {handoff.Id} saved in HANDOFFS.jsonl; the explicit handoff is kept: {memory.HandoffPath}");
+                    }
+                    else
+                    {
+                        memory.RecordHandoff(handoff);
+                        Console.WriteLine($"✓ Recorded handoff {handoff.Id}: {memory.HandoffPath}");
+                    }
                     break;
 
                 case "performance":
@@ -1079,6 +1092,11 @@ namespace ClaudeDevStudio
             Console.WriteLine("                           (never replaces one written with record ... handoff)");
             Console.WriteLine("  cleanup [project_path]   Run daily memory cleanup");
             Console.WriteLine();
+            Console.WriteLine("  CLAUDE CODE (optional, off until you turn it on):");
+            Console.WriteLine("  claude-code setup        Register CDS's servers and hooks with Claude Code");
+            Console.WriteLine("  claude-code remove       Take out only what setup added");
+            Console.WriteLine("  claude-code status       Show what is set up");
+            Console.WriteLine();
             Console.WriteLine("  PROJECT MANAGEMENT:");
             Console.WriteLine("  projects                 List all ClaudeDevStudio projects");
             Console.WriteLine("  switch <project_name>    Switch to a different project");
@@ -1195,14 +1213,7 @@ namespace ClaudeDevStudio
             }
 
             // Find node.exe full path - Claude Desktop (Store app) cannot resolve bare "node"
-            var nodePath = "node";
-            var nodeCandidates = new[] {
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "nodejs", "node.exe"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "nodejs", "node.exe"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "nodejs", "node.exe")
-            };
-            foreach (var candidate in nodeCandidates)
-                if (File.Exists(candidate)) { nodePath = candidate; break; }
+            var nodePath = FindNodeExe() ?? "node";
             if (nodePath == "node")
             {
                 Console.WriteLine("Node.js not found. Install Node.js LTS from https://nodejs.org, then run: claudedev configure-claude");
@@ -1245,6 +1256,67 @@ namespace ClaudeDevStudio
             }
             Console.WriteLine("Claude Desktop configured. Quit Claude Desktop fully and reopen it to activate ClaudeDevStudio.");
             return 0;
+        }
+
+        // node.exe in the places the installer's Node.js MSI uses (the same list as setup.nsi).
+        static string? FindNodeExe()
+        {
+            var candidates = new[] {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "nodejs", "node.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "nodejs", "node.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "nodejs", "node.exe")
+            };
+            return candidates.FirstOrDefault(File.Exists);
+        }
+
+        // claudedev claude-code setup | remove | status
+        // Opt-in: registers CDS's two MCP servers with Claude Code (user scope) and adds its four
+        // hooks to Claude Code's user settings, or takes out only those. The work is done by the
+        // installed cds-claude-code.js (run with Node), which keeps everything else in both files,
+        // backs them up first and leaves a file that isn't valid JSON untouched.
+        // Anything after the action is passed to the script (e.g. --settings/--claude-json for tests).
+        static int ClaudeCodeCommand(string[] args)
+        {
+            var action = args.Length > 1 ? args[1].ToLower() : "status";
+            if (action != "setup" && action != "remove" && action != "status")
+                return Error("Usage: claudedev claude-code setup | remove | status");
+
+            var installDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClaudeDevStudio");
+            var script = Path.Combine(installDir, "cds-claude-code.js");
+            var mcpDir = Path.Combine(installDir, "mcp-server");
+            if (!File.Exists(script))
+            {
+                Console.WriteLine($"{script} not found. ClaudeDevStudio may not be installed correctly. Try reinstalling.");
+                return 1;
+            }
+            var nodePath = FindNodeExe();
+            if (nodePath == null)
+            {
+                Console.WriteLine("Node.js not found. Install Node.js LTS from https://nodejs.org, then run: claudedev claude-code " + action);
+                return 1;
+            }
+
+            var psi = new System.Diagnostics.ProcessStartInfo(nodePath)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            foreach (var arg in new[] { script, action, "--node", nodePath, "--mcp", mcpDir })
+                psi.ArgumentList.Add(arg);
+            foreach (var arg in args.Skip(2))
+                psi.ArgumentList.Add(arg);
+
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc == null) { Console.WriteLine("Could not start Node.js."); return 1; }
+            var stderrTask = proc.StandardError.ReadToEndAsync();
+            var output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit();
+            var errors = stderrTask.Result;
+            Console.WriteLine((output + errors).TrimEnd());
+            return proc.ExitCode;
         }
         static int ShowVersion()
         {

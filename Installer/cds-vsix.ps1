@@ -29,15 +29,17 @@ function Write-Log([string]$Message) {
     }
 }
 
-# VSIXInstaller exit codes worth naming in the log.
+# VSIXInstaller exit codes worth naming in the log. 2003 is NoApplicableSKUsException ("This
+# extension is not installable on any currently installed products"), seen in VSIXInstaller's
+# own logs (%TEMP%\dd_VSIXInstaller_*.log) for Build Tools 2019 and 2022; before v1.4.0 this
+# table called it "Visual Studio is running", which was wrong. Other codes: see those logs.
 $Meaning = @{
     0    = 'done'
     1001 = 'already installed'
     1002 = 'not installed'
-    2001 = 'not applicable to this Visual Studio (version or edition)'
-    2003 = 'Visual Studio is running: close it and run the installer again'
-    2004 = 'blocked by a running process: close Visual Studio and run the installer again'
+    2003 = 'not installable on this product (VSIXInstaller: no applicable product)'
 }
+$LogHint = 'not done; VSIXInstaller''s log: %TEMP%\dd_VSIXInstaller_*.log'
 
 try {
     Write-Log "VS Bridge ($Action):"
@@ -66,6 +68,12 @@ try {
         if (-not (Test-Path -LiteralPath $installer)) { continue }
         $found++
         $name = '{0} {1} ({2})' -f $vs.displayName, $vs.installationVersion, $vs.instanceId
+        # Build Tools has VSIXInstaller.exe but no IDE: it can't host extensions (VSIXInstaller
+        # refuses with 2003 after a few seconds), so it is skipped and said so.
+        if ($vs.productId -eq 'Microsoft.VisualStudio.Product.BuildTools') {
+            Write-Log "  $name : skipped: Build Tools can't host extensions (the VS Bridge needs the Visual Studio IDE)."
+            continue
+        }
         if ($Action -eq 'install') {
             $argList = @('/quiet', "/instanceIds:$($vs.instanceId)", "`"$Vsix`"")
         } else {
@@ -80,7 +88,7 @@ try {
         }
         $code = $p.ExitCode
         $what = $Meaning[$code]
-        if (-not $what) { $what = 'not done' }
+        if (-not $what) { $what = $LogHint }
         Write-Log "  $name : exit $code ($what)"
     }
     if ($found -eq 0) { Write-Log '  Skipped: no Visual Studio with VSIXInstaller.exe found.' }
