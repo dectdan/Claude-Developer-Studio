@@ -1193,19 +1193,47 @@ namespace ClaudeDevStudio
             };
             foreach (var candidate in nodeCandidates)
                 if (File.Exists(candidate)) { nodePath = candidate; break; }
+            if (nodePath == "node")
+            {
+                Console.WriteLine("Node.js not found. Install Node.js LTS from https://nodejs.org, then run: claudedev configure-claude");
+                return 1;
+            }
 
-            // Write clean JSON - no BOM, no serialization, no corruption risk
-            var escapedNode = nodePath.Replace(@"\", @"\\");
-            var escapedPath = mcpServerPath.Replace(@"\", @"\\");
-            var json = $"{{\"mcpServers\":{{\"claudedevstudio\":{{\"command\":\"{escapedNode}\",\"args\":[\"{escapedPath}\"]}}}}}}";
-            Directory.CreateDirectory(configDir);
-            File.WriteAllText(configPath, json, new System.Text.UTF8Encoding(false));
+            // The installer's cds-config.js adds the two CDS entries and keeps every other
+            // server and setting in the file (it backs the file up first, and leaves a file
+            // that isn't valid JSON untouched). Writing the file here would lose them.
+            var script = Path.Combine(installDir, "cds-config.js");
+            if (!File.Exists(script))
+            {
+                Console.WriteLine($"{script} not found. ClaudeDevStudio may not be installed correctly. Try reinstalling.");
+                return 1;
+            }
 
-            Console.WriteLine("Claude Desktop configured successfully!");
-            Console.WriteLine($"  Config: {configPath}");
-            Console.WriteLine($"  MCP Server: {mcpServerPath}");
+            var psi = new System.Diagnostics.ProcessStartInfo(nodePath)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            foreach (var arg in new[] { script, "install", "--config", configPath, "--node", nodePath,
+                                        "--mcp", Path.GetDirectoryName(mcpServerPath)!,
+                                        "--manual", Path.Combine(installDir, "ADD-TO-CLAUDE-CONFIG.txt") })
+                psi.ArgumentList.Add(arg);
+
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc == null) { Console.WriteLine("Could not start Node.js."); return 1; }
+            var output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+            Console.WriteLine(output.TrimEnd());
             Console.WriteLine();
-            Console.WriteLine("Restart Claude Desktop to activate ClaudeDevStudio.");
+
+            if (proc.ExitCode != 0)
+            {
+                Console.WriteLine("Claude Desktop's config was NOT changed (see above).");
+                return 1;
+            }
+            Console.WriteLine("Claude Desktop configured. Quit Claude Desktop fully and reopen it to activate ClaudeDevStudio.");
             return 0;
         }
         static int ShowVersion()

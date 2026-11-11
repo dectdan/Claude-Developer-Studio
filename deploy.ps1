@@ -1,192 +1,109 @@
+# deploy.ps1 -- developer tool: copies a fresh build of ClaudeDevStudio into the installed
+# copy (%LOCALAPPDATA%\ClaudeDevStudio) without running the installer.
+#
+#   powershell -NoProfile -ExecutionPolicy Bypass -File deploy.ps1 -DryRun   (lists, changes nothing)
+#   powershell -NoProfile -ExecutionPolicy Bypass -File deploy.ps1
+#
+# It copies: the CLI's whole build output (published fresh from the source), mcp-server\
+# index.js, workbench.js, package.json, package-lock.json, and the Review Panel's
+# server.js, package.json, package-lock.json. Only files whose content differs are copied;
+# each file it replaces is backed up first under _deploy_backups\<time>\ in the installed copy.
+# It never touches the user's API keys file or Claude Desktop's config: only the files
+# listed above are ever written.
+
 param(
-    [string]$Src = "D:\Projects\ClaudeDevStudio",
+    [string]$Src = $PSScriptRoot,
+    [string]$Dst = (Join-Path $env:LOCALAPPDATA 'ClaudeDevStudio'),
     [switch]$DryRun
 )
 
-$Dst      = "$env:LOCALAPPDATA\ClaudeDevStudio"
-$Deployed = @()
-$Skipped  = @()
+$ErrorActionPreference = 'Stop'
+$stamp     = Get-Date -Format 'yyyyMMdd_HHmm'
+$BackupDir = Join-Path $Dst "_deploy_backups\$stamp"
+$Deployed  = New-Object System.Collections.Generic.List[string]
+$Same      = 0
+$tag       = if ($DryRun) { '[DRY] ' } else { '' }
 
 function Write-Step($msg) { Write-Host "`n>> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "   OK  $msg" -ForegroundColor Green }
-function Write-Skip($msg) { Write-Host "   --  $msg" -ForegroundColor DarkGray }
 function Write-Warn($msg) { Write-Host "   !!  $msg" -ForegroundColor Yellow }
 
-function Deploy-File($srcRel, $dstRel = $null) {
-    if (-not $dstRel) { $dstRel = $srcRel }
-    $s = Join-Path $Src $srcRel
-    $d = Join-Path $Dst $dstRel
-    if (-not (Test-Path $s)) { Write-Warn "Source not found: $srcRel"; return }
-    $dDir = Split-Path $d -Parent
-    if (-not (Test-Path $dDir)) {
-        if (-not $DryRun) { New-Item -ItemType Directory -Path $dDir -Force | Out-Null }
-        Write-Ok "Created dir: $dDir"
-    }
-    $copy = $true
-    if (Test-Path $d) {
-        $srcTime = (Get-Item $s).LastWriteTimeUtc
-        $dstTime = (Get-Item $d).LastWriteTimeUtc
-        if ($srcTime -le $dstTime) {
-            Write-Skip $dstRel
-            $script:Skipped += $dstRel
-            $copy = $false
+# Copies one file if its content differs; backs up the file it replaces.
+function Deploy-File([string]$SrcFile, [string]$DstRel) {
+    $d = Join-Path $Dst $DstRel
+    if (Test-Path -LiteralPath $d) {
+        if ((Get-FileHash -LiteralPath $SrcFile).Hash -eq (Get-FileHash -LiteralPath $d).Hash) { $script:Same++; return }
+        if (-not $DryRun) {
+            $b = Join-Path $BackupDir $DstRel
+            New-Item -ItemType Directory -Force -Path (Split-Path $b -Parent) | Out-Null
+            Copy-Item -LiteralPath $d $b
         }
+        Write-Ok "$tag$DstRel  (replaced; backup in _deploy_backups\$stamp)"
+    } else {
+        Write-Ok "$tag$DstRel  (new)"
     }
-    if ($copy) {
-        if (-not $DryRun) { Copy-Item $s $d -Force }
-        $tag = if ($DryRun) { "[DRY] " } else { "" }
-        Write-Ok "$tag$dstRel"
-        $script:Deployed += $dstRel
+    if (-not $DryRun) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $d -Parent) | Out-Null
+        Copy-Item -LiteralPath $SrcFile $d -Force
     }
+    $script:Deployed.Add($DstRel)
 }
 
-# Deploy all changed files from a source folder to a dest folder (flat, no recurse into subdirs)
-function Deploy-Dir($srcSubdir, $dstSubdir, [string[]]$ExcludeNames = @()) {
-    $srcDir = Join-Path $Src $srcSubdir
-    $dstDir = Join-Path $Dst $dstSubdir
-    if (-not (Test-Path $srcDir)) { Write-Warn "Source dir not found: $srcSubdir"; return }
-    if (-not (Test-Path $dstDir) -and -not $DryRun) { New-Item -ItemType Directory $dstDir -Force | Out-Null }
-    foreach ($f in Get-ChildItem $srcDir -File) {
-        if ($ExcludeNames -contains $f.Name) { Write-Skip "$dstSubdir\$($f.Name)"; continue }
-        $d = Join-Path $dstDir $f.Name
-        $copy = $true
-        if (Test-Path $d) {
-            if ($f.LastWriteTimeUtc -le (Get-Item $d).LastWriteTimeUtc) {
-                Write-Skip "$dstSubdir\$($f.Name)"; $script:Skipped += "$dstSubdir\$($f.Name)"; $copy = $false
-            }
-        }
-        if ($copy) {
-            if (-not $DryRun) { Copy-Item $f.FullName $d -Force }
-            $tag = if ($DryRun) { "[DRY] " } else { "" }
-            Write-Ok "$tag$dstSubdir\$($f.Name)"; $script:Deployed += "$dstSubdir\$($f.Name)"
-        }
-    }
-}
-
-if (-not (Test-Path $Src)) {
-    Write-Host "ERROR: Source not found: $Src" -ForegroundColor Red; exit 1
-}
-if (-not (Test-Path $Dst)) {
-    Write-Host "ERROR: AppData install not found: $Dst" -ForegroundColor Red
-    Write-Host "Run install.ps1 first on a fresh machine." -ForegroundColor Yellow
-    exit 1
-}
+if (-not (Test-Path (Join-Path $Src 'ClaudeDevStudio.csproj'))) { Write-Host "ERROR: not the ClaudeDevStudio source: $Src" -ForegroundColor Red; exit 1 }
+if (-not (Test-Path $Dst)) { Write-Host "ERROR: no installed copy at $Dst. Install ClaudeDevStudio with the installer first." -ForegroundColor Red; exit 1 }
 
 Write-Host "`nCDS Deploy" -ForegroundColor Magenta
 Write-Host "  Source : $Src"
 Write-Host "  Target : $Dst"
-if ($DryRun) { Write-Host "  Mode   : DRY RUN" -ForegroundColor Yellow }
+if ($DryRun) { Write-Host '  Mode   : DRY RUN (nothing is copied, stopped or installed)' -ForegroundColor Yellow }
 
-Write-Step "CLI binary (claudedev.exe)"
-$cliBuild = "bin\Release\net8.0\claudedev.exe"
-if (-not (Test-Path (Join-Path $Src $cliBuild))) {
-    Write-Warn "claudedev.exe not built. Run: dotnet build -c Release"
-    Write-Warn "Skipping CLI deploy."
-} else {
-    Deploy-File $cliBuild "CLI\claudedev.exe"
-    Deploy-File $cliBuild "mcp-server\claudedev.exe"
+# ---- CLI: publish fresh into a staging folder, then copy all of it ----
+Write-Step 'CLI (dotnet publish, Release)'
+$cliStage = Join-Path ([System.IO.Path]::GetTempPath()) "cds-deploy-cli-$stamp"
+if (Test-Path $cliStage) { Remove-Item $cliStage -Recurse -Force }
+$ErrorActionPreference = 'Continue'
+$pub = & dotnet publish (Join-Path $Src 'ClaudeDevStudio.csproj') -c Release -r win-x64 --self-contained false -o $cliStage -nologo -v:quiet 2>&1
+$pubCode = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($pubCode -ne 0) { $pub | Select-Object -Last 20 | ForEach-Object { Write-Host "   $_" }; Write-Host 'ERROR: the CLI did not build; nothing deployed.' -ForegroundColor Red; exit 1 }
+foreach ($f in Get-ChildItem $cliStage -Recurse -File) {
+    Deploy-File $f.FullName (Join-Path 'CLI' $f.FullName.Substring($cliStage.Length).TrimStart('\'))
+}
+Remove-Item $cliStage -Recurse -Force
+
+# ---- Both MCP servers ----
+Write-Step 'MCP servers'
+foreach ($f in 'index.js', 'workbench.js', 'package.json', 'package-lock.json') {
+    Deploy-File (Join-Path $Src "mcp-server\$f") "mcp-server\$f"
 }
 
-Write-Step "MCP server files"
-Deploy-File "mcp-server\index.js"
-Deploy-File "mcp-server\qwen_config.json"
-
-Write-Step "Review Panel files"
-Deploy-File "review-server\server.js"
-Deploy-File "review-server\package.json"
-
-Write-Step "Review Panel dependencies"
-$rvMod       = Join-Path $Dst "review-server\node_modules"
-$needInstall = (-not (Test-Path $rvMod)) -or ("review-server\package.json" -in $Deployed)
-if ($needInstall -and -not $DryRun) {
-    Push-Location (Join-Path $Dst "review-server")
-    npm install --silent 2>&1 | Out-Null
-    Pop-Location
-    Write-Ok "npm install complete"
-} elseif ($needInstall -and $DryRun) {
-    Write-Host "   [DRY] Would run npm install" -ForegroundColor Yellow
-} else {
-    Write-Skip "node_modules up to date"
+# ---- Review Panel ----
+Write-Step 'Review Panel'
+foreach ($f in 'server.js', 'package.json', 'package-lock.json') {
+    Deploy-File (Join-Path $Src "review-server\$f") "review-server\$f"
 }
 
-Write-Step "Restart Review Panel"
-if (-not $DryRun) {
-    $listening = netstat -ano | Select-String ":63000 "
-    if ($listening) {
-        $oldPid = ($listening -split '\s+')[-1]
-        Stop-Process -Id ([int]$oldPid) -Force -ErrorAction SilentlyContinue
-        Write-Ok "Stopped old server (PID $oldPid)"
-        Start-Sleep -Milliseconds 500
-    }
-    $serverJs = Join-Path $Dst "review-server\server.js"
-    if (Test-Path $serverJs) {
-        $proc = Start-Process -FilePath "node" -ArgumentList $serverJs -WindowStyle Hidden -PassThru
-        Write-Ok "Started review server (PID $($proc.Id)) at http://localhost:63000"
-    } else {
-        Write-Warn "review-server\server.js not in AppData yet - run again after first deploy"
-    }
-} else {
-    Write-Host "   [DRY] Would restart review server" -ForegroundColor Yellow
-}
-
-Write-Step "TrayApp binaries"
-$trayBuildDir = "ClaudeDevStudio.UI\bin\Release\net8.0-windows"
-if (-not (Test-Path (Join-Path $Src $trayBuildDir))) {
-    Write-Warn "TrayApp not built. Run: dotnet build ClaudeDevStudio.UI -c Release"
-    Write-Warn "Skipping TrayApp deploy."
-} else {
-    $trayFiles = @("ClaudeDevStudio.TrayApp.exe","ClaudeDevStudio.TrayApp.dll",
-                   "ClaudeDevStudio.TrayApp.deps.json","ClaudeDevStudio.TrayApp.runtimeconfig.json")
-    $trayChanged = $false
-    foreach ($f in $trayFiles) { 
-        Deploy-File "$trayBuildDir\$f" "TrayApp\$f"
-        if ("TrayApp\$f" -in $script:Deployed) { $trayChanged = $true }
-    }
-    if ($trayChanged -and -not $DryRun) {
-        Write-Step "Restart TrayApp"
-        $trayProc = Get-Process -Name "ClaudeDevStudio.TrayApp" -ErrorAction SilentlyContinue
-        if ($trayProc) {
-            Stop-Process -Id $trayProc.Id -Force
-            Start-Sleep -Milliseconds 800
-            Write-Ok "Stopped TrayApp (PID $($trayProc.Id))"
+# ---- Dependencies, only when a package file changed ----
+foreach ($dir in 'mcp-server', 'review-server') {
+    if ($Deployed -contains "$dir\package.json" -or $Deployed -contains "$dir\package-lock.json") {
+        Write-Step "$dir dependencies"
+        if ($DryRun) { Write-Host "   [DRY] would run npm ci --omit=dev in $dir" -ForegroundColor Yellow }
+        else {
+            Push-Location (Join-Path $Dst $dir)
+            try { & npm.cmd ci --omit=dev --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { Write-Warn "npm ci failed in $dir" } else { Write-Ok "npm ci in $dir" } }
+            finally { Pop-Location }
         }
-        $trayExe = Join-Path $Dst "TrayApp\ClaudeDevStudio.TrayApp.exe"
-        Start-Process $trayExe -WindowStyle Hidden
-        Write-Ok "TrayApp restarted from $trayExe"
-    } elseif ($trayChanged -and $DryRun) {
-        Write-Host "   [DRY] Would restart TrayApp" -ForegroundColor Yellow
-    } else {
-        Write-Skip "TrayApp unchanged - no restart needed"
     }
 }
 
-Write-Step "VoiceServer binaries"
-$vsBuildDir = "VoiceServer\bin\Release\net8.0\win-x64"
-if (-not (Test-Path (Join-Path $Src $vsBuildDir))) {
-    Write-Warn "VoiceServer not built. Run: dotnet build VoiceServer -c Release -r win-x64"
-    Write-Warn "Skipping VoiceServer deploy."
-} else {
-    # Deploy all files from build output; large assets (kokoro.onnx, runtimes/, voices/, espeak/)
-    # only exist in AppData - they are never overwritten here.
-    $vsExclude = @("kokoro.onnx")   # safety net; this file is not in build output anyway
-    Deploy-Dir $vsBuildDir "VoiceServer" $vsExclude
-    Write-Skip "VoiceServer assets (kokoro.onnx / runtimes / voices / espeak) - not touched"
-}
-
+# ---- Summary ----
 Write-Host "`n-----------------------------------------" -ForegroundColor DarkGray
 if ($Deployed.Count -gt 0) {
-    Write-Host "Deployed $($Deployed.Count) file(s):" -ForegroundColor Green
-    $Deployed | ForEach-Object { Write-Host "  + $_" -ForegroundColor Green }
+    Write-Host "$(if ($DryRun) { 'Would deploy' } else { 'Deployed' }) $($Deployed.Count) file(s); $Same already the same." -ForegroundColor Green
 } else {
-    Write-Host "Nothing to deploy - all files up to date." -ForegroundColor DarkGray
+    Write-Host "Nothing to deploy: all $Same files are already the same." -ForegroundColor DarkGray
 }
-if ($Skipped.Count -gt 0) {
-    Write-Host "Skipped $($Skipped.Count) unchanged." -ForegroundColor DarkGray
+if (($Deployed | Where-Object { $_ -like 'review-server\*' }) -and -not $DryRun) {
+    Write-Host 'The Review Panel loads the new files when it next starts (stop the node process on port 63000, or restart the PC).' -ForegroundColor Yellow
 }
-
-$mcpChanged = $Deployed | Where-Object { $_ -eq "mcp-server\index.js" }
-if ($mcpChanged -and -not $DryRun) {
-    Write-Host "`nRestart Claude Desktop to reload the MCP server." -ForegroundColor Yellow
-} elseif ($Deployed.Count -eq 0) {
-    Write-Host "`nAll good. No restart needed." -ForegroundColor Green
-}
+Write-Host "`nQuit Claude Desktop fully and reopen it." -ForegroundColor Yellow

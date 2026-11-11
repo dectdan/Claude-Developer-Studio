@@ -58,7 +58,6 @@ Find-Version 'mcp-server\package.json'   '"version"\s*:\s*"([^"]+)"'
 Find-Version 'mcp-server\manifest.json'  '"version"\s*:\s*"([^"]+)"'
 Find-Version 'review-server\package.json' '"version"\s*:\s*"([^"]+)"'
 Find-Version 'Installer\setup.nsi'       '!define\s+PRODUCT_VERSION\s+"([^"]+)"'
-Find-Version 'Installer\install-extension.ps1' '\[string\]\$Version\s*=\s*"([^"]+)"'
 Find-Version 'VSExtension\CdsVsBridge\source.extension.vsixmanifest' '<Identity\b[^>]*\bVersion="([^"]+)"'
 Find-Version 'VSExtension\CdsVsBridge\CdsVsBridgePackage.cs' 'extension_loaded",\s*new\s*\{\s*version\s*=\s*"([^"]+)"'
 

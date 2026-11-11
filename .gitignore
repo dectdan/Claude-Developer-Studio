@@ -6,10 +6,18 @@ obj/
 *.cache
 *.log
 
-# Installer outputs
-Installer/Output/*.msi
-Installer/Output/*.wixobj
+# Installer build: staging, downloaded runtimes, output
+Installer/build/
+Installer/downloads/
+Installer/Output/
 Installer/Dashboard.wxs
+
+# Windows Sandbox test runs
+tools/sandbox-test/results/
+
+# Backups made before edits, and the installer's Claude config backups
+*.bak_*
+*.bak-cds-*
 
 # IDE
 .vs/
@@ -29,16 +37,16 @@ node_modules/
 
 # Secrets - never commit API keys
 mcp-server/qwen_config.json
+qwen_config.json
 
-# Installer build artifacts
-Installer/Output/*.exe
-Installer/build/
+# Old installers are attached to their GitHub releases, not committed
+/Releases/
 
-# Keep MSI in releases folder
-!Releases/*.msi
-# Never commit large EXE installers - upload to GitHub releases manually
-Releases/*.exe
+# Removed from the repo in v1.3.0; local build leftovers may remain
+/VoiceServer/
+/MCP/
 
+# Phase run logs
 docs/*_run.log
 docs/*_run.err
 docs/*_run.json

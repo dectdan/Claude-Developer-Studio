@@ -1,162 +1,144 @@
-# build-setup.ps1 — Build ClaudeDevStudio-Setup.exe
-# Run from Administrator PowerShell: .\build-setup.ps1
-# Requires: NSIS (choco install nsis -y as admin)
+# build-setup.ps1 -- Build Installer\Output\ClaudeDevStudio-Setup.exe from the source.
+#
+#   powershell -NoProfile -ExecutionPolicy Bypass -File Installer\build-setup.ps1
+#
+# Requires: .NET 8 SDK, Node.js + npm, NSIS (choco install nsis -y), and Visual Studio or
+# Build Tools 2022+ with MSBuild and the VS extension SDK (for the VS Bridge VSIX).
+# Downloads (Node.js MSI, .NET 8 Desktop Runtime, Windows App Runtime) are kept in
+# Installer\downloads\ and reused; each must carry a valid Authenticode signature.
+# Any failed step stops the build: nothing is skipped silently.
 
-$ErrorActionPreference = "Stop"
-$Root      = "D:\Projects\ClaudeDevStudio"
-$Installer = "$Root\Installer"
-$Build     = "$Installer\build"
-$Output    = "$Installer\Output"
+$ErrorActionPreference = 'Stop'
+$Installer = $PSScriptRoot
+$Root      = Split-Path -Parent $Installer
+$Build     = Join-Path $Installer 'build'
+$Output    = Join-Path $Installer 'Output'
+$Downloads = Join-Path $Installer 'downloads'
+$started   = Get-Date
 
-Write-Host "===== ClaudeDevStudio NSIS Installer Build =====" -ForegroundColor Cyan
+function Step([string]$Text) { Write-Host "`n$Text" -ForegroundColor Yellow }
+function Ok([string]$Text)   { Write-Host "  $Text" -ForegroundColor Green }
+function Fail([string]$Text) { Write-Host "ERROR: $Text" -ForegroundColor Red; exit 1 }
 
-# ---- 0. Verify NSIS ----
-$makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
-if (!(Test-Path $makensis)) {
-    Write-Host "ERROR: NSIS not found. Run as admin: choco install nsis -y" -ForegroundColor Red
-    exit 1
+# Runs a native command; stops the build if it fails. Prints the MSBuild summary lines.
+function Run([string]$What, [string]$Exe, [string[]]$ArgList) {
+    # Windows PowerShell stops on a native tool's stderr line under 'Stop'; judge by exit code.
+    $ErrorActionPreference = 'Continue'
+    $out = & $Exe @ArgList 2>&1 | ForEach-Object { "$_" }
+    $code = $LASTEXITCODE
+    $out | Where-Object { $_ -match '^\s*\d+ (Warning|Error)\(s\)' -or $_ -match ': error ' } | ForEach-Object { Write-Host "  $_" }
+    if ($code -ne 0) { $out | Select-Object -Last 40 | ForEach-Object { Write-Host "  $_" }; Fail "$What failed (exit $code)" }
+    Ok "$What`: OK"
 }
-Write-Host "  NSIS: OK" -ForegroundColor Green
 
-# ---- Find MSBuild (needed for VSIX) ----
-$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+Write-Host '===== ClaudeDevStudio NSIS Installer Build =====' -ForegroundColor Cyan
+Write-Host "  Source: $Root"
+
+# ---- 0. Tools ----
+$makensis = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+if (-not (Test-Path $makensis)) { Fail 'NSIS not found. Run as admin: choco install nsis -y' }
+Ok "NSIS: $makensis"
+
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 $msbuild = $null
 if (Test-Path $vswhere) {
-    $vsPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
-    if ($vsPath) { $msbuild = "$vsPath\MSBuild\Current\Bin\MSBuild.exe" }
+    $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
 }
-if ($msbuild -and (Test-Path $msbuild)) {
-    Write-Host "  MSBuild: $msbuild" -ForegroundColor Green
-} else {
-    Write-Host "  MSBuild: not found -- VSIX will be skipped" -ForegroundColor Yellow
-    $msbuild = $null
+if (-not $msbuild -or -not (Test-Path $msbuild)) { Fail 'MSBuild not found (Visual Studio or Build Tools 2022+ is needed for the VSIX)' }
+Ok "MSBuild: $msbuild"
+
+foreach ($tool in 'dotnet', 'npm.cmd') {
+    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { Fail "$tool not found on PATH" }
 }
 
-# ---- Clean build folder ----
+# ---- Clean the staging folder (downloads are kept elsewhere) ----
 if (Test-Path $Build) { Remove-Item $Build -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $Build | Out-Null
-New-Item -ItemType Directory -Force -Path $Output | Out-Null
+New-Item -ItemType Directory -Force -Path $Build, $Output, $Downloads | Out-Null
 
-# ---- 1. CLI tool ----
-Write-Host "`n[1/7] Building CLI tool..." -ForegroundColor Yellow
-dotnet publish "$Root\ClaudeDevStudio.csproj" -c Release -r win-x64 --self-contained false -o "$Build\CLI"
-if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: CLI build failed -- skipping" -ForegroundColor Yellow }
-else { Write-Host "  CLI: OK" -ForegroundColor Green }
+# ---- 1-3. CLI, TrayApp, Dashboard ----
+Step '[1/7] CLI'
+Run 'CLI' 'dotnet' @('publish', (Join-Path $Root 'ClaudeDevStudio.csproj'), '-c', 'Release', '-r', 'win-x64', '--self-contained', 'false', '-o', (Join-Path $Build 'CLI'))
 
-# ---- 2. TrayApp ----
-Write-Host "`n[2/7] Building TrayApp..." -ForegroundColor Yellow
-dotnet publish "$Root\ClaudeDevStudio.UI\ClaudeDevStudio.TrayApp.csproj" -c Release -r win-x64 --self-contained false -o "$Build\TrayApp"
-if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: TrayApp build failed -- skipping" -ForegroundColor Yellow }
-else { Write-Host "  TrayApp: OK" -ForegroundColor Green }
+Step '[2/7] TrayApp'
+Run 'TrayApp' 'dotnet' @('publish', (Join-Path $Root 'ClaudeDevStudio.UI\ClaudeDevStudio.TrayApp.csproj'), '-c', 'Release', '-r', 'win-x64', '--self-contained', 'false', '-o', (Join-Path $Build 'TrayApp'))
 
-# ---- 3. Dashboard (WinUI 3) ----
-Write-Host "`n[3/7] Building Dashboard..." -ForegroundColor Yellow
-dotnet publish "$Root\ClaudeDevStudio.Dashboard\ClaudeDevStudio.Dashboard.csproj" -c Release -r win-x64 --self-contained false -o "$Build\Dashboard"
-if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: Dashboard build failed -- skipping" -ForegroundColor Yellow }
-else { Write-Host "  Dashboard: OK" -ForegroundColor Green }
+Step '[3/7] Dashboard'
+Run 'Dashboard' 'dotnet' @('publish', (Join-Path $Root 'ClaudeDevStudio.Dashboard\ClaudeDevStudio.Dashboard.csproj'), '-c', 'Release', '-r', 'win-x64', '--self-contained', 'false', '-o', (Join-Path $Build 'Dashboard'))
 
-# ---- 4. VSIX (VS Bridge extension) ----
-Write-Host "`n[4/7] Building VS Bridge VSIX..." -ForegroundColor Yellow
-if ($msbuild) {
-    $vsMsbuildPaths = @(
-        "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe",
-        "${env:ProgramFiles}\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe",
-        "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
-    )
-    $buildMsbuild = $vsMsbuildPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (!$buildMsbuild) { $buildMsbuild = $msbuild }
-    Write-Host "  Using MSBuild: $buildMsbuild"
-    & $buildMsbuild "$Root\VSExtension\CdsVsBridge\CdsVsBridge.csproj" /p:Configuration=Release /t:Restore,Build /v:minimal
-    $vsix = Get-ChildItem "$Root\VSExtension\CdsVsBridge\bin\Release\*.vsix" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($vsix) {
-        New-Item -ItemType Directory -Force -Path "$Build\VSExtension" | Out-Null
-        Copy-Item $vsix.FullName "$Build\VSExtension\CdsVsBridge.vsix" -Force
-        Write-Host "  VSIX: $($vsix.Name)" -ForegroundColor Green
-    } else {
-        Write-Host "  WARNING: VSIX not found after build -- skipping" -ForegroundColor Yellow
-    }
-} else {
-    Write-Host "  Skipped (MSBuild not found)" -ForegroundColor Yellow
-}
+# ---- 4. VS Bridge VSIX (Visual Studio's MSBuild; dotnet build can't build it) ----
+Step '[4/7] VS Bridge VSIX'
+Run 'VSIX' $msbuild @((Join-Path $Root 'VSExtension\CdsVsBridge\CdsVsBridge.csproj'), '-restore', '-t:Rebuild', '-p:Configuration=Release', '-p:DeployExtension=false', '-v:minimal', '-nologo')
+$vsix = Join-Path $Root 'VSExtension\CdsVsBridge\bin\Release\CdsVsBridge.vsix'
+if (-not (Test-Path $vsix)) { Fail "VSIX not found after the build: $vsix" }
+New-Item -ItemType Directory -Force -Path (Join-Path $Build 'VSExtension') | Out-Null
+Copy-Item $vsix (Join-Path $Build 'VSExtension\CdsVsBridge.vsix')
+Ok 'VSIX staged'
 
-# ---- 5. Stage MCP server + Review Panel ----
-Write-Host "`n[5/7] Staging MCP server + Review Panel..." -ForegroundColor Yellow
-$mcpDest = "$Build\mcp-server"
+# ---- 5. Both MCP servers, the Review Panel, the installer's helper scripts ----
+Step '[5/7] MCP servers, Review Panel, scripts'
+$mcpSrc  = Join-Path $Root 'mcp-server'
+$mcpDest = Join-Path $Build 'mcp-server'
 New-Item -ItemType Directory -Force -Path $mcpDest | Out-Null
-Copy-Item "$Root\mcp-server\index.js"      $mcpDest -Force
-Copy-Item "$Root\mcp-server\workbench.js"  $mcpDest -Force
-Copy-Item "$Root\mcp-server\package.json"  $mcpDest -Force
-Copy-Item "$Root\mcp-server\manifest.json" $mcpDest -Force
-if (Test-Path "$Root\mcp-server\qwen_config.template.json") {
-    Copy-Item "$Root\mcp-server\qwen_config.template.json" "$mcpDest\qwen_config.json" -Force
-    Write-Host "  qwen_config.json: template (no API keys)" -ForegroundColor DarkGray
-} else {
-    Write-Host "  WARNING: qwen_config.template.json not found" -ForegroundColor Yellow
+foreach ($f in 'index.js', 'workbench.js', 'package.json', 'package-lock.json', 'manifest.json', 'qwen_config.template.json') {
+    Copy-Item (Join-Path $mcpSrc $f) $mcpDest
 }
-if (Test-Path "$Root\mcp-server\node_modules") {
-    Write-Host "  Copying node_modules..."
-    Copy-Item "$Root\mcp-server\node_modules" "$mcpDest\node_modules" -Recurse -Force
-}
-Write-Host "  MCP server: OK" -ForegroundColor Green
+# The keys file is created from the template at install time, only if it doesn't exist.
+if (Test-Path (Join-Path $mcpDest 'qwen_config.json')) { Fail 'qwen_config.json must never be staged' }
+Push-Location $mcpDest
+try { Run 'mcp-server npm ci' 'npm.cmd' @('ci', '--omit=dev', '--no-audit', '--no-fund') } finally { Pop-Location }
 
-$rvDest = "$Build\review-server"
+$rvSrc  = Join-Path $Root 'review-server'
+$rvDest = Join-Path $Build 'review-server'
 New-Item -ItemType Directory -Force -Path $rvDest | Out-Null
-Copy-Item "$Root\review-server\server.js"    $rvDest -Force
-Copy-Item "$Root\review-server\package.json" $rvDest -Force
-if (Test-Path "$Root\review-server\node_modules") {
-    Copy-Item "$Root\review-server\node_modules" "$rvDest\node_modules" -Recurse -Force
-}
-Write-Host "  Review Panel: OK" -ForegroundColor Green
+foreach ($f in 'server.js', 'package.json', 'package-lock.json') { Copy-Item (Join-Path $rvSrc $f) $rvDest }
+Push-Location $rvDest
+try { Run 'review-server npm ci' 'npm.cmd' @('ci', '--omit=dev', '--no-audit', '--no-fund') } finally { Pop-Location }
 
-Copy-Item "$Installer\ConfigureClaudeDesktop.ps1" "$Build\" -Force
-Copy-Item "$Installer\install-extension.ps1"      "$Build\" -Force
-Write-Host "  Scripts: OK" -ForegroundColor Green
+foreach ($f in 'cds-config.js', 'cds-vsix.ps1', 'cds-path.ps1') { Copy-Item (Join-Path $Installer $f) $Build }
+Ok 'Staged'
 
-# ---- 6. Bundle Node.js LTS ----
-Write-Host "`n[6/7] Bundling Node.js LTS..." -ForegroundColor Yellow
-$nodeMsi     = "$Build\node-lts-x64.msi"
-$nodeVersion = "22.14.0"
-$nodeUrl     = "https://nodejs.org/dist/v$nodeVersion/node-v$nodeVersion-x64.msi"
-if (Test-Path $nodeMsi) {
-    Write-Host "  Already downloaded. Skipping." -ForegroundColor DarkGray
-} else {
-    Write-Host "  Downloading Node.js v$nodeVersion (~30 MB)..."
-    Invoke-WebRequest -Uri $nodeUrl -OutFile $nodeMsi -UseBasicParsing
-    if (Test-Path $nodeMsi) { Write-Host "  Node.js: OK" -ForegroundColor Green }
-    else { Write-Host "  WARNING: Node.js download failed" -ForegroundColor Yellow }
-}
-
-# ---- 7. Bundle Windows App Runtime ----
-Write-Host "`n[7/7] Bundling Windows App Runtime 1.8..." -ForegroundColor Yellow
-$winAppRt  = "$Build\WinAppRuntime.exe"
-$winAppUrl = "https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe"
-if (Test-Path $winAppRt) {
-    Write-Host "  Already downloaded. Skipping." -ForegroundColor DarkGray
-} else {
-    Write-Host "  Downloading Windows App Runtime 1.8 (~101 MB)..."
-    Invoke-WebRequest -Uri $winAppUrl -OutFile $winAppRt -UseBasicParsing
-    if (Test-Path $winAppRt) { Write-Host "  Windows App Runtime: OK" -ForegroundColor Green }
-    else { Write-Host "  WARNING: Windows App Runtime download failed" -ForegroundColor Yellow }
+# ---- 6. Runtimes the installer bundles (so it installs with no network) ----
+Step '[6/7] Bundled runtimes'
+$bundles = @(
+    @{ Name = 'Node.js 22.14.0 LTS';          File = 'node-lts-x64.msi';                 Url = 'https://nodejs.org/dist/v22.14.0/node-v22.14.0-x64.msi' },
+    @{ Name = '.NET 8 Desktop Runtime';       File = 'windowsdesktop-runtime-8-x64.exe'; Url = 'https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe' },
+    @{ Name = 'Windows App Runtime 1.8';      File = 'WinAppRuntime.exe';                Url = 'https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe' }
+)
+foreach ($b in $bundles) {
+    $cached = Join-Path $Downloads $b.File
+    if (Test-Path $cached) {
+        Write-Host "  $($b.Name): cached"
+    } else {
+        Write-Host "  $($b.Name): downloading $($b.Url)"
+        Invoke-WebRequest -Uri $b.Url -OutFile $cached -UseBasicParsing
+    }
+    $sig = Get-AuthenticodeSignature -FilePath $cached
+    if ($sig.Status -ne 'Valid') { Remove-Item $cached -Force; Fail "$($b.File): signature $($sig.Status); deleted it, run the build again" }
+    Copy-Item $cached (Join-Path $Build $b.File)
+    Ok "$($b.Name): signed by $($sig.SignerCertificate.GetNameInfo('SimpleName', $false))"
 }
 
-# ---- NSIS compile ----
-Write-Host "`nCompiling installer..." -ForegroundColor Yellow
-$nsisArgs = @("/V3")
-if (Test-Path "$Installer\Assets\AppIcon.ico") { $nsisArgs += "/DHAVE_ICON" }
-$nsisArgs += "setup.nsi"
+# ---- Versions must agree before anything is compiled into the installer ----
+Step 'Versions'
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'tools\check-versions.ps1')
+if ($LASTEXITCODE -ne 0) { Fail 'tools\check-versions.ps1 found a version that differs' }
+
+# ---- 7. NSIS ----
+Step '[7/7] Compiling the installer (NSIS, takes several minutes)'
+$nsisArgs = @('/V2')
+if (Test-Path (Join-Path $Installer 'Assets\AppIcon.ico')) { $nsisArgs += '/DHAVE_ICON' }
+$nsisArgs += 'setup.nsi'
 Push-Location $Installer
-& $makensis @nsisArgs
-$nsisExit = $LASTEXITCODE
-Pop-Location
-if ($nsisExit -ne 0) { Write-Host "NSIS FAILED (exit $nsisExit)" -ForegroundColor Red; exit 1 }
+try { Run 'NSIS' $makensis $nsisArgs } finally { Pop-Location }
 
 # ---- Report ----
-$exe = "$Output\ClaudeDevStudio-Setup.exe"
-if (Test-Path $exe) {
-    $mb = [int]((Get-Item $exe).Length / 1MB)
-    Write-Host "`n===== BUILD COMPLETE =====" -ForegroundColor Cyan
-    Write-Host "  Output : $exe" -ForegroundColor Green
-    Write-Host "  Size   : $mb MB" -ForegroundColor Green
-} else {
-    Write-Host "ERROR: EXE not found after build!" -ForegroundColor Red; exit 1
-}
+$exe = Join-Path $Output 'ClaudeDevStudio-Setup.exe'
+if (-not (Test-Path $exe)) { Fail 'EXE not found after the build' }
+$item = Get-Item $exe
+$hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+$mins = [math]::Round(((Get-Date) - $started).TotalMinutes, 1)
+Write-Host "`n===== BUILD COMPLETE =====" -ForegroundColor Cyan
+Write-Host "  Output : $exe"
+Write-Host "  Size   : $($item.Length) bytes ($([math]::Round($item.Length / 1MB, 1)) MB)"
+Write-Host "  SHA-256: $hash"
+Write-Host "  Built  : $($item.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')) in $mins min"

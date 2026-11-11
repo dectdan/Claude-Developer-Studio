@@ -73,7 +73,7 @@ const legacyMirrorPath = () => path.join(LEGACY_ROOT, 'chat_mirror.jsonl');
 // project name, so a trailing backslash would give it an empty name: path.resolve strips it.
 function requireProjectPath(args) {
   const raw = args && args.project_path ? String(args.project_path).trim() : '';
-  if (!raw) throw new Error('project_path is required: the full path to the project folder, e.g. D:\\Projects\\MyApp');
+  if (!raw) throw new Error('project_path is required: the full path to the project folder, e.g. C:\\Projects\\MyApp');
   const resolved = path.resolve(raw);
   if (!fs.existsSync(resolved)) throw new Error(`Project folder not found: ${resolved}`);
   if (!projectName(resolved)) throw new Error(`Not a project folder (no folder name): ${resolved}`);
@@ -222,7 +222,7 @@ function similarMistakes(plan, mistakes, max = 3) {
     const key = oneLine(m.mistake, 400);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    const words = keywords(`${m.mistake} ${m.lesson}`);
+    const words = keywords(`${m.mistake ?? ''} ${m.lesson ?? ''}`);
     if (words.size === 0) continue;
     const shared = [...words].filter(w => planWords.has(w));
     const score = shared.length / Math.max(1, Math.min(words.size, planWords.size));
@@ -334,7 +334,7 @@ const INSTRUCTIONS =
   'Before a risky or repeated step, call claudedev_check_mistake. ' +
   'After meaningful work, call claudedev_record_activity; when something goes wrong, call claudedev_record_mistake with the lesson.';
 
-const PROJECT_PATH = { type: 'string', description: 'Full path to the project folder, e.g. D:\\Projects\\MyApp' };
+const PROJECT_PATH = { type: 'string', description: 'Full path to the project folder, e.g. C:\\Projects\\MyApp' };
 
 const TOOLS = [
   {
@@ -547,7 +547,10 @@ class ClaudeDevStudioServer {
       `Patterns:   ${patterns.length}`,
     ];
     if (session) lines.push(`Session:    ${session}`);
-    if (legacy !== dir && fs.existsSync(legacy)) lines.push(`(Includes older entries from ${legacy}.)`);
+    // Only when an old-store entry was counted (same source tracking as buildContext).
+    const countsLegacy = legacy !== dir &&
+      [...activities, ...mistakes].some(e => entrySource.get(e) === legacy);
+    if (countsLegacy) lines.push(`(Includes older entries from ${legacy}.)`);
     return text(lines.join('\n'));
   }
 

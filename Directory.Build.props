@@ -3,7 +3,7 @@
     The one ClaudeDevStudio version for every C# project in this repository
     (CLI, TrayApp, Dashboard, VS Bridge). Change it here only.
     The other files that must carry the same number (package.json, manifest.json,
-    setup.nsi, install-extension.ps1, the VSIX manifest) are checked by
+    setup.nsi, the VSIX manifest) are checked by
     tools\check-versions.ps1.
   -->
   <PropertyGroup>

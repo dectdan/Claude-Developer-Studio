@@ -81,25 +81,19 @@ namespace ClaudeDevStudio
         /// </summary>
         private void MonitorDebugOutput(CancellationToken cancellationToken)
         {
-            // Try installed location first, then fall back to D:\Tools
+            // DebugView is Microsoft's (Sysinternals) and may not be redistributed, so
+            // ClaudeDevStudio doesn't ship it. Look in CDS's DebugView folder, then on PATH.
             var installDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClaudeDevStudio", "DebugView");
-            var debugViewPath = Path.Combine(installDir, "dbgview64.exe");
-            
-            if (!File.Exists(debugViewPath))
+            var debugViewPath = FindDebugView(installDir);
+
+            if (debugViewPath == null)
             {
-                // Fall back to D:\Tools location
-                debugViewPath = @"D:\Tools\DebugView\dbgview64.exe";
-            }
-            
-            if (!File.Exists(debugViewPath))
-            {
-                Console.WriteLine($"ERROR: DebugView not found.");
-                Console.WriteLine($"Tried: {installDir}");
-                Console.WriteLine($"Tried: D:\\Tools\\DebugView\\");
+                Console.WriteLine("ERROR: DebugView not found.");
                 Console.WriteLine();
-                Console.WriteLine("DebugView is required for debug monitoring.");
-                Console.WriteLine("It should have been installed automatically with ClaudeDevStudio.");
-                Console.WriteLine("Please reinstall ClaudeDevStudio or contact support.");
+                Console.WriteLine("The debug monitor needs Sysinternals DebugView, which ClaudeDevStudio does not include.");
+                Console.WriteLine("Download it from Microsoft: https://learn.microsoft.com/sysinternals/downloads/debugview");
+                Console.WriteLine($"Then put dbgview64.exe in {installDir}");
+                Console.WriteLine("or in any folder on your PATH, and run the monitor again.");
                 return;
             }
 
@@ -189,6 +183,27 @@ namespace ClaudeDevStudio
                 }
                 catch { }
             }
+        }
+
+        /// <summary>
+        /// dbgview64.exe in CDS's DebugView folder, else the first one on PATH; null if none
+        /// </summary>
+        private static string? FindDebugView(string installDir)
+        {
+            var candidate = Path.Combine(installDir, "dbgview64.exe");
+            if (File.Exists(candidate)) return candidate;
+
+            var pathVar = Environment.GetEnvironmentVariable("PATH") ?? "";
+            foreach (var dir in pathVar.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                try
+                {
+                    candidate = Path.Combine(dir.Trim().Trim('"'), "dbgview64.exe");
+                    if (File.Exists(candidate)) return candidate;
+                }
+                catch (ArgumentException) { /* a malformed PATH entry */ }
+            }
+            return null;
         }
 
         /// <summary>
