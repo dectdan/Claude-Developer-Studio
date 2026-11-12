@@ -295,7 +295,7 @@ function Check-Program([string]$Scenario) {
               'mcp-server\node_modules\@modelcontextprotocol\sdk\package.json', 'review-server\server.js',
               'review-server\node_modules\express\package.json', 'VSExtension\CdsVsBridge.vsix',
               'mcp-server\cds-paths.js', 'mcp-server\cds-context.js', 'mcp-server\cds-hook.js', 'mcp-server\cds-search.js',
-              'cds-config.js', 'cds-claude-code.js', 'cds-vsix.ps1', 'cds-path.ps1', 'Uninstall.exe')
+              'mcp-server\cds-phase.js', 'cds-config.js', 'cds-claude-code.js', 'cds-vsix.ps1', 'cds-path.ps1', 'Uninstall.exe')
     $missing = @($need | Where-Object { -not (Test-Path (Join-Path $Inst $_)) })
     Check $Scenario 'program files are in place' ($missing.Count -eq 0) $(if ($missing.Count) { "missing: $($missing -join ', ')" } else { "$($need.Count) files present under $Inst" })
     $v = Invoke-Tool (Join-Path $Inst 'CLI\claudedev.exe') 'version' 60
@@ -339,7 +339,8 @@ function Probe-Memory([string]$Scenario, [string]$ProjectName, [string]$ExpectDo
 function Check-Workbench([string]$Scenario) {
     $t = Copy-McpTests
     $j = Node-Json "`"$t\mcp-probe.mjs`" tools `"$Inst\mcp-server\workbench.js`""
-    Check $Scenario 'workbench server lists 13 tools' ($j.ok -and $j.count -eq 13) "count $($j.count): $($j.names -join ', ') $($j.error)"
+    # 13 tools until P7; the four claudedev_phase_* tools make 17.
+    Check $Scenario 'workbench server lists 17 tools (with the four phase tools)' ($j.ok -and $j.count -eq 17 -and @($j.names | Where-Object { $_ -like 'claudedev_phase_*' }).Count -eq 4) "count $($j.count): $($j.names -join ', ') $($j.error)"
 }
 
 function Check-ReviewPanel([string]$Scenario) {

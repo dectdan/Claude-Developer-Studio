@@ -35,7 +35,7 @@ The first time, CDS creates the project's memory. After that, Claude sees the re
 | Part | What it does |
 |---|---|
 | `claudedevstudio` server | The memory: load (with the project's ground truth), record activity, record and check mistakes, record decisions, handoffs between sessions, search across all projects' memory, lessons for every project, the ground-truth scaffold, stats, chat checkpoints. |
-| `cds-workbench` server | Visual Studio state, errors, output, debugger and commands (needs the VS Bridge); showing code and images in the Review Panel; sending a task to another AI provider; fetching a web page. |
+| `cds-workbench` server | Visual Studio state, errors, output, debugger and commands (needs the VS Bridge); showing code and images in the Review Panel; sending a task to another AI provider; fetching a web page; running a phase in Claude Code from the chat (below). |
 | VS Bridge | A Visual Studio extension that shares build errors, the Output window's panes (Build, and from 1.5.0 the Debug pane, where a running program's `Debug.WriteLine` and trace output appear, or any other pane) and debugger state with Claude. It answers only programs on your own PC, not web pages. |
 | Review Panel | A local page (`http://127.0.0.1:63000`) where code and images from Claude appear. |
 | Tray app | Starts with Windows; opens the Dashboard; **Configure AI Keys**; **Set up Claude Code** (optional, below). |
@@ -90,6 +90,25 @@ CDS works best when each project keeps its state in one file, `docs\GROUND_TRUTH
 1. A planning session writes the next prompt, `docs\Pn_prompt.md`.
 2. Claude Code carries it out and writes `docs\Pn_OUTPUT.md` (your steps first, results with evidence, what wasn't done), then updates the ground truth.
 3. The planner checks the output and writes the next prompt. Before stopping, Claude writes a handoff (`claudedev_handoff`), so the next session starts where this one stopped.
+
+## Running phases from chat
+
+The loop above can run from one Claude Desktop chat: Claude plans there, starts [Claude Code](https://code.claude.com) on the prompt, checks on it, answers it, and reads the output. Claude Code must be installed and signed in on the PC; the work uses **your own Claude Code sign-in and plan**. Windows only.
+
+1. The chat writes (or you write) `docs\P8_prompt.md` in the project. A phase starts only from a prompt file, never from free text, so you can read it first.
+2. **`claudedev_phase_start`** (`project_path`, `phase` such as `P8`; optional `model`, `effort`, `allowed_tools`) starts `claude -p "Read docs\P8_prompt.md and carry it out…"` in the project, in the background, and returns at once. One phase per project at a time.
+3. **`claudedev_phase_status`** shows whether it is running, finished or stopped, for how long, how many tool calls, any permission denials, Claude's latest words, the result, whether it ends with a question, and whether `docs\P8_OUTPUT.md` exists. Every 10–20 minutes is plenty; phases often take an hour or two.
+4. **`claudedev_phase_reply`** answers a finished run (a question, or "go on"): the same session continues with the same model, effort and tools.
+5. **`claudedev_phase_stop`** ends it.
+6. The chat reads `docs\P8_OUTPUT.md`, checks the work, updates the ground truth and writes the next prompt.
+
+**What starting a phase does.** It starts an agent that reads and edits files and runs commands in that project **without asking you**, with the tools listed: by default Read, Edit, Write, Glob, Grep, Bash, PowerShell, WebFetch, WebSearch and CDS's memory tools. The permission mode is `acceptEdits`; CDS never uses `--dangerously-skip-permissions` or `bypassPermissions`, so anything outside the listed tools is still refused by Claude Code (Status lists the refusals). It refuses folders that aren't projects, the home folder, Windows, Program Files and drive roots. Your own Claude Code settings and hooks apply, as in any Claude Code session.
+
+**Claude Desktop asks you before each tool call** of a local MCP server ([modelcontextprotocol.io: How Approval Works](https://modelcontextprotocol.io/docs/develop/connect-local-servers)), so you see `claudedev_phase_start` and its prompt file before anything runs. If you chose "always allow" for these tools, it won't ask again; leave `claudedev_phase_start` on asking if you want to approve each phase.
+
+**Stopping it:** `claudedev_phase_stop`, or end the `claude.exe` and `node.exe` processes in Task Manager. A phase keeps running if you close Claude Desktop (it is started outside Claude Desktop's processes), and Status and Stop work from a new chat.
+
+**Where things are:** in the project's `docs\`: `P8_run.log` (Claude Code's stream-json output; a reply is appended), `P8_run.err`, `P8_run.json` (the run's record: pids, times, the command), and `cds_phase.lock` while a phase runs. A second run of the same phase moves the old files to `docs\phase_runs\`. Add `docs/*_run.*`, `docs/cds_phase.lock` and `docs/phase_runs/` to the project's `.gitignore` if you don't want them in git.
 
 ## Problems and questions
 

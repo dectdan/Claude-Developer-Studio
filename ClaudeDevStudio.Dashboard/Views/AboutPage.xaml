@@ -12,7 +12,8 @@
                       HorizontalAlignment="Center"
                       Margin="0,24,0,0"/>
             
-            <TextBlock Text="v1.0.0" 
+            <TextBlock x:Name="VersionText"
+                      Text=""
                       FontSize="18" 
                       HorizontalAlignment="Center"
                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>

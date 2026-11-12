@@ -21,7 +21,7 @@
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { HOME, documentsDir } from './cds-paths.js';
+import { HOME, documentsDir, isExcluded, looksLikeProject } from './cds-paths.js';
 import { runCli, cliMessage, loadProject, projectName, oneLine } from './cds-context.js';
 
 const SESSION_START_MAX = 9500;          // Claude Code keeps 10,000 characters of a hook's stdout
@@ -75,35 +75,9 @@ function readStdin() {
   });
 }
 
-const norm = (p) => path.resolve(p).replace(/[\\/]+$/, '').toLowerCase();
-const isUnder = (p, root) => { const a = norm(p), b = norm(root); return a === b || a.startsWith(b + path.sep); };
-
-// Folders that are never a project: the user's home (and the folder holding it), Windows,
-// Program Files, ProgramData, and drive roots (claudedev stats once ran in system32 and made a
-// memory folder named "system32": docs\GROUND_TRUTH.md section 7, item 1).
-function isExcluded(p) {
-  const resolved = path.resolve(p);
-  if (path.parse(resolved).root.replace(/[\\/]+$/, '').toLowerCase() === norm(resolved)) return true;
-  if (norm(resolved) === norm(HOME) || norm(resolved) === norm(path.dirname(HOME))) return true;
-  const env = process.env;
-  const trees = [env.SystemRoot, env.windir, env.ProgramFiles, env['ProgramFiles(x86)'], env.ProgramW6432, env.ProgramData]
-    .filter(Boolean);
-  return trees.some(t => isUnder(resolved, t));
-}
-
-const PROJECT_FILES = new Set(['.git', 'package.json', 'pyproject.toml', 'cargo.toml', 'go.mod']);
-// A folder looks like a project if it holds .git, docs\, a solution or project file, or one of
-// the usual package manifests.
-function looksLikeProject(p) {
-  let entries;
-  try { entries = fs.readdirSync(p, { withFileTypes: true }); } catch { return false; }
-  return entries.some(e => {
-    const n = e.name.toLowerCase();
-    if (PROJECT_FILES.has(n)) return true;
-    if (n === 'docs' && e.isDirectory()) return true;
-    return e.isFile() && /\.(sln|slnx|[a-z]{2,6}proj)$/.test(n);
-  });
-}
+// isExcluded (home, Windows, Program Files, ProgramData, drive roots) and looksLikeProject (.git,
+// docs\, a solution or project file, a package manifest) are in cds-paths.js from P7, shared with
+// the phase tools (cds-phase.js), unchanged.
 
 function projectFrom(input) {
   const raw = process.env.CLAUDE_PROJECT_DIR || input.cwd || '';
@@ -228,9 +202,12 @@ function cleanRequest(t) {
     .trim();
 }
 
+// Files edited: only the project's (as post-tool-use records them); files elsewhere (scratch
+// scripts in %TEMP%, other folders) are only counted, as `outside`.
 function summarise(lines, p) {
   const files = [];
   const seen = new Set();
+  const outsideSeen = new Set();
   let request = '', reply = '';
   for (const line of lines) {
     if (!line.includes('"tool_use"')) continue;
@@ -242,8 +219,8 @@ function summarise(lines, p) {
       if (!f) continue;
       const abs = path.resolve(p, String(f));
       const rel = path.relative(p, abs);
-      const shown = !rel || rel.startsWith('..') || path.isAbsolute(rel) ? abs : rel;
-      if (!seen.has(shown.toLowerCase())) { seen.add(shown.toLowerCase()); files.push(shown); }
+      if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) { outsideSeen.add(abs.toLowerCase()); continue; }
+      if (!seen.has(rel.toLowerCase())) { seen.add(rel.toLowerCase()); files.push(rel); }
     }
   }
   for (let i = lines.length - 1; i >= 0 && (!request || !reply); i--) {
@@ -260,7 +237,7 @@ function summarise(lines, p) {
       if (t) request = t;
     }
   }
-  return { request, reply, files };
+  return { request, reply, files, outside: outsideSeen.size };
 }
 
 async function autoHandoff(event, p, input) {
@@ -273,8 +250,8 @@ async function autoHandoff(event, p, input) {
     log(event, `${p}: no handoff written, the transcript could not be read: ${e.message}`);
     return;
   }
-  const { request, reply, files } = summarise(lines, p);
-  if (!request && !reply && !files.length) { log(event, `${p}: no handoff written, the transcript holds no conversation`); return; }
+  const { request, reply, files, outside } = summarise(lines, p);
+  if (!request && !reply && !files.length && !outside) { log(event, `${p}: no handoff written, the transcript holds no conversation`); return; }
 
   const when = event === 'pre-compact' ? 'before the context was compacted' : `when the session ended${input.reason ? ` (${input.reason})` : ''}`;
   const where = request
@@ -282,6 +259,7 @@ async function autoHandoff(event, p, input) {
     : `Claude Code session, ${when}. (No request found in the transcript.)`;
   const notes = [];
   if (files.length) notes.push(`Files edited in this session (${files.length}): ${oneLine(files.slice(0, 30).join(', '), 1200)}${files.length > 30 ? ', ...' : ''}`);
+  if (outside) notes.push(`(${outside} file${outside === 1 ? '' : 's'} edited outside the project not listed.)`);
   if (reply) notes.push(`Claude's last reply: "${oneLine(reply, 500)}"`);
   if (input.session_id) notes.push(`Resume that session with: claude --resume ${input.session_id}`);
   const entry = {

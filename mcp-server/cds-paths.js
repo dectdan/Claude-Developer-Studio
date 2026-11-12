@@ -42,3 +42,38 @@ export const memoryRoot = () => process.env.CDS_MEMORY_ROOT
 
 // [Documents]\ClaudeDevStudio\VSBridge: the files the VS Bridge extension writes.
 export const vsBridgeDir = () => path.join(memoryRoot(), 'VSBridge');
+
+// ---------------------------------------------------------------------------
+// Which folders count as a project (moved here from cds-hook.js in P7, unchanged; the Claude Code
+// hook and the phase tools in cds-phase.js use the same rule).
+// ---------------------------------------------------------------------------
+
+const norm = (p) => path.resolve(p).replace(/[\\/]+$/, '').toLowerCase();
+const isUnder = (p, root) => { const a = norm(p), b = norm(root); return a === b || a.startsWith(b + path.sep); };
+
+// Folders that are never a project: the user's home (and the folder holding it), Windows,
+// Program Files, ProgramData, and drive roots (claudedev stats once ran in system32 and made a
+// memory folder named "system32": docs\GROUND_TRUTH.md section 7, item 1).
+export function isExcluded(p) {
+  const resolved = path.resolve(p);
+  if (path.parse(resolved).root.replace(/[\\/]+$/, '').toLowerCase() === norm(resolved)) return true;
+  if (norm(resolved) === norm(HOME) || norm(resolved) === norm(path.dirname(HOME))) return true;
+  const env = process.env;
+  const trees = [env.SystemRoot, env.windir, env.ProgramFiles, env['ProgramFiles(x86)'], env.ProgramW6432, env.ProgramData]
+    .filter(Boolean);
+  return trees.some(t => isUnder(resolved, t));
+}
+
+const PROJECT_FILES = new Set(['.git', 'package.json', 'pyproject.toml', 'cargo.toml', 'go.mod']);
+// A folder looks like a project if it holds .git, docs\, a solution or project file, or one of
+// the usual package manifests.
+export function looksLikeProject(p) {
+  let entries;
+  try { entries = fs.readdirSync(p, { withFileTypes: true }); } catch { return false; }
+  return entries.some(e => {
+    const n = e.name.toLowerCase();
+    if (PROJECT_FILES.has(n)) return true;
+    if (n === 'docs' && e.isDirectory()) return true;
+    return e.isFile() && /\.(sln|slnx|[a-z]{2,6}proj)$/.test(n);
+  });
+}

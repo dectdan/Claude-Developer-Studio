@@ -5,7 +5,8 @@ This folder holds the two MCP servers that the installer adds to Claude Desktop 
 | File | What it is |
 |---|---|
 | `index.js` | **`claudedevstudio`**, the memory server (13 tools, below). A thin wrapper over the `claudedev` CLI, which owns the memory format and does every write. |
-| `workbench.js` | **`cds-workbench`**, the developer tools (13 tools, below). |
+| `workbench.js` | **`cds-workbench`**, the developer tools (17 tools, below). |
+| `cds-phase.js` | The phase tools (`claudedev_phase_*`, from P7): starts Claude Code headless on a project's `docs\<phase>_prompt.md`, reads its log, continues or stops it; also the runner process (`node cds-phase.js --run …`) that WMI starts, so a phase outlives Claude Desktop. Windows only. |
 | `cds-context.js` | What `claudedev_load` shows on walking into a project: the last handoff, the ground truth's Status and Next, the newest `docs\Pn_OUTPUT.md`, then mistakes, decisions, patterns and activity, under a size budget (aims at 8,000 characters, never over 12,000). Shared by `index.js` and `cds-hook.js`. |
 | `cds-search.js` | `claudedev_search`: words across one project's memory or all of them (both stores, plus the lessons), ranked, one line per hit, about 3,000 characters; read-only. Also the keyword rule `check_mistake` uses. |
 | `cds-paths.js` | Asks Windows where Documents is (it may be moved, e.g. by OneDrive): the memory is in `[Documents]\ClaudeDevStudio\Projects\<project folder name>\`. |
@@ -38,6 +39,14 @@ Every write goes through `%LOCALAPPDATA%\ClaudeDevStudio\CLI\claudedev.exe`. If 
 
 `claudedev_vs_get_state`, `claudedev_vs_get_errors`, `claudedev_vs_get_output`, `claudedev_vs_get_events`, `claudedev_vs_get_debugger`, `claudedev_vs_evaluate`, `claudedev_vs_command` (Visual Studio, through the VS Bridge extension; `claudedev_vs_get_output` reads the Build pane by default, `pane: "debug"` a running program's `Debug.WriteLine`/trace output, any other pane by name, and `pane: "list"` names the panes); `display_review`, `display_image` (the Review Panel at `http://127.0.0.1:63000`); `qwen_generate`, `list_models`, `generate_image` (another AI provider, with your own key); `fetch_url`.
 
+`claudedev_phase_start`, `claudedev_phase_status`, `claudedev_phase_reply`, `claudedev_phase_stop` (from P7; the main README, "Running phases from chat"). How a run works:
+
+- **Start** checks Claude Code (on PATH or `%USERPROFILE%\.local\bin`, version 2.1.0 or later), the folder (the hook's rule, `cds-paths.js`), `docs\<phase>_prompt.md`, and the project's lock; writes `docs\<phase>_run.json` and `docs\cds_phase.lock`; starts the runner through WMI (`Win32_Process.Create`, hidden; its parent is WMI, not the server, and it gets the user's own environment); returns. The runner starts `claude -p "Read docs\<phase>_prompt.md and carry it out. …" [--model] [--effort] --permission-mode acceptEdits --allowedTools <list> --mcp-config <%TEMP%\cds_phase_mcp_….json> --output-format stream-json --verbose` with stdin from NUL and stdout/stderr appended to `docs\<phase>_run.log`/`.err`, records the pids and the exit code, and removes the lock.
+- **Status** reads the `.json` and the log (shared read, while Claude Code writes it), never this server's memory, so it works from a new server; at most ~2,500 characters. A lock whose process is gone (a crash or a restart; pids are checked with their start time) is cleared and said so.
+- **Reply** runs `claude -p --resume <session id from the log> …` with the same flags; the message goes in on stdin, never as an argument.
+- **Stop** checks the runner is still ours (start time and command line), then `taskkill /T /F` on it (Claude Code and everything it started), records "stopped by request" and removes the lock.
+- `run-phase.ps1` runs (their `.json` has no `runs`) are read too; `CDS_PHASE_CLAUDE` points the tools at a fake Claude Code **for tests only**.
+
 ## The Claude Code hook
 
 `node.exe cds-hook.js <event>`, with Claude Code's hook input on stdin. Set up by `claudedev claude-code setup` (opt-in):
@@ -45,7 +54,7 @@ Every write goes through `%LOCALAPPDATA%\ClaudeDevStudio\CLI\claudedev.exe`. If 
 | Event | What it does |
 |---|---|
 | `session-start` | Prints the same context as `claudedev_load` (at most 9,500 characters; Claude Code keeps 10,000). |
-| `pre-compact`, `session-end` | An automatic handoff from the transcript: the last request, the files edited, Claude's last reply. It never replaces a handoff Claude wrote with `claudedev_handoff`. Prints nothing. |
+| `pre-compact`, `session-end` | An automatic handoff from the transcript: the last request, the project's files edited (files elsewhere only counted), Claude's last reply. It never replaces a handoff Claude wrote with `claudedev_handoff`. Prints nothing. |
 | `post-tool-use` | One activity line per edited file per session. |
 
 It always exits 0, never blocks a tool or a compaction, skips folders that don't look like projects (and the home folder, Windows, Program Files, drive roots), and writes errors to `%LOCALAPPDATA%\ClaudeDevStudio\hooks.log`, not to Claude.
@@ -62,7 +71,7 @@ node mcp-server\test\show.mjs claudedev_search "curly quotes PowerShell"   # a s
 node mcp-server\test\show.mjs --tools                                 # the size of tools/list
 ```
 
-The smoke test uses throwaway projects in `%TEMP%` and removes their memory folders afterwards. Its search and lessons checks use a throwaway memory root (`CDS_MEMORY_ROOT`, `CDS_LEGACY_ROOT`: test-only variables, read by the servers, the hook and the CLI; never set them in normal use). See `docs\GROUND_TRUTH.md`, section 10.
+The smoke test uses throwaway projects in `%TEMP%` and removes their memory folders afterwards. Its phase checks run a fake Claude Code (`test\fixtures\fake-claude.mjs`, through `CDS_PHASE_CLAUDE`). Its search and lessons checks use a throwaway memory root (`CDS_MEMORY_ROOT`, `CDS_LEGACY_ROOT`: test-only variables, read by the servers, the hook and the CLI; never set them in normal use). See `docs\GROUND_TRUTH.md`, section 10.
 
 ## Running by hand
 

@@ -1,5 +1,11 @@
 # Starts a phased Claude Code session headless, in the background, the way the CDS
-# producer runs phases (docs\GROUND_TRUTH.md section 9). P8 turns this into CDS tools.
+# producer runs phases (docs\GROUND_TRUTH.md section 9).
+#
+# REPLACED FROM P7 by the workbench tools claudedev_phase_start / _status / _reply / _stop
+# (mcp-server\cds-phase.js), which do the same from a chat, with a project lock, a runner that
+# outlives Claude Desktop, and stop. This script is kept as it was and still works; the tools
+# read its docs\<Phase>_run.json too (status, stop, reply), and both refuse to start while the
+# other's run is alive in the same project (this script checks only its own phase's .json).
 #
 #   powershell -File tools\phase\run-phase.ps1 -Project D:\Projects\ClaudeDevStudio -Phase P2
 #

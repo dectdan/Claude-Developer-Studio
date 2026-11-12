@@ -13,6 +13,7 @@ import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
 import { vsBridgeDir } from './cds-paths.js';
+import { phaseStart, phaseStatus, phaseReply, phaseStop } from './cds-phase.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -235,6 +236,49 @@ class WorkbenchServer {
             required: ['provider'],
           },
         },
+        // P7: run a phase (docs\<phase>_prompt.md) in Claude Code, headless. cds-phase.js.
+        {
+          name: 'claudedev_phase_start',
+          description: 'Windows. Start Claude Code headless on docs\\<phase>_prompt.md in a project (the file must exist). It is an agent that reads, edits and runs commands there with the allowed tools, without asking (acceptEdits; never bypasses permissions), on the user\'s Claude Code sign-in and plan. Returns at once; one phase per project; logs in docs\\.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              project_path: { type: 'string' },
+              phase: { type: 'string', description: 'e.g. P8' },
+              model: { type: 'string', description: 'Optional, e.g. claude-opus-5-5' },
+              effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
+              allowed_tools: { type: 'string', description: 'Optional, comma-separated; default: file, shell and web tools plus CDS memory' },
+            },
+            required: ['project_path', 'phase'],
+          },
+        },
+        {
+          name: 'claudedev_phase_status',
+          description: 'Status of a phase run: running/finished/stopped, minutes, tool calls, permission denials, Claude\'s latest text, the result, whether it ends in a question, whether docs\\<phase>_OUTPUT.md exists.',
+          inputSchema: {
+            type: 'object',
+            properties: { project_path: { type: 'string' }, phase: { type: 'string', description: 'Default: the newest' } },
+            required: ['project_path'],
+          },
+        },
+        {
+          name: 'claudedev_phase_reply',
+          description: 'Answer a phase run that has finished: continues the same Claude Code session with the same model, effort and tools. Refused while it runs.',
+          inputSchema: {
+            type: 'object',
+            properties: { project_path: { type: 'string' }, phase: { type: 'string' }, message: { type: 'string' } },
+            required: ['project_path', 'phase', 'message'],
+          },
+        },
+        {
+          name: 'claudedev_phase_stop',
+          description: 'Stop a phase run: ends its Claude Code process tree and releases the project\'s lock. Touches no other process.',
+          inputSchema: {
+            type: 'object',
+            properties: { project_path: { type: 'string' }, phase: { type: 'string' } },
+            required: ['project_path', 'phase'],
+          },
+        },
       ],
     }));
 
@@ -255,12 +299,21 @@ class WorkbenchServer {
           case 'display_image':             return await this.handleDisplayImage(args);
           case 'generate_image':            return await this.handleGenerateImage(args);
           case 'list_models':               return await this.handleListModels(args);
+          case 'claudedev_phase_start':     return this.phaseResult(await phaseStart(args));
+          case 'claudedev_phase_status':    return this.phaseResult(await phaseStatus(args));
+          case 'claudedev_phase_reply':     return this.phaseResult(await phaseReply(args));
+          case 'claudedev_phase_stop':      return this.phaseResult(await phaseStop(args));
           default: throw new Error(`Unknown tool: ${name}`);
         }
       } catch (error) {
         return { content: [{ type: 'text', text: `Error: ${error.message}` }], isError: true };
       }
     });
+  }
+
+  // cds-phase.js answers { ok, text }; a refusal is an error result, with the reason and what to do.
+  phaseResult(r) {
+    return { content: [{ type: 'text', text: r.text }], ...(r.ok ? {} : { isError: true }) };
   }
 
   async handleFetchUrl(args) {

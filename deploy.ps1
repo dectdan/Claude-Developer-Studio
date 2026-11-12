@@ -7,6 +7,7 @@
 # It copies: the CLI's whole build output (published fresh from the source), mcp-server\
 # index.js, workbench.js, cds-paths.js (both servers import it), cds-context.js (index.js
 # and the Claude Code hook import it), cds-hook.js, cds-search.js (index.js imports it, from P5),
+# cds-phase.js (workbench.js imports it; the phase tools and their runner, from P7),
 # package.json, package-lock.json,
 # templates\*.md (claudedev_scaffold's), Installer\cds-claude-code.js, Installer\cds-config.js
 # (from P5: configure-claude and the uninstaller use it), and the Review Panel's
@@ -77,7 +78,7 @@ Remove-Item $cliStage -Recurse -Force
 
 # ---- Both MCP servers ----
 Write-Step 'MCP servers'
-foreach ($f in 'index.js', 'workbench.js', 'cds-paths.js', 'cds-context.js', 'cds-hook.js', 'cds-search.js', 'package.json', 'package-lock.json',
+foreach ($f in 'index.js', 'workbench.js', 'cds-paths.js', 'cds-context.js', 'cds-hook.js', 'cds-search.js', 'cds-phase.js', 'package.json', 'package-lock.json',
               'templates\GROUND_TRUTH.md', 'templates\CONVENTIONS.md', 'templates\HOW_WE_WORK.md') {
     Deploy-File (Join-Path $Src "mcp-server\$f") "mcp-server\$f"
 }

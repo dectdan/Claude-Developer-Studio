@@ -3,6 +3,10 @@
 # when finished, its final result (and whether that result asks a question).
 #
 #   powershell -File tools\phase\phase-status.ps1 -Project D:\Projects\ClaudeDevStudio -Phase P2
+#
+# REPLACED FROM P7 by the workbench tool claudedev_phase_status (mcp-server\cds-phase.js). Kept
+# as it was; it also reads runs started by the tools (their .json keeps "pid" = the runner's pid,
+# "started" and "log"; a reply is appended to the same log, so this shows the newest result).
 param(
   [Parameter(Mandatory)][string]$Project,
   [Parameter(Mandatory)][string]$Phase,

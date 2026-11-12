@@ -20,10 +20,16 @@
 // read once (a throwaway CDS_MEMORY_ROOT and APPDATA; --cli only); claudedev_vs_get_output's pane,
 // against a workbench with no Visual Studio and then a fake VS Bridge on a spare port
 // (CDS_VS_BRIDGE_PORT, test-only), so it never talks to a real Visual Studio.
+//
+// P7: the phase tools (claudedev_phase_start/status/reply/stop, cds-phase.js) against a fake
+// Claude Code (fixtures\fake-claude.mjs, copied to %TEMP%; CDS_PHASE_CLAUDE, test-only) and
+// throwaway projects in %TEMP%: the refusals, the lock (and a stale one), status while running
+// and after, a question, the reply's --resume and flags, stop ending the fake and its child, a run
+// started by run-phase.ps1; and (--cli) the automatic handoff listing only the project's files.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { execFileSync, spawnSync } from 'child_process';
+import { execFileSync, spawnSync, spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -731,7 +737,8 @@ try {
       check('workbench: claudedev_vs_get_output accepts pane (build, debug, a name, list)',
         !!vo && !!vo.inputSchema?.properties?.pane && /debug/.test(vo.description) && /list/.test(vo.description), JSON.stringify(vo));
       const wjson = JSON.stringify({ tools: wt });
-      check(`workbench tools/list stays small (${Buffer.byteLength(wjson, 'utf8')} bytes)`, Buffer.byteLength(wjson, 'utf8') < 6000);
+      // (6,000 until P7; the four phase tools take it to about 6,200.)
+      check(`workbench tools/list stays small (${Buffer.byteLength(wjson, 'utf8')} bytes)`, Buffer.byteLength(wjson, 'utf8') < 7000);
 
       r = await wcall('claudedev_vs_get_output', {});
       check('vs_get_output with no pane is the Build pane as before (no saved build yet: says so)', !r.isError && /vs_build_output\.txt not found/.test(r.text), r.text);
@@ -783,6 +790,236 @@ try {
     } finally {
       await wb.close().catch(() => {});
       if (fake) await new Promise((res) => fake.close(() => res()));
+    }
+  }
+
+  // ---- Checks added in P7: running phases from chat (cds-phase.js, the claudedev_phase_* tools),
+  // against a fake Claude Code; and the automatic handoff listing only the project's files ----
+  console.log('\n-- P7 checks (phase tools with a fake Claude Code; handoff file list) --');
+  if (!fs.existsSync(path.join(path.dirname(serverPath), 'cds-phase.js'))) {
+    console.log(`SKIP  P7 checks (no cds-phase.js beside ${serverPath}; it is new in P7): the phase tools (start, status, reply, stop, the lock, the refusals) and the handoff's file list`);
+  } else {
+    const p7 = path.join(os.tmpdir(), `${scratchName}_p7`);
+    extraProjects.push({ dir: p7, mem: p7 });
+    const bin = path.join(p7, 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    const fakeClaude = path.join(bin, 'fake-claude.mjs');
+    fs.copyFileSync(path.join(here, 'fixtures', 'fake-claude.mjs'), fakeClaude);
+    const proj = path.join(p7, 'proj');
+    for (const [ph, mode] of [['N1', 'normal'], ['Q1', 'question'], ['L1', 'forever'], ['E1', 'error'], ['S1', 'slow']]) write(path.join(proj, 'docs', `${ph}_prompt.md`), `# ${ph}\n\nFAKE_MODE: ${mode}\n`);
+    write(path.join(proj, 'README.md'), 'A throwaway project for the P7 smoke checks.\n');
+    const plain = path.join(p7, 'plain');
+    write(path.join(plain, 'notes.txt'), 'not a project\n');
+    const W7 = path.join(p7, 'wb');
+    const phaseMod = await import(new URL(`file:///${path.join(path.dirname(serverPath), 'cds-phase.js').replace(/\\/g, '/')}`).href);
+    const realProjects = path.join(docs, 'ClaudeDevStudio', 'Projects');
+    const realBefore = fs.readdirSync(realProjects).filter(n => n.includes(scratchName)).length;
+
+    const wb7 = new Client({ name: 'cds-smoke-p7', version: '1.0.0' });
+    await wb7.connect(new StdioClientTransport({
+      command: process.execPath, args: [path.join(path.dirname(serverPath), 'workbench.js')], stderr: 'ignore',
+      // CLAUDECODE / CLAUDE_PROJECT_DIR / CDS_FAKE_MARK: the run must not inherit them (it gets the user's environment).
+      env: { CDS_MEMORY_ROOT: W7, LOCALAPPDATA: path.join(p7, 'local'), CDS_PHASE_CLAUDE: fakeClaude, CDS_FAKE_MARK: 'from-the-server', CLAUDECODE: '1', CLAUDE_PROJECT_DIR: scratch },
+    }));
+    const pcall = async (name, args) => { const t0 = Date.now(); const x = await wb7.callTool({ name, arguments: args }); return { text: x.content?.[0]?.text ?? '', isError: !!x.isError, ms: Date.now() - t0 }; };
+    const calls = () => fs.existsSync(path.join(proj, 'docs', 'fake_calls.jsonl')) ? fs.readFileSync(path.join(proj, 'docs', 'fake_calls.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
+    const metaOf = (ph) => JSON.parse(fs.readFileSync(path.join(proj, 'docs', `${ph}_run.json`), 'utf8'));
+    const lockFile = path.join(proj, 'docs', 'cds_phase.lock');
+    const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    // The result is in the log a moment before the runner records the exit and releases the lock.
+    const waitEnded = async (ph, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { const m = metaOf(ph); if (m.runs[m.runs.length - 1].ended) return; } catch { /* not yet */ } await sleep(200); } };
+    const waitFor = async (ph, re, ms = 20000) => { const t0 = Date.now(); let s; do { s = await pcall('claudedev_phase_status', { project_path: proj, phase: ph }); if (re.test(s.text)) return s; await sleep(400); } while (Date.now() - t0 < ms); return s; };
+    try {
+      const { tools: t7 } = await wb7.listTools();
+      const names = ['claudedev_phase_start', 'claudedev_phase_status', 'claudedev_phase_reply', 'claudedev_phase_stop'];
+      const ps = t7.find(t => t.name === 'claudedev_phase_start');
+      check('workbench lists the four phase tools (start, status, reply, stop)', names.every(n => t7.some(t => t.name === n)), t7.map(t => t.name).join(', '));
+      check('phase_start\'s description says Windows, acceptEdits, never bypasses permissions, the user\'s own sign-in',
+        !!ps && /Windows/.test(ps.description) && /acceptEdits/.test(ps.description) && /never bypasses permissions/.test(ps.description) && /sign-in and plan/.test(ps.description) &&
+        ps.inputSchema.required.join(',') === 'project_path,phase' && !ps.inputSchema.properties.prompt, JSON.stringify(ps));
+      console.log(`      (workbench tools/list: ${Buffer.byteLength(JSON.stringify({ tools: t7 }), 'utf8')} bytes, ${t7.length} tools)`);
+      const D = phaseMod.DEFAULT_ALLOWED_TOOLS;
+      check('the default allowed tools never include a bypass or the phase tools, and name the 13 memory tools',
+        !/dangerously|bypass/i.test(D) && !/claudedev_phase_/.test(D) && (D.match(/mcp__claudedevstudio__claudedev_/g) || []).length === 13 && phaseMod.PERMISSION_MODE === 'acceptEdits', D);
+
+      // Refusals
+      let r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'X9' });
+      check('start refuses a phase whose prompt file does not exist', r7.isError && /no docs\\X9_prompt\.md/i.test(r7.text) && !fs.existsSync(lockFile) && !fs.existsSync(path.join(proj, 'docs', 'X9_run.json')), r7.text);
+      r7 = await pcall('claudedev_phase_start', { project_path: plain, phase: 'N1' });
+      check('start refuses a folder that does not look like a project', r7.isError && /doesn't look like a project/.test(r7.text) && !fs.existsSync(path.join(plain, 'docs')), r7.text);
+      const sys32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+      r7 = await pcall('claudedev_phase_start', { project_path: sys32, phase: 'N1' });
+      check('start refuses System32', r7.isError && /inside Windows or Program Files/.test(r7.text), r7.text);
+      r7 = await pcall('claudedev_phase_start', { project_path: path.parse(os.tmpdir()).root, phase: 'N1' });
+      check('start refuses a drive root', r7.isError && /drive root/.test(r7.text), r7.text);
+      r7 = await pcall('claudedev_phase_start', { project_path: os.homedir(), phase: 'N1' });
+      check('start refuses the home folder', r7.isError && /home folder/.test(r7.text), r7.text);
+      r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: '..\\N1' });
+      check('start refuses a phase name with a path in it', r7.isError && /phase must be a short name/.test(r7.text), r7.text);
+      r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'N1', allowed_tools: 'Read,mcp__cds-workbench__claudedev_phase_start' });
+      check('start refuses allowed_tools that would let the phase start phases', r7.isError && /start, answer or stop phases/.test(r7.text), r7.text);
+      r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'N1', allowed_tools: '--dangerously-skip-permissions' });
+      check('start refuses an allowed_tools entry that is a flag', r7.isError && /isn't a tool name/.test(r7.text), r7.text);
+      fs.writeFileSync(path.join(bin, 'fake-version.txt'), '2.0.42');
+      r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'N1' });
+      check('start refuses a Claude Code too old for its flags, naming both versions', r7.isError && /Claude Code 2\.0\.42 is too old/.test(r7.text) && /2\.1\.0 or later/.test(r7.text) && !fs.existsSync(lockFile), r7.text);
+      fs.unlinkSync(path.join(bin, 'fake-version.txt'));
+      {
+        // No Claude Code: no override, a PATH with only Windows and Node, a home with no .local\bin.
+        const wbNo = new Client({ name: 'cds-smoke-p7-noclaude', version: '1.0.0' });
+        await wbNo.connect(new StdioClientTransport({
+          command: process.execPath, args: [path.join(path.dirname(serverPath), 'workbench.js')], stderr: 'ignore',
+          env: { CDS_MEMORY_ROOT: W7, LOCALAPPDATA: path.join(p7, 'local'), USERPROFILE: p7, PATH: `${sys32};${path.dirname(process.execPath)}` },
+        }));
+        try {
+          const x = await wbNo.callTool({ name: 'claudedev_phase_start', arguments: { project_path: proj, phase: 'N1' } });
+          const t = x.content?.[0]?.text ?? '';
+          check('start refuses when Claude Code is not on PATH, saying how to install it', !!x.isError && /isn't installed or isn't on PATH/.test(t) && /code\.claude\.com/.test(t), t);
+        } finally { await wbNo.close().catch(() => {}); }
+      }
+
+      // A normal run, no model or effort given
+      r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'N1' });
+      check(`start returns at once (${r7.ms} ms) with the runner's pid and how to check it`, !r7.isError && r7.ms < 8000 && /Started N1/.test(r7.text) && /runner pid \d+/.test(r7.text) && /claudedev_phase_status/.test(r7.text) && /acceptEdits/.test(r7.text), r7.text);
+      let s7 = await waitFor('N1', /FINISHED/);
+      await waitEnded('N1');
+      check('status after a run: FINISHED, tool calls, the permission denial by name, the result, OUTPUT written, no question',
+        !s7.isError && /^N1 in .*: FINISHED/.test(s7.text) && /Tool calls: 2 \| permission denials: 1 \(Bash\)/.test(s7.text) && /Done: wrote docs\\N1_OUTPUT\.md/.test(s7.text) &&
+        /docs\\N1_OUTPUT\.md: written /.test(s7.text) && !/QUESTION/.test(s7.text) && s7.text.length <= 2500, s7.text);
+      let c = calls().pop() || {};
+      const a = c.argv || [];
+      const val = (f) => { const i = a.indexOf(f); return i >= 0 ? a[i + 1] : undefined; };
+      check('the run got -p with the prompt naming docs\\N1_prompt.md, acceptEdits, the default tools, stream-json, --verbose, an MCP config in %TEMP%; no --model/--effort when not given',
+        a[0] === '-p' && /^Read docs\\N1_prompt\.md and carry it out\. You are running unattended/.test(a[1]) && val('--permission-mode') === 'acceptEdits' &&
+        val('--allowedTools') === D && val('--output-format') === 'stream-json' && a.includes('--verbose') && !a.includes('--model') && !a.includes('--effort') &&
+        path.resolve(val('--mcp-config') || '').toLowerCase().startsWith(path.resolve(os.tmpdir()).toLowerCase()) && c.cwd.toLowerCase() === proj.toLowerCase(), JSON.stringify(c));
+      check('the run gets the user\'s environment, not the server\'s (no CLAUDECODE, no CLAUDE_PROJECT_DIR, no test variable)', c.claudecode === null && c.project_dir === null && c.mark === null, JSON.stringify(c));
+      check('the lock is released when the run ends', !fs.existsSync(lockFile));
+      const m1 = metaOf('N1');
+      check('docs\\N1_run.json records the run (pid, exit code 0, launched through WMI, the command)',
+        m1.runs.length === 1 && m1.runs[0].exit_code === 0 && m1.runs[0].launched_by === 'wmi' && Number.isInteger(m1.pid) && m1.runs[0].command.includes('--permission-mode'), JSON.stringify(m1.runs[0]).slice(0, 600));
+
+      // A question, then the reply (same session, same flags; the message on stdin)
+      r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'Q1', model: 'm-test', effort: 'low' });
+      s7 = await waitFor('Q1', /FINISHED/);
+      check('status detects a result that ends with a question, and that no OUTPUT was written',
+        /It ends with a QUESTION: answer it with claudedev_phase_reply/.test(s7.text) && /Should I also add a test/.test(s7.text) && /docs\\Q1_OUTPUT\.md: not written yet/.test(s7.text), s7.text);
+      r7 = await pcall('claudedev_phase_reply', { project_path: proj, phase: 'Q1', message: '   ' });
+      check('reply refuses an empty message', r7.isError && /message is required/.test(r7.text), r7.text);
+      await waitEnded('Q1');
+      const sid = JSON.parse(fs.readFileSync(path.join(proj, 'docs', 'Q1_run.log'), 'utf8').trim().split('\n').pop()).session_id;
+      const msg = '--dangerously-skip-permissions is not a flag here: "yes", add the test (50% faster) & stop';
+      r7 = await pcall('claudedev_phase_reply', { project_path: proj, phase: 'Q1', message: msg });
+      s7 = await waitFor('Q1', /FINISHED.*run 2 of 2/);
+      await waitEnded('Q1');
+      c = calls().pop() || {};
+      const b = c.argv || [];
+      const bval = (f) => { const i = b.indexOf(f); return i >= 0 ? b[i + 1] : undefined; };
+      const q1 = metaOf('Q1');
+      check('reply continues the same session: --resume <the log\'s session id>, the same model, effort, tools and mode',
+        !r7.isError && b[0] === '-p' && bval('--resume') === sid && !!sid && bval('--model') === 'm-test' && bval('--effort') === 'low' && bval('--allowedTools') === D &&
+        bval('--permission-mode') === 'acceptEdits' && bval('--output-format') === 'stream-json' && b.includes('--verbose'), `${r7.text}\n${JSON.stringify(c)}`);
+      check('the reply\'s message goes in on stdin, word for word (never as an argument, so it cannot become a flag)',
+        c.fromStdin === true && c.prompt === msg && !b.includes(msg) && !b.includes('--dangerously-skip-permissions') && !fs.existsSync(q1.runs[1].stdin || 'x:\\none'), JSON.stringify(c));
+      check('status shows the continuation: run 2 of 2, the reply sent, its result; both results are in the one log',
+        /FINISHED.*run 2 of 2, a reply/.test(s7.text) && /Reply sent: "--dangerously-skip-permissions is not a flag here/.test(s7.text) && /Continued: --dangerously/.test(s7.text) &&
+        (fs.readFileSync(path.join(proj, 'docs', 'Q1_run.log'), 'utf8').match(/"type":"result"/g) || []).length === 2 && q1.runs.length === 2 && q1.runs[1].kind === 'reply', s7.text);
+
+      // A run that goes on until stopped: the lock, refusals while it runs, stop
+      r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'L1' });
+      s7 = await waitFor('L1', /Still working/);
+      check('status while running: RUNNING, its tool calls and latest text, OUTPUT not yet', /^L1 in .*: RUNNING/.test(s7.text) && /Tool calls: 1 \|/.test(s7.text) && /Still working/.test(s7.text) && /not written yet/.test(s7.text) && s7.text.length <= 2500, s7.text);
+      const lock = fs.existsSync(lockFile) ? JSON.parse(fs.readFileSync(lockFile, 'utf8')) : {};
+      check('the lock (docs\\cds_phase.lock) holds the phase, the runner\'s pid and its start time', lock.phase === 'L1' && Number.isInteger(lock.runner_pid) && !!lock.started, JSON.stringify(lock));
+      r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'N1' });
+      check('a second start in the same project is refused while one runs (naming it)', r7.isError && /L1 is already running in this project/.test(r7.text) && fs.existsSync(path.join(proj, 'docs', 'N1_run.json')) && metaOf('N1').runs.length === 1, r7.text);
+      r7 = await pcall('claudedev_phase_reply', { project_path: proj, phase: 'L1', message: 'hello' });
+      check('reply is refused while that session is still running', r7.isError && /still running/.test(r7.text), r7.text);
+      const fakePid = (calls().pop() || {}).pid;
+      const childPid = Number(fs.readFileSync(path.join(proj, 'docs', 'fake_child.pid'), 'utf8'));
+      const runnerPid = metaOf('L1').runs[0].runner_pid;
+      const bystander = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+      r7 = await pcall('claudedev_phase_stop', { project_path: proj, phase: 'L1' });
+      await sleep(500);
+      check('stop ends the run\'s process tree (the runner, the fake Claude Code and its child) and touches nothing else',
+        !r7.isError && /Stopped L1/.test(r7.text) && [runnerPid, fakePid, childPid].every(p => p && !alive(p)) && alive(bystander.pid), `${r7.text}\nrunner ${runnerPid} ${alive(runnerPid)}, fake ${fakePid} ${alive(fakePid)}, child ${childPid} ${alive(childPid)}`);
+      try { bystander.kill(); } catch { /* gone */ }
+      const l1 = metaOf('L1');
+      check('stop releases the lock and records "stopped by request"; status says STOPPED', !fs.existsSync(lockFile) && l1.runs[0].stopped_by_request === true && /STOPPED \(by request\)/.test((await pcall('claudedev_phase_status', { project_path: proj, phase: 'L1' })).text), JSON.stringify(l1.runs[0]).slice(0, 400));
+      r7 = await pcall('claudedev_phase_stop', { project_path: proj, phase: 'L1' });
+      check('stop on a run that is not running says so', !r7.isError && /isn't running/.test(r7.text), r7.text);
+
+      // Errors, a slow run, a stale lock, restarting a phase, a run-phase.ps1 run
+      r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'E1' });
+      s7 = await waitFor('E1', /FINISHED WITH AN ERROR/);
+      await waitEnded('E1');
+      check('status shows a run that ended in an error, with its stderr', /FINISHED WITH AN ERROR \(error_during_execution\)/.test(s7.text) && /stderr: fake claude: something went wrong/.test(s7.text) && metaOf('E1').runs[0].exit_code === 1, s7.text);
+      r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'S1' });
+      s7 = await pcall('claudedev_phase_status', { project_path: proj });
+      check('status without a phase reports the newest run (S1, running)', /^S1 in .*: RUNNING/.test(s7.text), s7.text);
+      s7 = await waitFor('S1', /FINISHED/);
+      await waitEnded('S1');
+      check('the slow run then finishes', /^S1 in .*: FINISHED/.test(s7.text) && !fs.existsSync(lockFile), s7.text);
+
+      const dead = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore', windowsHide: true });
+      await new Promise(res => dead.on('exit', res));
+      write(path.join(proj, 'docs', 'Z1_prompt.md'), '# Z1\n\nFAKE_MODE: normal\n');
+      write(path.join(proj, 'docs', 'Z1_run.json'), JSON.stringify({ phase: 'Z1', project: proj, pid: dead.pid, started: new Date().toISOString(), runs: [{ kind: 'start', requested: new Date().toISOString(), runner_pid: dead.pid, runner_started: new Date().toISOString(), log_offset: 0, err_offset: 0 }] }));
+      write(lockFile, JSON.stringify({ phase: 'Z1', runner_pid: dead.pid, started: new Date().toISOString() }));
+      s7 = await pcall('claudedev_phase_status', { project_path: proj, phase: 'Z1' });
+      check('status of a run whose process is gone (a crash or a restart) says so and clears its stale lock',
+        /ENDED WITHOUT A RESULT \(the process is gone/.test(s7.text) && /lock was stale/.test(s7.text) && !fs.existsSync(lockFile), s7.text);
+      write(lockFile, JSON.stringify({ phase: 'Z1', runner_pid: dead.pid, started: new Date().toISOString() }));
+      r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'N1' });
+      check('start clears a stale lock (and says so), and keeps the previous run\'s files in docs\\phase_runs\\',
+        !r7.isError && /A stale lock \(Z1, pid \d+, no longer running/.test(r7.text) && /moved to docs\\phase_runs\\/.test(r7.text) &&
+        fs.readdirSync(path.join(proj, 'docs', 'phase_runs')).filter(n => /^N1_\d{8}_\d{6}_run\.(log|err|json)$/.test(n)).length === 3, r7.text);
+      await waitFor('N1', /FINISHED/);
+      await waitEnded('N1');
+
+      const legacyLog = fs.readFileSync(path.join(proj, 'docs', 'N1_run.log'), 'utf8');
+      write(path.join(proj, 'docs', 'P0_run.log'), legacyLog);
+      write(path.join(proj, 'docs', 'P0_run.json'), JSON.stringify({ phase: 'P0', pid: dead.pid, started: new Date(Date.now() - 600000).toISOString(), model: 'claude-opus-5-5', effort: 'high', log: path.join(proj, 'docs', 'P0_run.log') }));
+      s7 = await pcall('claudedev_phase_status', { project_path: proj, phase: 'P0' });
+      check('status reads a run started by run-phase.ps1 (its .json has no runs)', /^P0 in .*: FINISHED/.test(s7.text) && /started by run-phase\.ps1/.test(s7.text) && /Tool calls: 2/.test(s7.text), s7.text);
+
+      // Nothing outside the throwaway project and %TEMP%
+      const tmp = path.resolve(os.tmpdir()).toLowerCase();
+      const allMeta = ['N1', 'Q1', 'L1', 'E1', 'S1'].map(metaOf);
+      const paths = allMeta.flatMap(m => [m.log, m.err, m.mcp_config, ...m.runs.map(x => x.stdin).filter(Boolean)]);
+      const realAfter = fs.readdirSync(realProjects).filter(n => n.includes(scratchName)).length;
+      check('everything the runs wrote is in the throwaway project or %TEMP%; no memory folder in the real store for them; no MCP config left outside %TEMP%',
+        paths.every(p => path.resolve(p).toLowerCase().startsWith(tmp)) && realAfter === realBefore,
+        `${paths.join('\n')}\nreal store folders for this test: ${realBefore} -> ${realAfter}`);
+      const every = calls().flatMap(x => x.argv);
+      check('no run was given --dangerously-skip-permissions or bypassPermissions', !every.some(x => /dangerously|bypassPermissions/.test(x)), every.filter(x => /^--/.test(x)).join(' '));
+      for (const m of allMeta) { try { fs.unlinkSync(m.mcp_config); } catch { /* gone */ } }
+    } finally {
+      await wb7.close().catch(() => {});
+    }
+
+    // The automatic handoff lists only the project's files (GROUND_TRUTH §7 item 23), with a throwaway memory root.
+    if (!cliPath) {
+      console.log('SKIP  "the automatic handoff lists only the project\'s files" (needs the new CLI: --cli; an older CLI would write to the real store)');
+    } else {
+      const hp = path.join(p7, 'hookproj');
+      write(path.join(hp, 'docs', 'readme.md'), 'x\n');
+      const root7 = path.join(p7, 'hookroot');
+      const hookEnv = { ...process.env, CDS_HOOK_LOG: path.join(p7, 'hooks.log'), CDS_MEMORY_ROOT: root7, CDS_CLI_PATH: cliPath, CLAUDE_PROJECT_DIR: hp };
+      const runHook = (event, input) => spawnSync(process.execPath, [path.join(path.dirname(serverPath), 'cds-hook.js'), event], { input: JSON.stringify(input), encoding: 'utf8', env: hookEnv, windowsHide: true, timeout: 30000 });
+      const esc = (p) => p.replace(/\\/g, '\\\\');
+      const extra = [path.join(os.tmpdir(), `${scratchName}_scratch.ps1`), path.join(p7, 'elsewhere', 'other.txt')].map((f, k) =>
+        JSON.stringify({ isSidechain: false, type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: `tx${k}`, name: 'Write', input: { file_path: f, content: 'x' } }] }, uuid: `x${k}`, sessionId: 'p7' }));
+      const tr = path.join(p7, 'transcript.jsonl');
+      const lines = fs.readFileSync(path.join(here, 'fixtures', 'transcript-sample.jsonl'), 'utf8').replace(/\{\{PROJECT\}\}/g, esc(hp)).split('\n');
+      lines.splice(2, 0, ...extra);
+      fs.writeFileSync(tr, lines.join('\n'), 'utf8');
+      runHook('session-start', { session_id: 'p7', cwd: hp, hook_event_name: 'SessionStart', source: 'startup' });
+      const h7 = runHook('session-end', { session_id: 'p7', cwd: hp, hook_event_name: 'SessionEnd', reason: 'other', transcript_path: tr });
+      const md = (() => { try { return fs.readFileSync(path.join(root7, 'Projects', 'hookproj', 'session_handoff.md'), 'utf8'); } catch { return ''; } })();
+      check('the automatic handoff lists only the project\'s files and says how many outside ones were left out, in one line',
+        h7.status === 0 && md.includes('Files edited in this session (3): src\\parser.js, test\\parser.test.js, notes\\explore.ipynb') &&
+        md.includes('(2 files edited outside the project not listed.)') && !md.includes('_scratch.ps1') && !md.includes('other.txt'), md || h7.stderr);
     }
   }
 } catch (e) {

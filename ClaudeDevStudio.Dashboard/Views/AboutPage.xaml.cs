@@ -10,6 +10,9 @@ namespace ClaudeDevStudio.Dashboard.Views
         public AboutPage()
         {
             this.InitializeComponent();
+            // The version is the assembly's (set once in Directory.Build.props), not a fixed string.
+            var v = typeof(AboutPage).Assembly.GetName().Version;
+            VersionText.Text = v == null ? "" : $"v{v.Major}.{v.Minor}.{v.Build}";
         }
 
         private async void CheckUpdates_Click(object sender, RoutedEventArgs e)

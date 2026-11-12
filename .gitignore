@@ -50,3 +50,6 @@ qwen_config.json
 docs/*_run.log
 docs/*_run.err
 docs/*_run.json
+# The phase tools' lock and earlier runs of a phase (P7)
+docs/cds_phase.lock
+docs/phase_runs/
