@@ -142,12 +142,12 @@ namespace ClaudeDevStudio
                     if (!exists)
                     {
                         _memory.RecordPattern(pattern);
-                        Console.WriteLine($"  ✓ New pattern: {pattern.PatternDescription}");
+                        Console.WriteLine($"  + New pattern: {pattern.PatternDescription}");
                     }
                     else
                     {
                         // Pattern exists - just update occurrence count
-                        Console.WriteLine($"  ↑ Updated pattern: {pattern.PatternDescription}");
+                        Console.WriteLine($"  ^ Updated pattern: {pattern.PatternDescription}");
                     }
 
                     stats.ActivitiesConsolidated += group.Count();
@@ -230,7 +230,7 @@ namespace ClaudeDevStudio
                 if (pattern.Confidence != originalConfidence)
                 {
                     stats.Decayed++;
-                    Console.WriteLine($"  ⬇ {pattern.PatternDescription}: {originalConfidence}% → {pattern.Confidence}%");
+                    Console.WriteLine($"  v {pattern.PatternDescription}: {originalConfidence}% -> {pattern.Confidence}%");
                 }
 
                 updatedPatterns.Add(pattern);
@@ -277,7 +277,7 @@ namespace ClaudeDevStudio
                 stats.FilesArchived++;
                 stats.BytesFreed += fileSize;
 
-                Console.WriteLine($"  📦 Archived: {fileName} ({FormatBytes(fileSize)})");
+                Console.WriteLine($"  Archived: {fileName} ({FormatBytes(fileSize)})");
             }
 
             return stats;
@@ -331,7 +331,7 @@ namespace ClaudeDevStudio
 
                 if (group.Count() > 1)
                 {
-                    Console.WriteLine($"  🔗 Merged {group.Count()} duplicate patterns: {merged.PatternDescription}");
+                    Console.WriteLine($"  Merged {group.Count()} duplicate patterns: {merged.PatternDescription}");
                 }
             }
 
@@ -376,7 +376,7 @@ namespace ClaudeDevStudio
 
                 if (staleCount > 5)
                 {
-                    Console.WriteLine($"  ⚠️ {staleCount} uncertainties - consider reviewing");
+                    Console.WriteLine($"  WARNING: {staleCount} uncertainties - consider reviewing");
                     stats.Flagged = staleCount;
                 }
             }
@@ -421,7 +421,7 @@ namespace ClaudeDevStudio
                 stats.Compressed++;
                 stats.Ratio += ratio;
 
-                Console.WriteLine($"  🗜️ Compressed: {fileName} ({FormatBytes(originalSize)} → {FormatBytes(compressedSize)}, {ratio:P0} reduction)");
+                Console.WriteLine($"  Compressed: {fileName} ({FormatBytes(originalSize)} -> {FormatBytes(compressedSize)}, {ratio:P0} reduction)");
             }
 
             if (stats.Compressed > 0)

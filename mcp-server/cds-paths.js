@@ -13,13 +13,34 @@ export const HOME = process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\D
 
 let _documents = null;
 
+// Windows PowerShell 5.1 writes to a pipe in the console's OEM code page, so "C:\Users\José" came
+// back as "Jos\uFFFD" (P11). Every PowerShell command whose output CDS reads starts with this.
+export const PS_UTF8 = '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; ';
+
+// Every file named <name> + a PATHEXT extension in the PATH's folders, in order: what `where <name>`
+// prints, without reading where.exe's output (it writes in the OEM code page, so a folder such as
+// C:\Users\José came back unusable; P11). Installer\cds-claude-code.js has the same function.
+export function findOnPath(name, env = process.env) {
+  const exts = (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map(e => e.trim()).filter(Boolean);
+  const found = [];
+  for (const raw of String(env.PATH || env.Path || '').split(';')) {
+    const dir = raw.trim().replace(/^"(.*)"$/, '$1');
+    if (!dir) continue;
+    for (const ext of exts) {
+      const f = path.join(dir, name + ext.toLowerCase());
+      try { if (fs.statSync(f).isFile() && !found.some(x => x.toLowerCase() === f.toLowerCase())) found.push(f); } catch { /* not here */ }
+    }
+  }
+  return found;
+}
+
 // Windows' Documents folder ([Environment]::GetFolderPath('MyDocuments')).
 export function documentsDir() {
   if (_documents) return _documents;
   let docs = null;
   try {
     const out = execFileSync('powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', "[Environment]::GetFolderPath('MyDocuments')"],
+      ['-NoProfile', '-NonInteractive', '-Command', PS_UTF8 + "[Environment]::GetFolderPath('MyDocuments')"],
       { encoding: 'utf8', timeout: 15000, windowsHide: true }).trim();
     if (out && fs.existsSync(out)) docs = out;
   } catch { /* fall back below */ }

@@ -235,10 +235,7 @@ namespace ClaudeDevStudio.TrayApp
         {
             try
             {
-                var psi = new ProcessStartInfo(ClaudeDevExe())
-                {
-                    UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
-                };
+                var psi = CliStartInfo();
                 foreach (var a in args) psi.ArgumentList.Add(a);
                 using var p = Process.Start(psi);
                 if (p == null) return (-1, "claudedev.exe did not start");
@@ -334,8 +331,20 @@ namespace ClaudeDevStudio.TrayApp
         // Claude Code's state (P9), checked in the background: `claudedev claude-code status`.
         // ---------------------------------------------------------------------------------------
 
-        private static string ClaudeDevExe() => Path.Combine(
+        // The installed CLI. CDS_CLI_PATH replaces it for tests only (P11: the export message read
+        // through this very code against a newly built CLI); normal use never sets it.
+        private static string ClaudeDevExe() =>
+            Environment.GetEnvironmentVariable("CDS_CLI_PATH") is { Length: > 0 } test ? test : Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClaudeDevStudio", "CLI", "claudedev.exe");
+
+        // claudedev.exe hidden, its output read back. The CLI writes UTF-8 to a pipe; the reader must say
+        // so, because .NET's default here (no console) is the ANSI code page, which turned "✓" and "→"
+        // into "âœ"" and "â†'" in v1.7.0's Export message (P11).
+        private static ProcessStartInfo CliStartInfo() => new ProcessStartInfo(ClaudeDevExe())
+        {
+            UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true,
+            StandardOutputEncoding = System.Text.Encoding.UTF8, StandardErrorEncoding = System.Text.Encoding.UTF8
+        };
 
         private void RefreshClaudeCodeState()
         {
@@ -345,10 +354,7 @@ namespace ClaudeDevStudio.TrayApp
                 string? state = null, next = "", version = "";
                 try
                 {
-                    var psi = new ProcessStartInfo(ClaudeDevExe())
-                    {
-                        UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
-                    };
+                    var psi = CliStartInfo();
                     psi.ArgumentList.Add("claude-code");
                     psi.ArgumentList.Add("status");
                     using var p = Process.Start(psi);
@@ -710,23 +716,14 @@ namespace ClaudeDevStudio.TrayApp
         {
             try
             {
-                var claudedev = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "ClaudeDevStudio", "CLI", "claudedev.exe");
+                var psi = CliStartInfo();
+                psi.ArgumentList.Add("configure-claude");
+                var result = System.Diagnostics.Process.Start(psi);
 
-                var result = System.Diagnostics.Process.Start(new ProcessStartInfo
-                {
-                    FileName = claudedev,
-                    Arguments = "configure-claude",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                });
-
-                result?.WaitForExit(10000);
+                var errTask = result?.StandardError.ReadToEndAsync();
                 var output = result?.StandardOutput.ReadToEnd() ?? "";
-                var error  = result?.StandardError.ReadToEnd() ?? "";
+                result?.WaitForExit(10000);
+                var error  = errTask?.Result ?? "";
                 var msg    = (output + error).Trim();
                 var success = result?.ExitCode == 0;
 
@@ -820,16 +817,7 @@ namespace ClaudeDevStudio.TrayApp
 
             try
             {
-                var claudedev = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "ClaudeDevStudio", "CLI", "claudedev.exe");
-                var psi = new ProcessStartInfo(claudedev)
-                {
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                };
+                var psi = CliStartInfo();
                 psi.ArgumentList.Add("claude-code");
                 psi.ArgumentList.Add(setUp ? "remove" : "setup");
                 using var p = Process.Start(psi);

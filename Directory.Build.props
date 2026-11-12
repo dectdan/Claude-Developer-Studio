@@ -7,6 +7,18 @@
     tools\check-versions.ps1.
   -->
   <PropertyGroup>
-    <Version>1.7.0</Version>
+    <Version>1.7.1</Version>
+  </PropertyGroup>
+  <!--
+    Release builds keep no path of the machine that built them (P11, ground truth section 7 item 27):
+    the compiler writes /_/ instead of this folder (the PDB path inside each DLL, Source Link's map).
+    ContinuousIntegrationBuild does it for the SDK projects; PathMap does it for the VS Bridge's
+    older-style project too (the SDK adds its own mapping of the same folder before this one).
+    tools\check-build-paths.mjs checks what build-setup.ps1 stages.
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <Deterministic>true</Deterministic>
+    <PathMap>$(MSBuildThisFileDirectory)=/_/</PathMap>
   </PropertyGroup>
 </Project>

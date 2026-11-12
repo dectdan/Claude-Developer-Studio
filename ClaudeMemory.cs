@@ -182,7 +182,7 @@ namespace ClaudeDevStudio.Memory
             LoadFileDigests();
 
             var loadTime = (DateTime.Now - startTime).TotalSeconds;
-            Console.WriteLine($"✓ Context loaded in {loadTime:F1} seconds");
+            Console.WriteLine($"OK: Context loaded in {loadTime:F1} seconds");
 
             // A load after a long gap is a new session: give it a new ID.
             var now = DateTime.Now;
@@ -318,11 +318,11 @@ namespace ClaudeDevStudio.Memory
                 // Check if handoff needed
                 if (_sessionState.ContextUsage.ShouldHandoff)
                 {
-                    Console.WriteLine("⚠️ Context usage critical - handoff recommended");
+                    Console.WriteLine("WARNING: Context usage critical - handoff recommended");
                     var wrote = WriteAutomaticHandoff(out var auto);
                     Console.WriteLine(wrote
-                        ? $"📄 Automatic handoff {auto.Id} written: {HandoffPath}"
-                        : $"📄 Automatic handoff {auto.Id} saved in HANDOFFS.jsonl; the explicit handoff in {HandoffPath} is kept");
+                        ? $"OK: Automatic handoff {auto.Id} written: {HandoffPath}"
+                        : $"OK: Automatic handoff {auto.Id} saved in HANDOFFS.jsonl; the explicit handoff in {HandoffPath} is kept");
                 }
             }
         }
@@ -637,7 +637,7 @@ namespace ClaudeDevStudio.Memory
 
             if (perf.IsOutlier)
             {
-                Console.WriteLine($"⚠️ Performance outlier detected: {perf.Operation} took {perf.Duration}{perf.Unit} (baseline: {perf.Baseline}{perf.Unit})");
+                Console.WriteLine($"WARNING: Performance outlier detected: {perf.Operation} took {perf.Duration}{perf.Unit} (baseline: {perf.Baseline}{perf.Unit})");
             }
         }
 

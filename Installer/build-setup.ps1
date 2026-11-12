@@ -65,6 +65,12 @@ Run 'TrayApp' 'dotnet' @('publish', (Join-Path $Root 'ClaudeDevStudio.UI\ClaudeD
 Step '[3/7] Dashboard'
 Run 'Dashboard' 'dotnet' @('publish', (Join-Path $Root 'ClaudeDevStudio.Dashboard\ClaudeDevStudio.Dashboard.csproj'), '-c', 'Release', '-r', 'win-x64', '--self-contained', 'false', '-o', (Join-Path $Build 'Dashboard'))
 
+# Debug symbols aren't shipped (P11): users get stack traces with method names either way, the
+# installer is smaller, and a .pdb carried the build's NuGet cache path (the user's folder).
+$pdbs = @(Get-ChildItem -Path (Join-Path $Build 'CLI'), (Join-Path $Build 'TrayApp'), (Join-Path $Build 'Dashboard') -Recurse -Filter '*.pdb')
+$pdbs | Remove-Item -Force
+Ok "Not staged: $($pdbs.Count) .pdb file(s) ($(($pdbs | ForEach-Object Name) -join ', '))"
+
 # ---- 4. VS Bridge VSIX (Visual Studio's MSBuild; dotnet build can't build it) ----
 Step '[4/7] VS Bridge VSIX'
 Run 'VSIX' $msbuild @((Join-Path $Root 'VSExtension\CdsVsBridge\CdsVsBridge.csproj'), '-restore', '-t:Rebuild', '-p:Configuration=Release', '-p:DeployExtension=false', '-v:minimal', '-nologo')
@@ -135,6 +141,11 @@ foreach ($b in $bundles) {
     Copy-Item $cached (Join-Path $Build $b.File)
     Ok "$($b.Name): signed by $($sig.SignerCertificate.GetNameInfo('SimpleName', $false))"
 }
+
+# ---- No build-machine path in anything staged (P11; reads only) ----
+Step 'Build paths'
+& node (Join-Path $Root 'tools\check-build-paths.mjs') $Build
+if ($LASTEXITCODE -ne 0) { Fail 'tools\check-build-paths.mjs found a path of this PC in a staged file' }
 
 # ---- Versions must agree before anything is compiled into the installer ----
 Step 'Versions'

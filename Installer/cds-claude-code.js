@@ -220,6 +220,23 @@ function claudeCommand(file) {
   return [file];
 }
 
+// Every file named <name> + a PATHEXT extension in the PATH's folders, in order: what `where <name>`
+// prints, without reading where.exe's output (it writes in the OEM code page, so a folder such as
+// C:\Users\José came back unusable; P11). mcp-server\cds-paths.js has the same function.
+function findOnPath(name, env = process.env) {
+  const exts = (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map(e => e.trim()).filter(Boolean);
+  const found = [];
+  for (const raw of String(env.PATH || env.Path || '').split(';')) {
+    const dir = raw.trim().replace(/^"(.*)"$/, '$1');
+    if (!dir) continue;
+    for (const ext of exts) {
+      const f = path.join(dir, name + ext.toLowerCase());
+      try { if (fs.statSync(f).isFile() && !found.some(x => x.toLowerCase() === f.toLowerCase())) found.push(f); } catch { /* not here */ }
+    }
+  }
+  return found;
+}
+
 function quiet(cmd, args, timeout) {
   try {
     const out = execFileSync(cmd[0], [...cmd.slice(1), ...args], { encoding: 'utf8', timeout, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -236,8 +253,7 @@ function detectClaude(opts, { auth = true } = {}) {
   let candidates = [];
   if (opts.claude) candidates = [path.resolve(opts.claude)];
   else {
-    const w = quiet(['where.exe'], ['claude'], 10000);
-    if (w.code === 0) candidates = w.out.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    candidates = findOnPath('claude');
     const native = path.join(process.env.USERPROFILE || os.homedir(), '.local', 'bin', 'claude.exe');
     if (fs.existsSync(native)) candidates.push(native);
     candidates.sort((a, b) => (b.toLowerCase().endsWith('.exe') ? 1 : 0) - (a.toLowerCase().endsWith('.exe') ? 1 : 0));
@@ -271,7 +287,8 @@ function claudeState(c, setUp) {
 }
 
 // node cds-claude-code.js detect: for the installer. Exit 0 found and new enough, 3 too old, 4 not
-// found. One line on stdout.
+// found. One line on stdout, and in --log's file (UTF-8; P11: the installer no longer logs the
+// line itself, which read it in the ANSI code page and put its own "Claude Code: " in front).
 function detect(opts) {
   const c = detectClaude(opts, { auth: false });
   if (!c.found) { say(`Claude Code: not found. To use it, ${INSTALL_HELP}.`); return 4; }
@@ -480,7 +497,7 @@ function main() {
   if (!['setup', 'remove', 'status', 'detect'].includes(opts.action) || (opts.action === 'setup' && (!opts.node || !opts.mcp))) {
     console.error('usage: node cds-claude-code.js setup --node <node.exe> --mcp <mcp-server dir> [--settings <file>] [--claude-json <file>] [--no-claude-cli] [--log <file>]');
     console.error('       node cds-claude-code.js remove|status [the same options] [--remember-choice] [--claude <file> | --no-claude]');
-    console.error('       node cds-claude-code.js detect [--claude <file> | --no-claude]   exit 0 found, 3 too old, 4 not found');
+    console.error('       node cds-claude-code.js detect [--claude <file> | --no-claude] [--log <file>]   exit 0 found, 3 too old, 4 not found');
     return 1;
   }
   try {

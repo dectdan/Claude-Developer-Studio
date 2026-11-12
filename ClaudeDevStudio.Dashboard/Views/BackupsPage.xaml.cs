@@ -60,7 +60,12 @@ namespace ClaudeDevStudio.Dashboard.Views
             {
                 try
                 {
-                    var psi = new ProcessStartInfo(cli) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                    // The CLI writes UTF-8 to a pipe; say so (the default is the ANSI code page) (P11).
+                    var psi = new ProcessStartInfo(cli)
+                    {
+                        UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                        StandardOutputEncoding = System.Text.Encoding.UTF8, StandardErrorEncoding = System.Text.Encoding.UTF8
+                    };
                     psi.ArgumentList.Add("backup");
                     psi.ArgumentList.Add("--all");
                     using var p = Process.Start(psi);

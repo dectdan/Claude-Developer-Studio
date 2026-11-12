@@ -62,7 +62,8 @@ const scratchName = `_cds_smoketest_${Date.now()}`;
 const scratch = path.join(os.tmpdir(), scratchName);
 fs.mkdirSync(scratch, { recursive: true });
 
-const docs = execFileSync('powershell.exe', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('MyDocuments')"], { encoding: 'utf8' }).trim();
+// PowerShell told to write UTF-8 (it writes the OEM code page to a pipe; P11).
+const docs = execFileSync('powershell.exe', ['-NoProfile', '-Command', "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; [Environment]::GetFolderPath('MyDocuments')"], { encoding: 'utf8' }).trim();
 // P10: with --cli (a CLI that honours CDS_MEMORY_ROOT) the whole run uses a throwaway memory root and old
 // store in %TEMP%, so it writes nothing to the real store (before P10 the main checks made a throwaway
 // project's memory folder there and removed it at the end; from 1.7.0 a load would also start the daily
@@ -185,7 +186,8 @@ try {
     check('CLI alone matches the similar plan', c.code === 1 && /Mistake ID: ERR\d+/.test(c.out) && /rebuild the source/i.test(c.out), c.out);
     c = cli('check', scratch, 'Rename the settings page title');
     check('CLI alone is quiet on the unrelated plan', c.code === 0 && /No prior mistakes/.test(c.out), c.out);
-    check('CLI output has a real ✓ and no â', c.out.includes('✓') && !c.out.includes('â'), JSON.stringify(c.out));
+    // From P11 (1.7.1) the CLI's own marks are ASCII ("OK:"); before, a real ✓ (an older CLI still has it).
+    check('CLI output has its mark (OK: from 1.7.1, a real ✓ before) and no â', (c.out.includes('OK: ') || c.out.includes('✓')) && !c.out.includes('â'), JSON.stringify(c.out));
 
     const before = readSession();
     await sleep(1100);
@@ -1399,6 +1401,82 @@ try {
     const leakedP10 = fs.existsSync(path.join(docs, 'ClaudeDevStudio', 'Projects', 'P10Proj')) || fs.existsSync(path.join(docs, 'ClaudeDevStudio', 'Projects', path.basename(p10)));
     check('P10: nothing of these checks reached the real store', !leakedP10, docs);
     try { fs.rmSync(p10, { recursive: true, force: true }); } catch { /* leave it */ }
+  }
+
+  // ---- P11: text that reads right wherever it goes (the CLI writes UTF-8 to a pipe, console or not;
+  // its own marks are ASCII; readers name UTF-8; the installer's log is written by each program) ----
+  // A throwaway root whose path has non-ASCII letters, so the user's own text is tested too.
+  const p11Cli = cliPath && /OK: No prior mistakes/.test(cli('check', scratch, 'zzqx p11 probe of the marks').out);
+  if (!p11Cli) {
+    console.log('SKIP  P11 checks (need --cli with a 1.7.1 CLI): export/backup output read as the tray reads it (with and without a console), backup --upgrade --log, detect --log, findOnPath, PowerShell output as UTF-8');
+  } else {
+    const p11 = path.join(os.tmpdir(), `${scratchName}_p11 Zoë José 日本`);
+    const R11 = path.join(p11, 'root');
+    const proj11 = path.join(p11, 'proj', 'P11Proj');
+    write(path.join(proj11, 'docs', 'readme.md'), 'x\n');
+    const env11 = { ...process.env, CDS_MEMORY_ROOT: R11, CDS_AUTO_BACKUP: 'off', CDS_ONEDRIVE_FOLDERS: 'none', CDS_ONEDRIVE_RUNNING: '0' };
+    spawnSync(cliPath, ['init', proj11], { env: env11, windowsHide: true, timeout: 60000 });
+    spawnSync(cliPath, ['record', proj11, 'mistake', JSON.stringify({ mistake: 'p11 mistake — with “quotes” and ünïcödé', impact: 'i', fix: 'f', lesson: 'l' })], { env: env11, windowsHide: true, timeout: 60000 });
+    // As the tray app runs it (CreateNoWindow: a hidden console) and as an installer without a console
+    // ran it on machine 3 (detached: no console at all); stdout read as UTF-8 (the tray from 1.7.1).
+    const runRaw = (args, detached) => new Promise(res => {
+      const c = spawn(cliPath, args, { env: env11, windowsHide: true, detached, stdio: ['ignore', 'pipe', 'pipe'] });
+      const b = []; c.stdout.on('data', d => b.push(d)); c.stderr.on('data', d => b.push(d));
+      c.on('close', code => res({ code, bytes: Buffer.concat(b) }));
+    });
+    const MOJI = /[âÃû\uFFFD]/;
+    const ownWordsAscii = (text, p) => /^[\x00-\x7f]*$/.test(text.split(p).join(''));
+    for (const [how, detached] of [['with a hidden console (the tray app)', false], ['with no console (an installer, machine 3)', true]]) {
+      const zip = path.join(p11, `export-${detached ? 'nocon' : 'con'}.zip`);
+      const ex = await runRaw(['export', zip], detached);
+      const t = ex.bytes.toString('utf8');
+      check(`P11: export ${how}: read as UTF-8 it says "OK: Exported ...", the non-ASCII path is exact, the CLI's own words are ASCII, no mojibake`,
+        ex.code === 0 && /OK: Exported the memory store/.test(t) && t.includes(zip) && / -> /.test(t) && ownWordsAscii(t, p11) && !MOJI.test(t.split(p11).join('')), JSON.stringify(t));
+      const bk = await runRaw(['backup', '--all'], detached);
+      const tb = bk.bytes.toString('utf8');
+      check(`P11: backup --all ${how}: the same (no â, Ã, û or replacement character)`,
+        bk.code === 0 && /OK: Backup of the whole memory store: /.test(tb) && tb.includes(path.join(R11, 'Backups', 'store')) && ownWordsAscii(tb, p11) && !MOJI.test(tb.split(p11).join('')), JSON.stringify(tb));
+    }
+    // v1.7.0's tray read the same bytes as Windows-1252: from 1.7.1 the CLI's own words survive even that.
+    const old = (await runRaw(['backup', '--all'], false)).bytes;
+    const as1252 = new TextDecoder('windows-1252').decode(old);
+    check('P11: read the v1.7.0 way (Windows-1252) the CLI\'s own words still read right ("OK:", "->"; only the user\'s non-ASCII path would not)',
+      /^OK: Backup of the whole memory store: /.test(as1252) && /\d+ files, .* -> .* zipped/.test(as1252) && !/âœ|â†/.test(as1252), JSON.stringify(as1252));
+
+    // backup --upgrade --log (the installer): the CLI appends its own lines to install.log in UTF-8.
+    const log11 = path.join(p11, 'install.log');
+    fs.writeFileSync(log11, '[setup] Backing up the memory store before the upgrade...\r\n', 'utf8');
+    const upg = await runRaw(['backup', '--upgrade', '--log', log11], true);
+    const logBytes = fs.readFileSync(log11);
+    let logText = null; try { logText = new TextDecoder('utf-8', { fatal: true }).decode(logBytes); } catch { /* invalid */ }
+    check('P11: backup --upgrade --log <install.log> appends its lines with the time, in UTF-8 (valid; the non-ASCII path exact; no mojibake)',
+      upg.code === 0 && logText !== null && /\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d {2}OK: Backup of the memory store before the upgrade: /.test(logText) && logText.includes(path.join(R11, 'Backups', 'store')) && /\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d {2}\s*\d+ files, .* -> .* zipped/.test(logText) && !MOJI.test(logText.split(p11).join('')), logText ?? logBytes.toString('hex').slice(0, 400));
+
+    // cds-claude-code.js detect --log: its one line in the log, one "Claude Code" label.
+    const ccJs11 = [path.resolve(path.dirname(serverPath), '..', 'Installer', 'cds-claude-code.js'), path.resolve(path.dirname(serverPath), '..', 'cds-claude-code.js')].find(f => fs.existsSync(f));
+    if (ccJs11) {
+      const dlog = path.join(p11, 'detect.log');
+      const dt = spawnSync(process.execPath, [ccJs11, 'detect', '--no-claude', '--log', dlog], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+      const dl = fs.existsSync(dlog) ? fs.readFileSync(dlog, 'utf8') : '';
+      check('P11: cds-claude-code.js detect --log writes its line to the log with one "Claude Code" label (exit 4, not found)',
+        dt.status === 4 && /\d\d:\d\d:\d\d {2}Claude Code: not found\. To use it, install it/.test(dl) && !/Claude Code: Claude Code:/.test(dl) && dl.trim().split('\n').length === 1, `${dt.status} ${dl}`);
+    } else console.log('SKIP  P11: detect --log (no cds-claude-code.js beside this copy)');
+
+    // Node reading other programs: a PATH search instead of where.exe, PowerShell told to write UTF-8.
+    const pathsMod = await import(new URL(`file:///${path.join(path.dirname(serverPath), 'cds-paths.js').replace(/\\/g, '/')}`).href);
+    if (pathsMod.findOnPath && pathsMod.PS_UTF8) {
+      const bin11 = path.join(p11, 'bin');
+      write(path.join(bin11, 'claude.cmd'), '@echo off\r\n');
+      const found = pathsMod.findOnPath('claude', { PATH: `C:\\nowhere-p11;${bin11}`, PATHEXT: '.EXE;.CMD' });
+      check('P11: findOnPath finds claude.cmd in a folder with non-ASCII letters (where.exe\'s output came back garbled)', found.length === 1 && found[0].toLowerCase() === path.join(bin11, 'claude.cmd').toLowerCase() && fs.existsSync(found[0]), JSON.stringify(found));
+      const q = p11.replace(/'/g, "''");
+      const ps = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `${pathsMod.PS_UTF8}(Get-Item -LiteralPath '${q}').FullName`], { encoding: 'utf8', windowsHide: true, timeout: 30000 }).trim();
+      check('P11: a PowerShell command started with PS_UTF8 returns a non-ASCII path exactly (Documents for a user named José)', ps === p11 && fs.existsSync(ps), JSON.stringify(ps));
+    } else console.log('SKIP  P11: findOnPath / PS_UTF8 (this copy\'s cds-paths.js has neither)');
+
+    const leaked11 = fs.existsSync(path.join(docs, 'ClaudeDevStudio', 'Projects', 'P11Proj'));
+    check('P11: nothing of these checks reached the real store', !leaked11, docs);
+    try { fs.rmSync(p11, { recursive: true, force: true }); } catch { /* leave it */ }
   }
 } catch (e) {
   check('no exception', false, e.stack || e.message);

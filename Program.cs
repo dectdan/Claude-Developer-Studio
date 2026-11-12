@@ -29,11 +29,31 @@ namespace ClaudeDevStudio
         static string ProductVersion =>
             typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "unknown";
 
+        /// <summary>
+        /// The bytes the CLI writes (P11). To a pipe or a file (index.js, the hook, the tray app, the
+        /// Dashboard, the installer): always UTF-8 without a BOM, whether or not there is a console
+        /// (before 1.7.1 the console-API setter failed without one, and the text came out in the
+        /// ANSI or OEM code page: "?" or "û" for a check mark). To a console window: UTF-16 through
+        /// WriteConsoleW (Encoding.Unicode), so any console shows any character and its code page is
+        /// never changed. The CLI's own marks are plain ASCII ("OK:", "->", "WARNING:"), so even a
+        /// reader that guesses (Windows PowerShell 5.1 capturing a native program's output in the OEM
+        /// code page) reads them right; only the user's own text can be non-ASCII.
+        /// </summary>
+        static void SetUpOutput()
+        {
+            bool outRedirected = Console.IsOutputRedirected, errRedirected = Console.IsErrorRedirected;
+            if (!outRedirected || !errRedirected)
+                try { Console.OutputEncoding = System.Text.Encoding.Unicode; } catch { /* no console */ }
+            var utf8 = new System.Text.UTF8Encoding(false);
+            if (outRedirected)
+                Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), utf8) { AutoFlush = true });
+            if (errRedirected)
+                Console.SetError(new StreamWriter(Console.OpenStandardError(), utf8) { AutoFlush = true });
+        }
+
         static int Main(string[] args)
         {
-            // Symbols such as ✓ and ⚠ must reach callers (index.js reads stdout as UTF-8)
-            // as UTF-8, not in the console's code page. No BOM.
-            try { Console.OutputEncoding = new System.Text.UTF8Encoding(false); } catch { /* no console */ }
+            SetUpOutput();
 
             try
             {
@@ -103,7 +123,7 @@ namespace ClaudeDevStudio
 
             var memoryLocation = Path.Combine(MemoryPaths.Root, "Projects", Path.GetFileName(projectPath));
 
-            Console.WriteLine($"✓ Initialized ClaudeDevStudio memory for: {Path.GetFileName(projectPath)}");
+            Console.WriteLine($"OK: Initialized ClaudeDevStudio memory for: {Path.GetFileName(projectPath)}");
             Console.WriteLine($"  Memory location: {memoryLocation}");
             
             return 0;
@@ -147,7 +167,7 @@ namespace ClaudeDevStudio
 
             if (state.DecisionsPending.Any())
             {
-                Console.WriteLine($"\n⚠️ Pending Decisions: {state.DecisionsPending.Count}");
+                Console.WriteLine($"\nPending decisions: {state.DecisionsPending.Count}");
                 foreach (var decision in state.DecisionsPending)
                 {
                     Console.WriteLine($"  - {decision.Question}");
@@ -156,7 +176,7 @@ namespace ClaudeDevStudio
 
             if (state.UncertaintiesFlagged.Any())
             {
-                Console.WriteLine($"\n❓ Flagged Uncertainties: {state.UncertaintiesFlagged.Count}");
+                Console.WriteLine($"\nFlagged uncertainties: {state.UncertaintiesFlagged.Count}");
                 foreach (var uncertainty in state.UncertaintiesFlagged)
                 {
                     Console.WriteLine($"  - {uncertainty}");
@@ -196,7 +216,7 @@ namespace ClaudeDevStudio
                     if (activity != null)
                     {
                         memory.RecordActivity(activity);
-                        Console.WriteLine($"✓ Recorded activity: {activity.Action}");
+                        Console.WriteLine($"OK: Recorded activity: {activity.Action}");
                     }
                     break;
 
@@ -205,7 +225,7 @@ namespace ClaudeDevStudio
                     if (pattern != null)
                     {
                         memory.RecordPattern(pattern);
-                        Console.WriteLine($"✓ Recorded pattern: {pattern.PatternDescription}");
+                        Console.WriteLine($"OK: Recorded pattern: {pattern.PatternDescription}");
                     }
                     break;
 
@@ -214,7 +234,7 @@ namespace ClaudeDevStudio
                     if (mistake != null)
                     {
                         memory.RecordMistake(mistake);
-                        Console.WriteLine($"✓ Recorded mistake: {mistake.MistakeDescription}");
+                        Console.WriteLine($"OK: Recorded mistake: {mistake.MistakeDescription}");
                     }
                     break;
 
@@ -223,7 +243,7 @@ namespace ClaudeDevStudio
                     if (decision == null || string.IsNullOrWhiteSpace(decision.DecisionDescription))
                         return Error("A decision needs \"decision\" (what was decided).");
                     memory.RecordDecision(decision);
-                    Console.WriteLine($"✓ Recorded decision {decision.Id}: {decision.DecisionDescription}");
+                    Console.WriteLine($"OK: Recorded decision {decision.Id}: {decision.DecisionDescription}");
                     break;
 
                 case "handoff":
@@ -235,13 +255,13 @@ namespace ClaudeDevStudio
                     {
                         var wrote = memory.RecordAutomaticHandoff(handoff);
                         Console.WriteLine(wrote
-                            ? $"✓ Recorded automatic handoff {handoff.Id}: {memory.HandoffPath}"
-                            : $"✓ Automatic handoff {handoff.Id} saved in HANDOFFS.jsonl; the explicit handoff is kept: {memory.HandoffPath}");
+                            ? $"OK: Recorded automatic handoff {handoff.Id}: {memory.HandoffPath}"
+                            : $"OK: Automatic handoff {handoff.Id} saved in HANDOFFS.jsonl; the explicit handoff is kept: {memory.HandoffPath}");
                     }
                     else
                     {
                         memory.RecordHandoff(handoff);
-                        Console.WriteLine($"✓ Recorded handoff {handoff.Id}: {memory.HandoffPath}");
+                        Console.WriteLine($"OK: Recorded handoff {handoff.Id}: {memory.HandoffPath}");
                     }
                     break;
 
@@ -250,7 +270,7 @@ namespace ClaudeDevStudio
                     if (perf != null)
                     {
                         memory.RecordPerformance(perf);
-                        Console.WriteLine($"✓ Recorded performance: {perf.Operation} = {perf.Duration}{perf.Unit}");
+                        Console.WriteLine($"OK: Recorded performance: {perf.Operation} = {perf.Duration}{perf.Unit}");
                     }
                     break;
 
@@ -278,7 +298,7 @@ namespace ClaudeDevStudio
 
             if (check.FoundPriorAttempt && check.PriorMistake != null)
             {
-                Console.WriteLine("⚠️ WARNING: This action matches a prior mistake!");
+                Console.WriteLine("WARNING: This action matches a prior mistake!");
                 Console.WriteLine($"\nMistake ID: {check.PriorMistake.Id}");
                 Console.WriteLine($"Date: {check.PriorMistake.Timestamp:yyyy-MM-dd}");
                 Console.WriteLine($"What happened: {check.PriorMistake.Impact}");
@@ -292,7 +312,7 @@ namespace ClaudeDevStudio
             if (lessons.Any())
             {
                 if (found) Console.WriteLine();
-                Console.WriteLine($"⚠️ WARNING: This action matches {(lessons.Count == 1 ? "a lesson" : $"{lessons.Count} lessons")} for every project (machine-wide, {LessonStore.FilePath}):");
+                Console.WriteLine($"WARNING: This action matches {(lessons.Count == 1 ? "a lesson" : $"{lessons.Count} lessons")} for every project (machine-wide, {LessonStore.FilePath}):");
                 foreach (var (lesson, _) in lessons.Take(3))
                 {
                     Console.WriteLine($"\nLesson ID: {lesson.Id}");
@@ -305,7 +325,7 @@ namespace ClaudeDevStudio
 
             if (found)
                 return 1;
-            Console.WriteLine("✓ No prior mistakes found for this action");
+            Console.WriteLine("OK: No prior mistakes found for this action");
             return 0;
         }
 
@@ -347,8 +367,8 @@ namespace ClaudeDevStudio
                             var l = Parse(line);
                             if (l == null) { refused++; continue; }
                             var r = LessonStore.Add(l, force, out var why);
-                            if (r != null) { added++; Console.WriteLine($"✓ Recorded lesson {r.Id}: {r.Text}"); }
-                            else { refused++; Console.WriteLine($"✗ {why} ({Shorten(l.Text, 80)})"); }
+                            if (r != null) { added++; Console.WriteLine($"OK: Recorded lesson {r.Id}: {r.Text}"); }
+                            else { refused++; Console.WriteLine($"Not added: {why} ({Shorten(l.Text, 80)})"); }
                         }
                         Console.WriteLine($"{added} added, {refused} refused. File: {LessonStore.FilePath}");
                         return refused > 0 && added == 0 ? 1 : 0;
@@ -358,7 +378,7 @@ namespace ClaudeDevStudio
                     if (lesson == null) return 1;
                     var recorded = LessonStore.Add(lesson, force, out var refusal);
                     if (recorded == null) { Console.WriteLine(refusal); return 1; }
-                    Console.WriteLine($"✓ Recorded lesson {recorded.Id}: {recorded.Text}");
+                    Console.WriteLine($"OK: Recorded lesson {recorded.Id}: {recorded.Text}");
                     Console.WriteLine($"  File: {LessonStore.FilePath}");
                     return 0;
                 }
@@ -379,7 +399,7 @@ namespace ClaudeDevStudio
                     if (!LessonStore.Edit(rest[0], changes, force, out var refusal))
                         return Error($"No lesson {rest[0]} in {LessonStore.FilePath} (claudedev lesson list shows them).");
                     if (refusal != null) { Console.WriteLine(refusal); return 1; }
-                    Console.WriteLine($"✓ Changed lesson {rest[0].ToUpper()} (the previous file is LESSONS.jsonl.bak).");
+                    Console.WriteLine($"OK: Changed lesson {rest[0].ToUpper()} (the previous file is LESSONS.jsonl.bak).");
                     return 0;
                 }
                 case "remove":
@@ -387,7 +407,7 @@ namespace ClaudeDevStudio
                     if (rest.Count < 1) return Error(usage);
                     if (!LessonStore.Remove(rest[0], out var removed))
                         return Error($"No lesson {rest[0]} in {LessonStore.FilePath} (claudedev lesson list shows them).");
-                    Console.WriteLine($"✓ Removed lesson {removed!.Id}: {removed.Text} (the previous file is LESSONS.jsonl.bak).");
+                    Console.WriteLine($"OK: Removed lesson {removed!.Id}: {removed.Text} (the previous file is LESSONS.jsonl.bak).");
                     return 0;
                 }
                 default:
@@ -426,11 +446,11 @@ namespace ClaudeDevStudio
                 
                 if (state.ContextUsage.ShouldHandoff)
                 {
-                    Console.WriteLine("  ⚠️ CRITICAL - Handoff recommended!");
+                    Console.WriteLine("  CRITICAL: Handoff recommended!");
                 }
                 else if (state.ContextUsage.TokensUsed > state.ContextUsage.WarningThreshold)
                 {
-                    Console.WriteLine("  ⚠️ WARNING - Approaching context limit");
+                    Console.WriteLine("  WARNING: Approaching context limit");
                 }
             }
 
@@ -481,8 +501,8 @@ namespace ClaudeDevStudio
                 return Error("Failed to generate handoff document");
 
             Console.WriteLine(wrote
-                ? $"✓ Automatic handoff {handoff.Id} written:"
-                : $"✓ Automatic handoff {handoff.Id} saved in HANDOFFS.jsonl; the explicit handoff is kept:");
+                ? $"OK: Automatic handoff {handoff.Id} written:"
+                : $"OK: Automatic handoff {handoff.Id} saved in HANDOFFS.jsonl; the explicit handoff is kept:");
             Console.WriteLine($"  {handoffPath}");
             Console.WriteLine();
             Console.WriteLine(File.ReadAllText(handoffPath));
@@ -621,28 +641,28 @@ namespace ClaudeDevStudio
             {
                 case "all":
                     Core.ComponentManager.RestartAll();
-                    Console.WriteLine("✓ All components restarted");
+                    Console.WriteLine("OK: All components restarted");
                     break;
 
                 case "tray":
                     if (Core.ComponentManager.RestartTrayApp())
-                        Console.WriteLine("✓ Tray app restarted");
+                        Console.WriteLine("OK: Tray app restarted");
                     else
-                        Console.WriteLine("✗ Failed to restart tray app");
+                        Console.WriteLine("ERROR: Failed to restart tray app");
                     break;
 
                 case "dashboard":
                     if (Core.ComponentManager.RestartDashboard())
-                        Console.WriteLine("✓ Dashboard restarted");
+                        Console.WriteLine("OK: Dashboard restarted");
                     else
-                        Console.WriteLine("✗ Failed to restart dashboard");
+                        Console.WriteLine("ERROR: Failed to restart dashboard");
                     break;
 
                 case "mcp":
                     if (Core.ComponentManager.RestartMcpServer())
-                        Console.WriteLine("✓ MCP server restarted");
+                        Console.WriteLine("OK: MCP server restarted");
                     else
-                        Console.WriteLine("✗ Failed to restart MCP server");
+                        Console.WriteLine("ERROR: Failed to restart MCP server");
                     break;
 
                 default:
@@ -658,18 +678,18 @@ namespace ClaudeDevStudio
 
             Console.WriteLine("=== ClaudeDevStudio Component Status ===");
             Console.WriteLine();
-            Console.WriteLine($"Tray App:    {(status.TrayAppRunning ? "✓ Running" : "✗ Stopped")}");
-            Console.WriteLine($"Dashboard:   {(status.DashboardRunning ? "✓ Running" : "✗ Stopped")}");
-            Console.WriteLine($"MCP Server:  {(status.McpServerRunning ? "✓ Running" : "✗ Stopped")}");
+            Console.WriteLine($"Tray App:    {(status.TrayAppRunning ? "running" : "STOPPED")}");
+            Console.WriteLine($"Dashboard:   {(status.DashboardRunning ? "running" : "STOPPED")}");
+            Console.WriteLine($"MCP Server:  {(status.McpServerRunning ? "running" : "STOPPED")}");
             Console.WriteLine();
 
             if (status.AllRunning)
             {
-                Console.WriteLine("All components are running ✓");
+                Console.WriteLine("All components are running.");
             }
             else
             {
-                Console.WriteLine("⚠️ Some components are not running");
+                Console.WriteLine("WARNING: Some components are not running");
                 Console.WriteLine("Run 'claudedev restart all' to start all components");
             }
 
@@ -702,7 +722,7 @@ namespace ClaudeDevStudio
             foreach (var project in projects)
             {
                 var isActive = project.Path == activeState.ActiveProjectPath;
-                var marker = isActive ? "→" : " ";
+                var marker = isActive ? ">" : " ";
                 var timeSince = GetTimeSince(project.LastAccessed);
 
                 Console.WriteLine($"{marker} {project.Name}");
@@ -755,7 +775,7 @@ namespace ClaudeDevStudio
             var stateManager = new Core.SessionStateManager();
             stateManager.SetActiveProject(targetProject.Path, targetProject.Name);
 
-            Console.WriteLine($"✓ Switched to project: {targetProject.Name}");
+            Console.WriteLine($"OK: Switched to project: {targetProject.Name}");
             Console.WriteLine($"  Path: {targetProject.Path}");
 
             return 0;
@@ -794,15 +814,15 @@ namespace ClaudeDevStudio
 
             if (!result.Success)
             {
-                Console.WriteLine($"✗ {result.Message}");
+                Console.WriteLine($"ERROR: {result.Message}");
                 return 1;
             }
 
-            Console.WriteLine($"✓ Loaded project: {result.ProjectName}");
+            Console.WriteLine($"OK: Loaded project: {result.ProjectName}");
             Console.WriteLine($"  Source: {result.Source}");
             Console.WriteLine();
             Console.WriteLine("Context:");
-            Console.WriteLine("─────────────────────────────────────");
+            Console.WriteLine("-------------------------------------");
             Console.WriteLine(result.Context);
 
             return 0;
@@ -846,17 +866,32 @@ namespace ClaudeDevStudio
             return notes;
         }
 
+        // Appends text to a log (install.log) in UTF-8, each line after the local time, the format the
+        // installer's Node scripts use. Best effort: a log that can't be written never fails the command.
+        static void AppendToLog(string file, string text)
+        {
+            try
+            {
+                var time = DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:ss");
+                var sb = new System.Text.StringBuilder();
+                foreach (var line in text.Replace("\r\n", "\n").Split('\n'))
+                    if (line.Trim().Length > 0) sb.Append(time).Append("  ").Append(line).Append("\r\n");
+                File.AppendAllText(file, sb.ToString(), new System.Text.UTF8Encoding(false));
+            }
+            catch { /* best effort */ }
+        }
+
         static string Kb(long bytes) => bytes >= 1024 * 1024 ? $"{bytes / 1024.0 / 1024.0:F1} MB" : $"{bytes / 1024.0:F0} KB";
 
         static void PrintCreated(StoreBackup.CreateResult r, string what)
         {
-            Console.WriteLine($"✓ {what}: {r.Path}");
-            Console.WriteLine($"  {r.Files} files, {Kb(r.Bytes)} → {Kb(r.ZipBytes)} zipped, {r.Seconds:F1} s");
+            Console.WriteLine($"OK: {what}: {r.Path}");
+            Console.WriteLine($"  {r.Files} files, {Kb(r.Bytes)} -> {Kb(r.ZipBytes)} zipped, {r.Seconds:F1} s");
             if (r.Pruned.Count > 0)
                 Console.WriteLine($"  Older automatic backups deleted (keeping the newest 14 daily, 4 before an upgrade): {string.Join(", ", r.Pruned)}");
         }
 
-        // claudedev backup --all | --auto | --upgrade | --status | --verify <zip> | [project_path]
+        // claudedev backup --all | --auto | --upgrade [--log <file>] | --status | --verify <zip> | [project_path]
         static int BackupProject(string[] args)
         {
             var flags = args.Skip(1).Select(a => a.ToLowerInvariant()).ToList();
@@ -880,10 +915,10 @@ namespace ClaudeDevStudio
                 var problems = archive.Verify();
                 if (problems.Count > 0)
                 {
-                    Console.WriteLine($"✗ {Path.GetFileName(file)}: {string.Join("; ", problems.Take(10))}");
+                    Console.WriteLine($"ERROR: {Path.GetFileName(file)}: {string.Join("; ", problems.Take(10))}");
                     return 1;
                 }
-                Console.WriteLine($"✓ {Path.GetFileName(file)} opens: {archive.Files.Count} files, every hash matches (made on {archive.Machine}, {archive.Created}, CDS {archive.CdsVersion}, {archive.Kind})");
+                Console.WriteLine($"OK: {Path.GetFileName(file)} opens: {archive.Files.Count} files, every hash matches (made on {archive.Machine}, {archive.Created}, CDS {archive.CdsVersion}, {archive.Kind})");
                 return 0;
             }
 
@@ -899,13 +934,37 @@ namespace ClaudeDevStudio
             if (flags.Contains("--upgrade") || flags.Contains("--all"))
             {
                 var kind = flags.Contains("--upgrade") ? "upgrade" : "manual";
-                if (StoreBackup.StoreFiles(MemoryPaths.Root).Count == 0)
+                // --log <file> (the installer, P11): the same lines also appended to that file in UTF-8,
+                // each with the time, as cds-config.js and cds-claude-code.js write theirs. NSIS reads a
+                // program's output in the ANSI code page, so the installer no longer logs it itself.
+                var logFile = args.SkipWhile(a => !a.Equals("--log", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
+                var shown = Console.Out;
+                var captured = new StringWriter();
+                if (logFile != null) Console.SetOut(captured);
+                var code = 0;
+                try
                 {
-                    Console.WriteLine($"Nothing to back up: no memory in {MemoryPaths.Root} yet.");
-                    return 0;
+                    if (StoreBackup.StoreFiles(MemoryPaths.Root).Count == 0)
+                        Console.WriteLine($"Nothing to back up: no memory in {MemoryPaths.Root} yet.");
+                    else
+                        PrintCreated(StoreBackup.Create(kind), kind == "upgrade" ? "Backup of the memory store before the upgrade" : "Backup of the whole memory store");
                 }
-                PrintCreated(StoreBackup.Create(kind), kind == "upgrade" ? "Backup of the memory store before the upgrade" : "Backup of the whole memory store");
-                return 0;
+                catch (Exception ex) when (logFile != null)
+                {
+                    Console.WriteLine($"ERROR: the memory store was not backed up: {ex.Message}");
+                    code = 1;
+                }
+                finally
+                {
+                    if (logFile != null)
+                    {
+                        Console.SetOut(shown);
+                        var text = captured.ToString();
+                        shown.Write(text);
+                        AppendToLog(logFile, text);
+                    }
+                }
+                return code;
             }
 
             // One project, the pre-1.7 way (Backups\<project>\<project>_<time>.backup).
@@ -924,14 +983,14 @@ namespace ClaudeDevStudio
 
             if (result.Success)
             {
-                Console.WriteLine($"✓ Backup created successfully");
+                Console.WriteLine($"OK: Backup created successfully");
                 Console.WriteLine($"  File: {Path.GetFileName(result.BackupPath)}");
                 Console.WriteLine($"  Size: {result.Size / 1024.0:F2} KB");
                 Console.WriteLine($"  Location: {Path.GetDirectoryName(result.BackupPath)}");
                 Console.WriteLine("  (One project. The whole store, all projects and the lessons: claudedev backup --all)");
                 return 0;
             }
-            Console.WriteLine($"✗ {result.Message}");
+            Console.WriteLine($"ERROR: {result.Message}");
             return 1;
         }
 
@@ -973,14 +1032,14 @@ namespace ClaudeDevStudio
                 try
                 {
                     var s = StoreBackup.Restore(backupFile);
-                    Console.WriteLine($"✓ Restored {s.Written} files ({s.Same} were already the same; {s.LeftAlone} files not in the backup left as they are)");
+                    Console.WriteLine($"OK: Restored {s.Written} files ({s.Same} were already the same; {s.LeftAlone} files not in the backup left as they are)");
                     if (s.BackupFirst != null)
                         Console.WriteLine($"  Backed up first: {s.BackupFirst}");
                     return 0;
                 }
                 catch (System.IO.InvalidDataException ex)
                 {
-                    Console.WriteLine($"✗ {ex.Message}");
+                    Console.WriteLine($"ERROR: {ex.Message}");
                     return 1;
                 }
             }
@@ -989,7 +1048,7 @@ namespace ClaudeDevStudio
             if (!Directory.Exists(projectPath))
                 return Error($"Project path does not exist: {projectPath}");
 
-            Console.WriteLine("⚠️ This will restore one project from backup and overwrite its current files (they are backed up first).");
+            Console.WriteLine("WARNING: This will restore one project from backup and overwrite its current files (they are backed up first).");
             if (!yes)
             {
                 Console.Write("Continue? (y/n): ");
@@ -1011,10 +1070,10 @@ namespace ClaudeDevStudio
 
             if (result.Success)
             {
-                Console.WriteLine($"✓ Restored {result.FilesRestored} files successfully");
+                Console.WriteLine($"OK: Restored {result.FilesRestored} files successfully");
                 return 0;
             }
-            Console.WriteLine($"✗ {result.Message}");
+            Console.WriteLine($"ERROR: {result.Message}");
             return 1;
         }
 
@@ -1107,14 +1166,14 @@ namespace ClaudeDevStudio
             try
             {
                 var s = StoreBackup.Import(file, dryRun);
-                Console.WriteLine((dryRun ? "" : "✓ ") + s.Render(dryRun ? "Would import" : "Imported"));
+                Console.WriteLine((dryRun ? "" : "OK: ") + s.Render(dryRun ? "Would import" : "Imported"));
                 if (dryRun)
                     Console.WriteLine("Run it without --dry-run to import (the current store is backed up first).");
                 return 0;
             }
             catch (System.IO.InvalidDataException ex)
             {
-                Console.WriteLine($"✗ {ex.Message}");
+                Console.WriteLine($"ERROR: {ex.Message}");
                 return 1;
             }
         }
@@ -1295,6 +1354,9 @@ namespace ClaudeDevStudio
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                // Node writes UTF-8 to a pipe; name it (the default is the console's code page) (P11).
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8,
                 CreateNoWindow = true
             };
             foreach (var arg in new[] { script, "install", "--config", configPath, "--node", nodePath,
@@ -1366,6 +1428,9 @@ namespace ClaudeDevStudio
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                // Node writes UTF-8 to a pipe; name it (the default is the console's code page) (P11).
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8,
                 CreateNoWindow = true
             };
             foreach (var arg in new[] { script, action, "--node", nodePath, "--mcp", mcpDir })
@@ -1415,7 +1480,7 @@ namespace ClaudeDevStudio
 
                 if (updateInfo.UpdateAvailable)
                 {
-                    Console.WriteLine($"✓ Update Available!");
+                    Console.WriteLine($"OK: Update Available!");
                     Console.WriteLine();
                     Console.WriteLine($"Current Version:  {updateInfo.CurrentVersion}");
                     Console.WriteLine($"Latest Version:   {updateInfo.LatestVersion}");
@@ -1438,7 +1503,7 @@ namespace ClaudeDevStudio
                         if (updateInfo.DownloadUrl != null)
                         {
                             UpdateChecker.OpenDownloadPage(updateInfo.DownloadUrl);
-                            Console.WriteLine("✓ Opened in browser");
+                            Console.WriteLine("OK: Opened in browser");
                         }
                     }
                     
@@ -1446,13 +1511,13 @@ namespace ClaudeDevStudio
                 }
                 else
                 {
-                    Console.WriteLine($"✓ You're running the latest version ({updateInfo.CurrentVersion})");
+                    Console.WriteLine($"OK: You're running the latest version ({updateInfo.CurrentVersion})");
                     return 0;
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"✗ Failed to check for updates: {ex.Message}");
+                Console.WriteLine($"ERROR: Failed to check for updates: {ex.Message}");
                 return 1;
             }
         }

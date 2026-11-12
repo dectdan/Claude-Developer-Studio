@@ -76,7 +76,7 @@ namespace ClaudeDevStudio
                     
                     Console.ForegroundColor = ConsoleColor.Green;
                     Console.WriteLine();
-                    Console.WriteLine($"✓ Build succeeded");
+                    Console.WriteLine($"OK: Build succeeded");
                     if (result.WarningCount > 0)
                         Console.WriteLine($"  {result.WarningCount} warning(s)");
                     Console.ResetColor();
@@ -149,7 +149,7 @@ namespace ClaudeDevStudio
                     
                     Console.ForegroundColor = ConsoleColor.Green;
                     Console.WriteLine();
-                    Console.WriteLine($"✓ Package created: {result.PackagePath}");
+                    Console.WriteLine($"OK: Package created: {result.PackagePath}");
                     Console.ResetColor();
                 }
                 else

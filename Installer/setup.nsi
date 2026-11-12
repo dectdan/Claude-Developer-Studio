@@ -32,7 +32,7 @@ SetCompressor /SOLID lzma
 ; Metadata
 ;---------------------------------------------------------------------------
 !define PRODUCT_NAME      "ClaudeDevStudio"
-!define PRODUCT_VERSION   "1.7.0"
+!define PRODUCT_VERSION   "1.7.1"
 !define PRODUCT_PUBLISHER "Daniel E Gain"
 !define PRODUCT_CONTACT   "support@gainpublications.com"
 !define PRODUCT_URL       "https://github.com/dectdan/Claude-Developer-Studio"
@@ -174,16 +174,41 @@ Function FinishClaudeCodeSetup
   ${EndIf}
 FunctionEnd
 
+; install.log is UTF-8 throughout (P11). The Node scripts, the PowerShell scripts and the CLI
+; (--log) append their own lines in UTF-8; the installer's lines are converted here, since NSIS's
+; FileWrite writes the ANSI code page. No program's output is read back into the log through nsExec:
+; nsExec decodes it in the ANSI code page (the "û" for a check mark on a Windows 10 PC, v1.7.0).
+Function LogUtf8
+  Exch $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  CreateDirectory "${INSTALL_DIR}"
+  FileOpen $R1 "${INSTALL_DIR}\install.log" a
+  ${If} $R1 != ""
+    FileSeek $R1 0 END
+    System::Call 'kernel32::WideCharToMultiByte(i 65001, i 0, w R0, i -1, p 0, i 0, p 0, p 0) i .R2'
+    ${If} $R2 > 1
+      System::Alloc $R2
+      Pop $R3
+      System::Call 'kernel32::WideCharToMultiByte(i 65001, i 0, w R0, i -1, p R3, i R2, p 0, p 0) i .R2'
+      IntOp $R2 $R2 - 1
+      System::Call 'kernel32::WriteFile(p R1, p R3, i R2, *i 0, p 0)'
+      System::Free $R3
+    ${EndIf}
+    FileClose $R1
+  ${EndIf}
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
+FunctionEnd
+
 ; Each install step goes to the details list and to install.log (silent installs too).
 !macro STEP _text
   DetailPrint "${_text}"
-  CreateDirectory "${INSTALL_DIR}"
-  FileOpen $R9 "${INSTALL_DIR}\install.log" a
-  ${If} $R9 != ""
-    FileSeek $R9 0 END
-    FileWrite $R9 "[setup] ${_text}$\r$\n"
-    FileClose $R9
-  ${EndIf}
+  Push "[setup] ${_text}$\r$\n"
+  Call LogUtf8
 !macroend
 !define STEP "!insertmacro STEP"
 
@@ -282,10 +307,11 @@ Section "Install" SecMain
 
   ${If} $7 == "upgrade"
     ${STEP} "Backing up the memory store before the upgrade..."
-    nsExec::ExecToStack '"${INSTALL_DIR}\CLI\claudedev.exe" backup --upgrade'
+    ; The CLI writes its own lines (where the backup is, its size) to install.log (--log, UTF-8).
+    nsExec::ExecToStack '"${INSTALL_DIR}\CLI\claudedev.exe" backup --upgrade --log "${INSTALL_DIR}\install.log"'
     Pop $0
     Pop $1
-    ${STEP} "Memory backup (exit $0): $1"
+    ${STEP} "Memory backup (exit $0); its lines are above."
   ${EndIf}
 
   SetOutPath "${INSTALL_DIR}\TrayApp"
@@ -337,10 +363,11 @@ Section "Install" SecMain
   ;--- Step 7b: Is Claude Code there? (P9; decides the finish page's box and a silent install's setup) ---
   StrCpy $CCFound "none"
   ${If} $NodeExe != ""
-    nsExec::ExecToStack '"$NodeExe" "${INSTALL_DIR}\cds-claude-code.js" detect'
+    ; detect writes its one line ("Claude Code ... found at ..." / "Claude Code: not found. ...") to
+    ; install.log itself (--log, UTF-8); the installer used to log it again behind its own "Claude Code: ".
+    nsExec::ExecToStack '"$NodeExe" "${INSTALL_DIR}\cds-claude-code.js" detect --log "${INSTALL_DIR}\install.log"'
     Pop $0
     Pop $1
-    ${STEP} "Claude Code: $1"
     ${If} $0 == "0"
       StrCpy $CCFound "ok"
     ${ElseIf} $0 == "3"

@@ -214,7 +214,7 @@ namespace ClaudeDevStudio.Core
                         sb.AppendLine("RECENT PATTERNS:");
                         foreach (var pattern in recentPatterns)
                         {
-                            var prefix = pattern!.IsAnti ? "  ✗" : "  ✓";
+                            var prefix = pattern!.IsAnti ? "  -" : "  +";
                             sb.AppendLine($"{prefix} {pattern.Pattern} ({pattern.Confidence}%)");
                         }
                         sb.AppendLine();
@@ -257,7 +257,7 @@ namespace ClaudeDevStudio.Core
                         foreach (var mistake in recentMistakes)
                         {
                             sb.AppendLine($"  ! {mistake!.Mistake}");
-                            sb.AppendLine($"    → {mistake.Lesson}");
+                            sb.AppendLine($"    -> {mistake.Lesson}");
                         }
                         sb.AppendLine();
                     }
@@ -277,7 +277,7 @@ namespace ClaudeDevStudio.Core
                     sb.AppendLine("RECENT ACTIVITY:");
                     foreach (var activity in activities.Take(5))
                     {
-                        var outcome = activity.Outcome == "success" ? "✓" : "✗";
+                        var outcome = activity.Outcome == "success" ? "OK" : "FAILED";
                         sb.AppendLine($"  {outcome} {activity.Action}: {activity.Description}");
                     }
                     sb.AppendLine();

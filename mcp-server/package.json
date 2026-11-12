@@ -1,6 +1,6 @@
 {
   "name": "claudedevstudio-mcp",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "MCP server for ClaudeDevStudio - enables Claude Desktop integration",
   "main": "index.js",
   "type": "module",

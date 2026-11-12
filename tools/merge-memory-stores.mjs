@@ -22,7 +22,8 @@ import path from 'path';
 const apply = process.argv.includes('--apply');
 const HOME = process.env.USERPROFILE;
 const oldRoot = path.join(HOME, 'Documents', 'ClaudeDevStudio');
-const docs = execFileSync('powershell.exe', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('MyDocuments')"], { encoding: 'utf8' }).trim();
+// PowerShell told to write UTF-8 (it writes the OEM code page to a pipe; P11).
+const docs = execFileSync('powershell.exe', ['-NoProfile', '-Command', "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; [Environment]::GetFolderPath('MyDocuments')"], { encoding: 'utf8' }).trim();
 const realRoot = path.join(docs, 'ClaudeDevStudio');
 
 if (path.resolve(oldRoot).toLowerCase() === path.resolve(realRoot).toLowerCase()) {

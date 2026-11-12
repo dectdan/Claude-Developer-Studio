@@ -65,7 +65,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { isExcluded, looksLikeProject, memoryRoot } from './cds-paths.js';
+import { isExcluded, looksLikeProject, memoryRoot, PS_UTF8, findOnPath } from './cds-paths.js';
 
 const SELF = fileURLToPath(import.meta.url);
 const HERE = path.dirname(SELF);
@@ -126,7 +126,11 @@ const oneLine = (s, n) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(
 const localTime = (iso) => { const d = new Date(iso); return isNaN(d) ? '?' : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const minutes = (ms) => ms < 60000 ? `${Math.max(0, Math.round(ms / 1000))} s` : `${(ms / 60000).toFixed(ms < 600000 ? 1 : 0)} min`;
 
+// Output is read as UTF-8. A PowerShell -Command is told to write UTF-8 first (PS_UTF8), since
+// Windows PowerShell 5.1 writes to a pipe in the OEM code page (P11).
 function run(file, args, opts = {}) {
+  const c = /powershell(\.exe)?$/i.test(file) ? args.indexOf('-Command') : -1;
+  if (c >= 0 && c + 1 < args.length) args = [...args.slice(0, c + 1), PS_UTF8 + args[c + 1], ...args.slice(c + 2)];
   return new Promise((resolve) => {
     execFile(file, args, { encoding: 'utf8', windowsHide: true, timeout: 30000, maxBuffer: 4 * 1024 * 1024, ...opts },
       (err, stdout, stderr) => resolve({ code: err ? (typeof err.code === 'number' ? err.code : -1) : 0, error: err, out: String(stdout || ''), err: String(stderr || '') }));
@@ -233,8 +237,7 @@ export async function findClaude() {
   const override = process.env.CDS_PHASE_CLAUDE; // tests only
   if (override) candidates = [path.resolve(override)];
   else {
-    const w = await run('where.exe', ['claude'], { timeout: 10000 });
-    if (w.code === 0) candidates = w.out.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    candidates = findOnPath('claude');
     const native = path.join(process.env.USERPROFILE || os.homedir(), '.local', 'bin', 'claude.exe');
     if (fs.existsSync(native)) candidates.push(native);
     candidates.sort((a, b) => (b.toLowerCase().endsWith('.exe') ? 1 : 0) - (a.toLowerCase().endsWith('.exe') ? 1 : 0));

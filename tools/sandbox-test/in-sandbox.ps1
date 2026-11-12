@@ -239,7 +239,23 @@ function Run-Installer([string]$Scenario, [string]$Switches = '/S') {
 function Get-InstallLogLines {
     $logPath = Join-Path $Inst 'install.log'
     if (-not (Test-Path $logPath)) { return @() }
-    return @(Get-Content -LiteralPath $logPath | Select-Object -Skip $script:InstallLogStart)
+    return @(Get-Content -LiteralPath $logPath -Encoding UTF8 | Select-Object -Skip $script:InstallLogStart)
+}
+
+# P11: install.log is UTF-8 throughout and reads cleanly: it decodes as strict UTF-8, and holds no
+# mojibake of the CLI's or Node's text (u-circumflex, a-circumflex, A-tilde, the replacement character)
+# and no doubled "Claude Code: Claude Code:". Returns @{ ok; note }.
+function Test-InstallLogText {
+    $logPath = Join-Path $Inst 'install.log'
+    if (-not (Test-Path $logPath)) { return @{ ok = $false; note = 'no install.log' } }
+    $bytes = [System.IO.File]::ReadAllBytes($logPath)
+    try { $text = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($bytes) }
+    catch { return @{ ok = $false; note = "not valid UTF-8: $($_.Exception.Message)" } }
+    $bad = @()
+    foreach ($c in @([char]0x00FB, [char]0x00E2, [char]0x00C3, [char]0xFFFD)) { if ($text.IndexOf($c) -ge 0) { $bad += ('U+{0:X4}' -f [int]$c) } }
+    if ($text -match 'Claude Code: Claude Code:') { $bad += 'doubled Claude Code label' }
+    $nonAscii = @($bytes | Where-Object { $_ -gt 127 }).Count
+    return @{ ok = ($bad.Count -eq 0); note = "$($bytes.Length) bytes, valid UTF-8, $nonAscii non-ASCII bytes; problems: $(if ($bad.Count) { $bad -join ', ' } else { 'none' })" }
 }
 
 # The last install's finish text (it spans several lines: from "Finish page:" up to "Installation complete!").
@@ -506,7 +522,10 @@ try {
     Check-Program $S
     Check $S 'no Claude Code on this PC: a silent install leaves its settings alone' ((-not (Test-Path $ClaudeSettings)) -and (-not (Test-Path $ClaudeJson))) "settings.json exists: $(Test-Path $ClaudeSettings); .claude.json exists: $(Test-Path $ClaudeJson)"
     $finA = Get-FinishText
-    $ccA = @($al | Where-Object { $_ -match '\[setup\] Claude Code:' })
+    # From P11 detect writes its own line (no "[setup] Claude Code: " in front of it).
+    $ccA = @($al | Where-Object { $_ -match 'Claude Code: not found|Claude Code \S+ found at' })
+    $ccLabel = @($al | Where-Object { $_ -match 'Claude Code: Claude Code:' })
+    Check $S 'install.log: the Claude Code line has one label (P11)' ($ccA.Count -ge 1 -and $ccLabel.Count -eq 0) "$($ccA -join ' / ')"
     Check $S 'no Claude Code: the finish text says how to get it (the install command) and that the tray app sets it up later' (($finA -match 'Claude Code is not installed') -and ($finA -match 'irm https://claude\.ai/install\.ps1') -and ($finA -match 'tray app') -and (($ccA -join ' ') -match 'not found')) "$($ccA -join ' / ') // $finA"
     $dl = Join-Path $Res 'A-dotnet-install.log'
     if (Test-Path $dl) { $Info.dotnetGapsA = Get-LogGaps $dl }
@@ -559,6 +578,10 @@ try {
         } catch { }
     }
     Check $S 'upgrade: a store backup was made before the upgrade; it opens, every hash matches, and it holds A''s project' ($up.Count -ge 1 -and $vr.code -eq 0 -and $hasProj -and ($upLine -match 'exit 0')) "$(if ($up.Count) { "$($up[0].Name), $($up[0].Length) bytes" } else { "none in $storeDir" }); verify: $(($vr.out -split "`n")[0]); SandboxProj inside: $hasProj; log: $upLine"
+    # P11: the CLI writes the backup's lines to install.log itself (UTF-8); they read cleanly.
+    $bkLines = @($bl | Where-Object { $_ -match 'Backup of the memory store before the upgrade|files, .* zipped' })
+    $lt = Test-InstallLogText
+    Check $S 'install.log: the memory-backup lines read cleanly (the CLI''s own, OK: and ->, no u-circumflex or other mojibake; the whole log valid UTF-8) (P11)' ($lt.ok -and $bkLines.Count -ge 2 -and ($bkLines[0] -match 'OK: Backup of the memory store before the upgrade: ') -and ($bkLines[1] -match ' -> ')) "$($bkLines -join ' / ') // $($lt.note)"
     $war = @($bl | Where-Object { $_ -match 'Windows App Runtime' })
     Check $S 'upgrade: the Windows App Runtime is found, not installed again' (($war -join ' ') -match 'already installed' -and -not (($war -join ' ') -match 'Installing bundled')) ($war -join ' / ')
     $net = @($bl | Where-Object { $_ -match '\.NET 8' })
@@ -719,7 +742,8 @@ try {
     Run-Installer $S '/S'
     $el = Get-InstallLogLines
     $j = & $ccFiles 'expect-cds'
-    $ccE = @($el | Where-Object { $_ -match '\[setup\] Claude Code:|Setting up Claude Code' })
+    # From P11 detect writes its own line ("<time>  Claude Code <version> found at <file>.").
+    $ccE = @($el | Where-Object { $_ -match 'Claude Code \S+ found at|Claude Code: not found|Setting up Claude Code' })
     Check $S 'Claude Code found: a plain silent install sets it up (the new default; seeded entries kept)' ($j.ok -and (($ccE -join ' ') -match 'found at') -and (($ccE -join ' ') -match 'found; silent install')) "$($ccE -join ' / '); hooks: $($j.cdsHooks -join ', '); $($j.problems -join ' | ')"
     $finE = Get-FinishText
     Check $S 'Claude Code found: the finish text says the ticked box sets it up' ($finE -match 'Claude Code was found: the ticked box') $finE
