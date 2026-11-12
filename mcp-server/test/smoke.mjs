@@ -26,6 +26,13 @@
 // throwaway projects in %TEMP%: the refusals, the lock (and a stale one), status while running
 // and after, a question, the reply's --resume and flags, stop ending the fake and its child, a run
 // started by run-phase.ps1; and (--cli) the automatic handoff listing only the project's files.
+// P9: the three modes (collaborative default, delegated, manual) recorded and reported with their
+// guidance; QUESTION: blocks returned verbatim (parseQuestion, and a non-question); the conversation
+// formatter against fixtures\phase-log-sample.jsonl (module and --conversation); manual mode's command
+// (interactive, --session-id, no acceptEdits/allowed tools) in a window opened hidden for the test
+// (CDS_PHASE_WINDOW=hidden), its lock, its transcript in Status, Stop asking first and force; the
+// "open it" hint; the run's outcome and phases.json; the "not signed in" refusal; cds-claude-code.js
+// status's five states with a fake Claude Code.
 // P8: Monitor in the default tools (run-phase.ps1's too), the run's environment (the idle ceiling and
 // the foreground timeout ceiling, recorded in the .json; Claude Code sharing the runner's console),
 // the gentle stop (Ctrl+C: the fake ends its turn, "runs SessionEnd", exits; what it left running is
@@ -823,7 +830,10 @@ try {
     await wb7.connect(new StdioClientTransport({
       command: process.execPath, args: [path.join(path.dirname(serverPath), 'workbench.js')], stderr: 'ignore',
       // CLAUDECODE / CLAUDE_PROJECT_DIR / CDS_FAKE_MARK: the run must not inherit them (it gets the user's environment).
-      env: { CDS_MEMORY_ROOT: W7, LOCALAPPDATA: path.join(p7, 'local'), CDS_PHASE_CLAUDE: fakeClaude, CDS_FAKE_MARK: 'from-the-server', CLAUDECODE: '1', CLAUDE_PROJECT_DIR: scratch },
+      // P9: CDS_PHASE_WINDOW=hidden (tests only) opens a manual run's window hidden; CLAUDE_CONFIG_DIR is
+      // where Status looks for a manual session's transcript (the fake writes it there).
+      env: { CDS_MEMORY_ROOT: W7, LOCALAPPDATA: path.join(p7, 'local'), CDS_PHASE_CLAUDE: fakeClaude, CDS_FAKE_MARK: 'from-the-server', CLAUDECODE: '1', CLAUDE_PROJECT_DIR: scratch,
+        CDS_PHASE_WINDOW: 'hidden', CLAUDE_CONFIG_DIR: path.join(p7, 'ccfg') },
     }));
     const pcall = async (name, args) => { const t0 = Date.now(); const x = await wb7.callTool({ name, arguments: args }); return { text: x.content?.[0]?.text ?? '', isError: !!x.isError, ms: Date.now() - t0 }; };
     const calls = () => fs.existsSync(path.join(proj, 'docs', 'fake_calls.jsonl')) ? fs.readFileSync(path.join(proj, 'docs', 'fake_calls.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
@@ -909,7 +919,8 @@ try {
       const a = c.argv || [];
       const val = (f) => { const i = a.indexOf(f); return i >= 0 ? a[i + 1] : undefined; };
       check('the run got -p with the prompt naming docs\\N1_prompt.md, acceptEdits, the default tools, stream-json, --verbose, an MCP config in %TEMP%; no --model/--effort when not given',
-        a[0] === '-p' && /^Read docs\\N1_prompt\.md and carry it out\. You are running unattended/.test(a[1]) && val('--permission-mode') === 'acceptEdits' &&
+        // (P9: collaborative and delegated runs are told a reply can come, and how to ask; before P9, "unattended".)
+        a[0] === '-p' && (phaseMod.MODES ? /^Read docs\\N1_prompt\.md and carry it out\. You are running headless: .*"QUESTION:"/.test(a[1]) : /^Read docs\\N1_prompt\.md and carry it out\. You are running unattended/.test(a[1])) && val('--permission-mode') === 'acceptEdits' &&
         val('--allowedTools') === D && val('--output-format') === 'stream-json' && a.includes('--verbose') && !a.includes('--model') && !a.includes('--effort') &&
         path.resolve(val('--mcp-config') || '').toLowerCase().startsWith(path.resolve(os.tmpdir()).toLowerCase()) && c.cwd.toLowerCase() === proj.toLowerCase(), JSON.stringify(c));
       check('the run gets the user\'s environment, not the server\'s (no CLAUDECODE, no CLAUDE_PROJECT_DIR, no test variable)', c.claudecode === null && c.project_dir === null && c.mark === null, JSON.stringify(c));
@@ -929,7 +940,7 @@ try {
       r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'Q1', model: 'm-test', effort: 'low' });
       s7 = await waitFor('Q1', /FINISHED/);
       check('status detects a result that ends with a question, and that no OUTPUT was written',
-        /It ends with a QUESTION: answer it with claudedev_phase_reply/.test(s7.text) && /Should I also add a test/.test(s7.text) && /docs\\Q1_OUTPUT\.md: not written yet/.test(s7.text), s7.text);
+        /It ends with a QUESTION.*answer it with claudedev_phase_reply/.test(s7.text) && /Should I also add a test/.test(s7.text) && /docs\\Q1_OUTPUT\.md: not written yet/.test(s7.text), s7.text);
       r7 = await pcall('claudedev_phase_reply', { project_path: proj, phase: 'Q1', message: '   ' });
       check('reply refuses an empty message', r7.isError && /message is required/.test(r7.text), r7.text);
       await waitEnded('Q1');
@@ -1037,6 +1048,143 @@ try {
       write(path.join(proj, 'docs', 'P0_run.json'), JSON.stringify({ phase: 'P0', pid: dead.pid, started: new Date(Date.now() - 600000).toISOString(), model: 'claude-opus-5-5', effort: 'high', log: path.join(proj, 'docs', 'P0_run.log') }));
       s7 = await pcall('claudedev_phase_status', { project_path: proj, phase: 'P0' });
       check('status reads a run started by run-phase.ps1 (its .json has no runs)', /^P0 in .*: FINISHED/.test(s7.text) && /started by run-phase\.ps1/.test(s7.text) && /Tool calls: 2/.test(s7.text), s7.text);
+
+      // ---- P9: modes, QUESTION blocks, the conversation, manual mode, outcome and index, Claude Code's states ----
+      const p9 = !!phaseMod.MODES;
+      const check9 = (label, ok, detail) => { if (p9) check(label, ok, detail); else console.log(`SKIP  ${label} (this cds-phase.js predates P9)`); };
+      if (!p9) {
+        for (const l of ['P9: QUESTION blocks', 'P9: the conversation formatter', 'P9: modes', 'P9: manual mode', 'P9: outcome and phases.json', 'P9: claude-code status states']) console.log(`SKIP  ${l} (this cds-phase.js predates P9)`);
+      } else {
+        // QUESTION: parsing (verbatim), and a non-question
+        const qt = 'Done with the parser.\n\n**QUESTION:** Should the cache live in Documents or in LocalAppData?\nIt matters for the packaged app.\n1. Documents: safe under MSIX.\n   OneDrive may sync it.\n2) LocalAppData: local only.\nRECOMMENDATION: 1, because the server runs inside the package.';
+        const pq = phaseMod.parseQuestion(qt);
+        check9('P9: parseQuestion returns the question, each option (with its continuation) and the recommendation verbatim, and the text before it',
+          !!pq && pq.question === 'Should the cache live in Documents or in LocalAppData?\nIt matters for the packaged app.' && pq.options.length === 2 &&
+          pq.options[0] === '1. Documents: safe under MSIX.\nOneDrive may sync it.' && pq.options[1] === '2) LocalAppData: local only.' &&
+          pq.recommendation === 'RECOMMENDATION: 1, because the server runs inside the package.' && pq.before === 'Done with the parser.', JSON.stringify(pq));
+        const nq = phaseMod.parseQuestion('All done. Should be fine?\n1. a list that is not a question block');
+        check9('P9: a text without a QUESTION: block is not parsed as one (the old "ends with a question" rule still applies separately)',
+          nq === null && phaseMod.parseQuestion('') === null && phaseMod.looksLikeQuestion('Should I also add a test?'), JSON.stringify(nq));
+
+        // The conversation formatter against a fixture (module and command line)
+        const fx = path.join(here, 'fixtures', 'phase-log-sample.jsonl');
+        const conv = phaseMod.conversation(fs.readFileSync(fx, 'utf8'));
+        const kinds = conv.entries.map(e => e.kind).join(',');
+        const byKind = (k) => conv.entries.filter(e => e.kind === k);
+        check9('P9: the conversation: start, Claude\'s text in full, one line per tool call with its target, results collapsed (with their text), a QUESTION block apart, the end; no subagent text',
+          kinds === 'start,claude,tool,result,tool,result,tool,result,claude,question,end' && conv.session_id === '11111111-2222-3333-4444-555555555555' &&
+          byKind('tool')[0].text === 'Read: C:\\proj\\docs\\T1_prompt.md' && byKind('tool')[1].text === 'Bash: git status --short' &&
+          byKind('tool')[2].text === 'claudedevstudio: claudedev_record_activity: C:\\proj' &&
+          byKind('result')[0].text === 'result: # T1 (+2 lines)' && byKind('result')[0].detail === '# T1\nline two\nline three' && byKind('result')[1].error === true &&
+          byKind('question')[0].text === 'Keep the old names, or switch to the new scheme?\n1. Keep them: nothing else changes.\n2. Switch: two scripts change too.\nRECOMMENDATION: 2, because both scripts are in scope.' &&
+          byKind('claude')[1].text === 'Both layouts work.' && !conv.entries.some(e => /subagent/.test(e.text)) && /^Run ended: success, 4 turns, 1\.1 min/.test(byKind('end')[0].text), JSON.stringify(conv, null, 1).slice(0, 2500));
+        const cj = spawnSync(process.execPath, [path.join(path.dirname(serverPath), 'cds-phase.js'), '--conversation', fx, '--json'], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+        const ct = spawnSync(process.execPath, [path.join(path.dirname(serverPath), 'cds-phase.js'), '--conversation', fx], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+        check9('P9: cds-phase.js --conversation (the Dashboard\'s reader): the same entries as JSON; as text, the QUESTION block marked',
+          cj.status === 0 && JSON.stringify(JSON.parse(cj.stdout)) === JSON.stringify(conv) && ct.status === 0 && /=== QUESTION ===\nKeep the old names/.test(ct.stdout) && /Claude: Reading the prompt first\./.test(ct.stdout), `${cj.stderr}${ct.stdout.slice(0, 800)}`);
+
+        // Modes: refused when unknown; collaborative by default, with its guidance; a QUESTION block in Status
+        write(path.join(proj, 'docs', 'QB1_prompt.md'), '# QB1\n\nFAKE_MODE: qblock\n');
+        write(path.join(proj, 'docs', 'D1_prompt.md'), '# D1\n\nFAKE_MODE: normal\n');
+        r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'QB1', mode: 'autopilot' });
+        check9('P9: start refuses an unknown mode, naming the three', r7.isError && /mode must be one of collaborative, delegated, manual/.test(r7.text) && !fs.existsSync(lockFile), r7.text);
+        r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'QB1' });
+        const collab = /Mode: collaborative\. If it asks something, answer it yourself only if the answer follows from the ground truth or what is already decided, is easily undone, and is technical; otherwise put it to the user with the options and your recommendation/;
+        check9('P9: start without a mode is collaborative: recorded in the .json, and its result says what to do with a question', !r7.isError && collab.test(r7.text) && /tell the user what was asked and what was answered/.test(r7.text) && metaOf('QB1').mode === 'collaborative', r7.text);
+        s7 = await waitFor('QB1', /FINISHED/);
+        await waitEnded('QB1');
+        const qbSid = JSON.parse(fs.readFileSync(path.join(proj, 'docs', 'QB1_run.log'), 'utf8').trim().split('\n').pop()).session_id;
+        check9('P9: status gives the QUESTION block verbatim and apart: the question, each option, the recommendation; the mode\'s guidance; the text before it',
+          collab.test(s7.text) && /It ends with a QUESTION \(verbatim from the phase; relay it as written\):\nQuestion:\nShould the export keep the old file names, or switch to the new scheme\?\nOptions:\n1\. Keep the old names: nothing else changes\.\n2\. Switch to the new scheme: consistent, but two scripts must change\.\nBoth are in scope\.\nIts recommendation: RECOMMENDATION: 2, because the two scripts are in this phase's scope anyway\./.test(s7.text) &&
+          /"I checked both layouts\."/.test(s7.text) && /Answer with claudedev_phase_reply/.test(s7.text), s7.text);
+        check9('P9: a finished run\'s status says how to open it: claude --resume <its session id> in the project', s7.text.includes(`Open it: in ${proj}, run claude --resume ${qbSid} (read the whole conversation, or take it over).`), s7.text);
+        const qbRun = metaOf('QB1').runs[0];
+        check9('P9: the runner records the outcome (question, with the question) and whether OUTPUT was written',
+          qbRun.outcome === 'question' && qbRun.question === 'Should the export keep the old file names, or switch to the new scheme?' && qbRun.output_written === false, JSON.stringify(qbRun).slice(0, 700));
+        r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'D1', mode: 'delegated' });
+        check9('P9: delegated mode: recorded, and its result says to answer and tell the user afterwards', !r7.isError && /Mode: delegated\. If it asks something, answer it yourself with claudedev_phase_reply, and tell the user afterwards/.test(r7.text) && metaOf('D1').mode === 'delegated', r7.text);
+        s7 = await waitFor('D1', /FINISHED/);
+        await waitEnded('D1');
+        const d1 = metaOf('D1').runs[0];
+        check9('P9: status of a delegated run says delegated; its outcome is finished, OUTPUT written', /Mode: delegated\./.test(s7.text) && d1.outcome === 'finished' && d1.output_written === true, `${s7.text}\n${JSON.stringify(d1).slice(0, 400)}`);
+
+        // Manual mode: a window (opened hidden for the test), interactive, the user's own permission mode
+        const ccfg = path.join(p7, 'ccfg');
+        write(path.join(proj, 'docs', 'M1_prompt.md'), `# M1\n\nFAKE_MODE: manual\nFAKE_CONFIG_DIR: ${ccfg}\n`);
+        r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'M1', mode: 'manual', allowed_tools: 'Read' });
+        const m1m = metaOf('M1');
+        // (Start returns once the runner has started Claude Code; the fake logs its call a moment later.)
+        for (let i = 0; i < 50 && !calls().some(x => (x.argv || []).includes('--session-id')); i++) await sleep(200);
+        c = calls().filter(x => (x.argv || []).includes('--session-id')).pop() || calls().pop() || {};
+        const mv = (f) => { const i = (c.argv || []).indexOf(f); return i >= 0 ? c.argv[i + 1] : undefined; };
+        check9(`P9: manual start opens the window (${r7.ms} ms): says so, the mode's guidance, the session id; allowed_tools noted as unused`,
+          !r7.isError && /Opened M1 in a Claude Code window the user can see \(hidden \(test\)\)/.test(r7.text) && /Mode: manual\./.test(r7.text) && r7.text.includes(m1m.session_id) && /allowed_tools is not used in manual mode/.test(r7.text) &&
+          m1m.mode === 'manual' && m1m.runs[0].launched_by === 'wmi' && m1m.runs[0].window === 'hidden (test)', r7.text);
+        check9('P9: manual mode\'s command: interactive (no -p), the prompt as its first message, --session-id; no --permission-mode, no --allowedTools, no bypass',
+          !(c.argv || []).includes('-p') && c.argv[c.argv.length - 1] === 'Read docs\\M1_prompt.md and carry it out.' && mv('--session-id') === m1m.session_id &&
+          !(c.argv || []).includes('--permission-mode') && !(c.argv || []).includes('--allowedTools') && !(c.argv || []).some(x => /dangerously|bypass/i.test(x)) && c.cwd.toLowerCase() === proj.toLowerCase(), JSON.stringify(c));
+        r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'D1' });
+        check9('P9: the lock holds the project while the manual window is open', r7.isError && /M1 is already running in this project/.test(r7.text) && JSON.parse(fs.readFileSync(lockFile, 'utf8')).phase === 'M1', r7.text);
+        s7 = await waitFor('M1', /QUESTION/);
+        check9('P9: manual status: OPEN in a window, its transcript (found by the session id), tool calls from it, the question for the user in the window, no "Open it" while open',
+          /^M1 in .*: OPEN in a Claude Code window \(manual mode, hidden \(test\)/.test(s7.text) && /Mode: manual\./.test(s7.text) && s7.text.includes(path.join(ccfg, 'projects', 'fake-project', `${m1m.session_id}.jsonl`)) &&
+          /Tool calls: 1 \|/.test(s7.text) && /the user answers it in the window/.test(s7.text) && /Should the export keep the old file names/.test(s7.text) && !/Open it:/.test(s7.text) && !/subagent/.test(s7.text), s7.text);
+        r7 = await pcall('claudedev_phase_reply', { project_path: proj, phase: 'M1', message: 'yes' });
+        check9('P9: reply is refused for a manual run (the user answers in the window)', r7.isError && /manual mode: the user answers in its Claude Code window/.test(r7.text), r7.text);
+        const mRunner = metaOf('M1').runs[0].runner_pid;
+        r7 = await pcall('claudedev_phase_stop', { project_path: proj, phase: 'M1' });
+        check9('P9: stop on a manual run asks the user to close the window first (nothing ended)', !r7.isError && /Ask the user to finish there and close the window/.test(r7.text) && /force: true/.test(r7.text) && alive(mRunner) && fs.existsSync(lockFile), r7.text);
+        r7 = await pcall('claudedev_phase_stop', { project_path: proj, phase: 'M1', force: true });
+        await sleep(300);
+        const m1r = metaOf('M1').runs[0];
+        const mStatus = (await pcall('claudedev_phase_status', { project_path: proj, phase: 'M1' })).text;
+        check9(`P9: stop with force: true ends it with two Ctrl+C (the interactive way: it exits and runs SessionEnd), releases the lock (${r7.ms} ms)`,
+          !r7.isError && /with Ctrl\+C/.test(r7.text) && m1r.stop_method === 'ctrl_c' && m1r.ctrl_c_presses === 2 && m1r.exit_code === 0 && !fs.existsSync(lockFile) &&
+          /SessionEnd ran \(interactive/.test(fs.readFileSync(path.join(proj, 'docs', 'fake_session_end.txt'), 'utf8')), `${r7.text}\n${JSON.stringify(m1r).slice(0, 600)}`);
+        check9('P9: a stopped manual run\'s status: STOPPED, and how to open it again (claude --resume <its session id>)', /^M1 in .*: STOPPED/.test(mStatus) && mStatus.includes(`claude --resume ${m1m.session_id}`), mStatus);
+
+        // phases.json (the tray app's list): the runs, newest first, each pointing at its .json
+        const ix = (() => { try { return JSON.parse(fs.readFileSync(path.join(W7, 'phases.json'), 'utf8')); } catch { return null; } })();
+        check9('P9: phases.json in the memory root lists the runs (project, phase, mode, the .json), newest first, each once',
+          !!ix && ix.runs[0].phase === 'M1' && ix.runs[0].mode === 'manual' && ix.runs.some(x => x.phase === 'QB1' && x.mode === 'collaborative' && x.meta === path.join(proj, 'docs', 'QB1_run.json')) &&
+          ix.runs.filter(x => x.phase === 'D1').length === 1 && ix.runs.every(x => x.project === proj), JSON.stringify(ix).slice(0, 800));
+
+        // Signed in? (claude auth status exits 1: refused, with the next step)
+        fs.writeFileSync(path.join(bin, 'fake-auth.txt'), 'out');
+        r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'D1' });
+        check9('P9: start refuses when Claude Code is installed but not signed in, saying to run "claude" once and sign in', r7.isError && /installed but not signed in/.test(r7.text) && /run "claude" once and sign in/.test(r7.text) && !fs.existsSync(lockFile), r7.text);
+        fs.unlinkSync(path.join(bin, 'fake-auth.txt'));
+
+        // cds-claude-code.js status: the five states, with the fake (and --no-claude)
+        const ccJs = [path.resolve(path.dirname(serverPath), '..', 'Installer', 'cds-claude-code.js'), path.resolve(path.dirname(serverPath), '..', 'cds-claude-code.js')].find(f => fs.existsSync(f));
+        if (!ccJs) console.log('SKIP  P9: claude-code status states (no cds-claude-code.js next to this copy)');
+        else {
+          const cs = path.join(p7, 'cc_settings.json'), cjf = path.join(p7, 'cc_claude.json');
+          const ccRun = (...extra) => spawnSync(process.execPath, [ccJs, ...extra, '--settings', cs, '--claude-json', cjf], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+          const stateOf = (r) => (/State: (\S+)/.exec(r.stdout || '') || [])[1];
+          const st = {};
+          st.none = ccRun('status', '--no-claude');
+          fs.writeFileSync(path.join(bin, 'fake-version.txt'), '2.0.42');
+          st.old = ccRun('status', '--claude', fakeClaude);
+          fs.unlinkSync(path.join(bin, 'fake-version.txt'));
+          fs.writeFileSync(path.join(bin, 'fake-auth.txt'), 'out');
+          st.out = ccRun('status', '--claude', fakeClaude);
+          fs.unlinkSync(path.join(bin, 'fake-auth.txt'));
+          st.unset = ccRun('status', '--claude', fakeClaude);
+          const su = ccRun('setup', '--node', process.execPath, '--mcp', path.dirname(serverPath), '--no-claude-cli');
+          st.ready = ccRun('status', '--claude', fakeClaude, '--node', process.execPath, '--mcp', path.dirname(serverPath));
+          const det = spawnSync(process.execPath, [ccJs, 'detect', '--claude', fakeClaude], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+          const detNo = spawnSync(process.execPath, [ccJs, 'detect', '--no-claude'], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+          check9('P9: claude-code status names the state and the next step: not-installed (the install command), too-old (claude update), not-signed-in (run claude), not-set-up, ready',
+            stateOf(st.none) === 'not-installed' && /irm https:\/\/claude\.ai\/install\.ps1 \| iex/.test(st.none.stdout) &&
+            stateOf(st.old) === 'too-old' && /2\.0\.42 is too old/.test(st.old.stdout) && /claude update/.test(st.old.stdout) &&
+            stateOf(st.out) === 'not-signed-in' && /run "claude" once in a terminal and sign in/.test(st.out.stdout) &&
+            stateOf(st.unset) === 'not-set-up' && /claudedev claude-code setup/.test(st.unset.stdout) &&
+            su.status === 0 && stateOf(st.ready) === 'ready' && /signed in/.test(st.ready.stdout) && !/@/.test(Object.values(st).map(x => x.stdout).join('')),
+            Object.entries(st).map(([k, v]) => `${k}: ${(v.stdout || v.stderr).split('\n').slice(1, 4).join(' / ')}`).join('\n'));
+          check9('P9: detect (the installer\'s): exit 0 with the version when found, 4 with the install command when not', det.status === 0 && /Claude Code 2\.1\.322 found at/.test(det.stdout) && detNo.status === 4 && /install\.ps1/.test(detNo.stdout), `${det.stdout}${detNo.stdout}`);
+        }
+      }
 
       // Nothing outside the throwaway project and %TEMP%
       const tmp = path.resolve(os.tmpdir()).toLowerCase();

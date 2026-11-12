@@ -38,13 +38,13 @@ The first time, CDS creates the project's memory. After that, Claude sees the re
 | `cds-workbench` server | Visual Studio state, errors, output, debugger and commands (needs the VS Bridge); showing code and images in the Review Panel; sending a task to another AI provider; fetching a web page; running a phase in Claude Code from the chat (below). |
 | VS Bridge | A Visual Studio extension that shares build errors, the Output window's panes (Build, and from 1.5.0 the Debug pane, where a running program's `Debug.WriteLine` and trace output appear, or any other pane) and debugger state with Claude. It answers only programs on your own PC, not web pages. |
 | Review Panel | A local page (`http://127.0.0.1:63000`) where code and images from Claude appear. |
-| Tray app | Starts with Windows; opens the Dashboard; **Configure AI Keys**; **Set up Claude Code** (optional, below). |
-| Dashboard | Browse the memory. |
+| Tray app | Starts with Windows; opens the Dashboard; **Configure AI Keys**; **Claude Code** (install, update, sign in or set up: whatever the next step is, below); a notification when a phase finishes, asks a question, is stopped or fails (**Phase notifications** turns it off). |
+| Dashboard | Browse the memory; the **Phases** page shows what each phase run from a chat did and said. |
 | `claudedev` | The command-line tool that reads and writes the memory. |
 
-## Claude Code (optional)
+## Claude Code
 
-If you also use [Claude Code](https://code.claude.com), CDS can work there by itself, without Claude having to remember to call it. **It is off until you turn it on.**
+If you also use [Claude Code](https://code.claude.com), CDS works there by itself, without Claude having to remember to call it, and chats in Claude Desktop can run phases in it (below). **When the installer finds Claude Code (2.1 or later), the "Also set up Claude Code" box on its last page is ticked**; untick it to leave Claude Code alone. When Claude Code isn't installed, the last page says how to get it: in PowerShell, `irm https://claude.ai/install.ps1 | iex` ([Claude Code's setup page](https://code.claude.com/docs/en/setup)), then run `claude` once in a new terminal to sign in, then set it up from the tray app.
 
 **What it does,** in each Claude Code session started in a project folder (one with `.git`, `docs\`, a solution or project file, or `package.json`/`pyproject.toml`/`Cargo.toml`/`go.mod`):
 - when the session starts, Claude gets the same context as `claudedev_load` (the last handoff, the ground truth's status, recent mistakes);
@@ -54,7 +54,7 @@ If you also use [Claude Code](https://code.claude.com), CDS can work there by it
 
 It never blocks Claude Code: the hook always succeeds, does nothing outside project folders, and writes any error to `%LOCALAPPDATA%\ClaudeDevStudio\hooks.log`.
 
-**Turn it on:** the tray app's **Set up Claude Code…**, or `claudedev claude-code setup`, or tick "Also set up Claude Code" on the installer's last page (silent installs: `ClaudeDevStudio-Setup.exe /S /CLAUDECODE=1`). Start a new Claude Code session afterwards. **Check it:** `claudedev claude-code status`. **Turn it off:** the tray app's **Remove from Claude Code…**, or `claudedev claude-code remove`; uninstalling CDS does it too.
+**Turn it on:** the installer's ticked box, the tray app's **Set up Claude Code…**, or `claudedev claude-code setup`. A silent install (`ClaudeDevStudio-Setup.exe /S`) sets it up when it finds Claude Code; `/CLAUDECODE=0` leaves it out, `/CLAUDECODE=1` sets it up regardless. Start a new Claude Code session afterwards. **Check it:** `claudedev claude-code status` says which of these holds, and the next step: not installed, too old, installed but not signed in, not set up, ready. The tray app's Claude Code item offers the same next step (open the install page, open a terminal running `claude update` or `claude` to sign in, or set it up). **Turn it off:** the tray app's **Remove from Claude Code…**, or `claudedev claude-code remove` (later installs then leave it off until you set it up again); uninstalling CDS does it too.
 
 **What it changes** (each file is backed up first as `<file>.bak-cds-<date>`; everything else in it is kept; a file that isn't valid JSON is left alone):
 - `%USERPROFILE%\.claude\settings.json`: four entries under `"hooks"` (`SessionStart`, `PreCompact`, `SessionEnd`, `PostToolUse`), each running `node.exe …\ClaudeDevStudio\mcp-server\cds-hook.js`. Remove takes out only entries that run `cds-hook.js`.
@@ -95,12 +95,21 @@ CDS works best when each project keeps its state in one file, `docs\GROUND_TRUTH
 
 The loop above can run from one Claude Desktop chat: Claude plans there, starts [Claude Code](https://code.claude.com) on the prompt, checks on it, answers it, and reads the output. Claude Code must be installed and signed in on the PC; the work uses **your own Claude Code sign-in and plan**. Windows only.
 
+**Three ways to run a phase** (you choose; `mode` when starting it):
+- **Collaborative** (the default): Claude Code runs headless. When it asks something, Claude in the chat answers by itself only if the answer follows from the ground truth or what's already decided, is easily undone, and is technical; anything that changes the scope, the cost or the product's direction, can't be undone, or is a matter of taste comes to you, with the options and Claude's recommendation. Either way, the chat tells you what was asked and what was answered.
+- **Delegated:** headless; Claude in the chat answers every question itself and tells you afterwards.
+- **Manual:** a Claude Code window opens in the project (Windows Terminal if you have it) with the prompt as its first message, in your own permission mode: you watch it and approve what it asks. (The first time in a folder, Claude Code asks whether you trust it.)
+
 1. The chat writes (or you write) `docs\P8_prompt.md` in the project. A phase starts only from a prompt file, never from free text, so you can read it first.
-2. **`claudedev_phase_start`** (`project_path`, `phase` such as `P8`; optional `model`, `effort`, `allowed_tools`) starts `claude -p "Read docs\P8_prompt.md and carry it out…"` in the project, in the background, and returns at once. One phase per project at a time.
-3. **`claudedev_phase_status`** shows whether it is running, finished or stopped, for how long, how many tool calls, any permission denials, Claude's latest words, the result, whether it ends with a question, and whether `docs\P8_OUTPUT.md` exists. Every 15–20 minutes is plenty; phases often take an hour or two.
+2. **`claudedev_phase_start`** (`project_path`, `phase` such as `P8`; optional `mode`, `model`, `effort`, `allowed_tools`) starts `claude -p "Read docs\P8_prompt.md and carry it out…"` in the project, in the background, and returns at once (manual mode: opens the window). One phase per project at a time.
+3. **`claudedev_phase_status`** shows whether it is running, finished or stopped, the mode and what to do with a question, for how long, how many tool calls, any permission denials, Claude's latest words, the result, a question (a `QUESTION:` block comes back word for word: the question, the options, its recommendation), whether `docs\P8_OUTPUT.md` exists, and how to open the whole conversation in Claude Code (`claude --resume <session>`). Every 15–20 minutes is plenty; phases often take an hour or two.
 4. **`claudedev_phase_reply`** answers a finished run (a question, or "go on"): the same session continues with the same model, effort and tools.
-5. **`claudedev_phase_stop`** ends it: first with Ctrl+C, so Claude Code ends its turn and runs its SessionEnd hooks (with CDS's Claude Code hooks, that writes the automatic handoff), and only if that doesn't end it within 15 seconds, by force. Status says which.
+5. **`claudedev_phase_stop`** ends it: first with Ctrl+C, so Claude Code ends its turn and runs its SessionEnd hooks (with CDS's Claude Code hooks, that writes the automatic handoff), and only if that doesn't end it within 15 seconds, by force. Status says which. A manual run is your window: Stop asks you to close it, unless told to end it (`force`).
 6. The chat reads `docs\P8_OUTPUT.md`, checks the work, updates the ground truth and writes the next prompt.
+
+**Questions.** A phase that truly needs a decision ends its turn with a `QUESTION:` block: the question, numbered options with their consequences, and `RECOMMENDATION:` (the scaffold's `docs\HOW_WE_WORK.md` describes it). Status passes it on word for word, so the chat can put it to you exactly as asked.
+
+**Watching it.** The Dashboard's **Phases** page lists a project's phases and shows one as a readable conversation (Claude's messages, one line per tool call, results folded away, a question highlighted), refreshing while it runs, with **Stop**, **Open in Claude Code** and **Open folder**. It never answers a question itself: answers go through the chat (or your own Claude Code window). The tray app shows a Windows notification when a phase finishes, asks a question, is stopped or fails; clicking it opens the Phases page on that phase.
 
 **What starting a phase does.** It starts an agent that reads and edits files and runs commands in that project **without asking you**, with the tools listed: by default Read, Edit, Write, Glob, Grep, Bash, PowerShell, Monitor (it watches a long command's output; its commands follow the same rules as Bash), WebFetch, WebSearch and CDS's memory tools. The permission mode is `acceptEdits`; CDS never uses `--dangerously-skip-permissions` or `bypassPermissions`, so anything outside the listed tools is still refused by Claude Code (Status lists the refusals). It refuses folders that aren't projects, the home folder, Windows, Program Files and drive roots. Your own Claude Code settings and hooks apply, as in any Claude Code session.
 
@@ -110,7 +119,7 @@ The loop above can run from one Claude Desktop chat: Claude plans there, starts 
 
 **Stopping it:** `claudedev_phase_stop`, or end the `claude.exe` and `node.exe` processes in Task Manager. A phase keeps running if you close Claude Desktop (it is started outside Claude Desktop's processes), and Status and Stop work from a new chat.
 
-**Where things are:** in the project's `docs\`: `P8_run.log` (Claude Code's stream-json output; a reply is appended), `P8_run.err`, `P8_run.json` (the run's record: pids, times, the command), and `cds_phase.lock` while a phase runs. A second run of the same phase moves the old files to `docs\phase_runs\`. Add `docs/*_run.*`, `docs/cds_phase.lock` and `docs/phase_runs/` to the project's `.gitignore` if you don't want them in git.
+**Where things are:** in the project's `docs\`: `P8_run.log` (Claude Code's stream-json output; a reply is appended), `P8_run.err`, `P8_run.json` (the run's record: the mode, pids, times, the command, how it ended), and `cds_phase.lock` while a phase runs (a manual run has no log: Status reads the session's own transcript). `Documents\ClaudeDevStudio\phases.json` lists the runs started from chats (the tray app and the Dashboard read it). A second run of the same phase moves the old files to `docs\phase_runs\`. Add `docs/*_run.*`, `docs/cds_phase.lock` and `docs/phase_runs/` to the project's `.gitignore` if you don't want them in git.
 
 ## Problems and questions
 

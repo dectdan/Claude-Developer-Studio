@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="ClaudeDevStudio.Dashboard.Views.PhasesPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:views="using:ClaudeDevStudio.Dashboard.Views">
+
+    <Grid RowSpacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0">
+            <TextBlock Text="Phases" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Claude Code phases run from a chat: what each one did and said. Answers to a phase's questions go through the chat (or your own Claude Code window), never from here."
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <Grid Grid.Row="1" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <ComboBox x:Name="ProjectBox" Grid.Column="0" HorizontalAlignment="Stretch" PlaceholderText="Pick a project (recent phase runs), or browse"
+                      SelectionChanged="ProjectBox_SelectionChanged"/>
+            <Button Grid.Column="1" Content="Browse..." Click="Browse_Click"/>
+            <Button Grid.Column="2" Content="Refresh" Click="Refresh_Click"/>
+        </Grid>
+
+        <Grid Grid.Row="2" ColumnSpacing="16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="220"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <ListView x:Name="PhaseList" Grid.Column="0" SelectionMode="Single" SelectionChanged="PhaseList_SelectionChanged"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="views:PhaseRow">
+                        <StackPanel Padding="0,6">
+                            <TextBlock Text="{x:Bind Phase}" FontWeight="SemiBold"/>
+                            <TextBlock Text="{x:Bind State, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+
+            <Grid Grid.Column="1" RowSpacing="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8">
+                    <Button x:Name="StopButton" Content="Stop" Click="Stop_Click" IsEnabled="False"/>
+                    <Button x:Name="OpenButton" Content="Open in Claude Code" Click="Open_Click" IsEnabled="False"
+                            ToolTipService.ToolTip="claude --resume &lt;session&gt; in a window in the project: read the whole conversation, or take it over"/>
+                    <Button x:Name="FolderButton" Content="Open folder" Click="Folder_Click" IsEnabled="False"/>
+                    <TextBlock x:Name="LiveText" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                </StackPanel>
+
+                <Border Grid.Row="1" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="6" Padding="12" MaxHeight="230">
+                    <ScrollViewer>
+                        <TextBlock x:Name="StatusText" FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" IsTextSelectionEnabled="True"
+                                   Text="Pick a project and a phase."/>
+                    </ScrollViewer>
+                </Border>
+
+                <ScrollViewer x:Name="ConvScroll" Grid.Row="2">
+                    <ItemsRepeater x:Name="ConvList">
+                        <ItemsRepeater.Layout>
+                            <StackLayout Spacing="4"/>
+                        </ItemsRepeater.Layout>
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="views:ConvItem">
+                                <Grid>
+                                    <Border Visibility="{x:Bind PlainVisibility}" Background="{x:Bind Background}" BorderBrush="{x:Bind BorderBrush}"
+                                            BorderThickness="{x:Bind BorderThickness}" CornerRadius="6" Padding="{x:Bind Padding}" Margin="{x:Bind Indent}">
+                                        <StackPanel>
+                                            <TextBlock Text="{x:Bind Label}" FontSize="11" FontWeight="SemiBold" Foreground="{x:Bind LabelBrush}" Visibility="{x:Bind LabelVisibility}"/>
+                                            <TextBlock Text="{x:Bind Text}" TextWrapping="Wrap" IsTextSelectionEnabled="True" FontFamily="{x:Bind Font}" FontSize="{x:Bind Size}"
+                                                       Foreground="{x:Bind TextBrush}"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Expander Visibility="{x:Bind ResultVisibility}" Margin="24,0,0,0" MinHeight="0" Padding="8,0,8,0" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left">
+                                        <Expander.Header>
+                                            <TextBlock Text="{x:Bind Text}" FontFamily="Consolas" FontSize="12" Foreground="{x:Bind TextBrush}" TextTrimming="CharacterEllipsis"/>
+                                        </Expander.Header>
+                                        <TextBlock Text="{x:Bind Detail}" FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
+                                    </Expander>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+    </Grid>
+</Page>

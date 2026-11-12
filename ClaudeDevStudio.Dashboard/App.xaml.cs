@@ -21,8 +21,14 @@ namespace ClaudeDevStudio.Dashboard
         {
             try
             {
-                m_window = new MainWindow();
+                var main = new MainWindow();
+                m_window = main;
                 m_window.Activate();
+                // --phases [<project> [<phase>]] (P9: the tray app's phase notifications and menu)
+                var args = Environment.GetCommandLineArgs();
+                var i = Array.FindIndex(args, a => string.Equals(a, "--phases", StringComparison.OrdinalIgnoreCase));
+                if (i >= 0)
+                    main.NavigateToPhases(i + 1 < args.Length ? args[i + 1] : null, i + 2 < args.Length ? args[i + 2] : null);
             }
             catch (Exception ex)
             {

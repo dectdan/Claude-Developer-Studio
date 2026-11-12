@@ -1177,7 +1177,7 @@ namespace ClaudeDevStudio
             Console.WriteLine("  CLAUDE CODE (optional, off until you turn it on):");
             Console.WriteLine("  claude-code setup        Register CDS's servers and hooks with Claude Code");
             Console.WriteLine("  claude-code remove       Take out only what setup added");
-            Console.WriteLine("  claude-code status       Show what is set up");
+            Console.WriteLine("  claude-code status       Installed, signed in, set up? And the next step");
             Console.WriteLine();
             Console.WriteLine("  PROJECT MANAGEMENT:");
             Console.WriteLine("  projects                 List all ClaudeDevStudio projects");
@@ -1354,7 +1354,9 @@ namespace ClaudeDevStudio
         }
 
         // claudedev claude-code setup | remove | status
-        // Opt-in: registers CDS's two MCP servers with Claude Code (user scope) and adds its four
+        // status (from P9) starts with a State line: not-installed, too-old, not-signed-in,
+        // not-set-up or ready, and the next step (the tray app reads it).
+        // Registers CDS's two MCP servers with Claude Code (user scope) and adds its four
         // hooks to Claude Code's user settings, or takes out only those. The work is done by the
         // installed cds-claude-code.js (run with Node), which keeps everything else in both files,
         // backs them up first and leaves a file that isn't valid JSON untouched.
@@ -1392,6 +1394,11 @@ namespace ClaudeDevStudio
                 psi.ArgumentList.Add(arg);
             foreach (var arg in args.Skip(2))
                 psi.ArgumentList.Add(arg);
+            // The user's own "remove" (from P9): remembered, so the installer's default (set it up
+            // when Claude Code is there) doesn't put it back on an upgrade. The uninstaller runs the
+            // script itself, without this.
+            if (action == "remove" && !args.Skip(2).Contains("--remember-choice"))
+                psi.ArgumentList.Add("--remember-choice");
 
             using var proc = System.Diagnostics.Process.Start(psi);
             if (proc == null) { Console.WriteLine("Could not start Node.js."); return 1; }

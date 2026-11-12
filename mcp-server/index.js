@@ -138,7 +138,9 @@ const INSTRUCTIONS =
   'Before a risky step, call claudedev_check_mistake. ' +
   'As you go, record activities, mistakes (with the lesson) and decisions (with the reason). ' +
   'To find something from earlier sessions, in this project or any other, call claudedev_search; a lesson that holds for every project goes in claudedev_record_lesson. ' +
-  'Before you stop, call claudedev_handoff: where you stopped and the next step.';
+  'Before you stop, call claudedev_handoff: where you stopped and the next step. ' +
+  'When a phase you run with the workbench\'s claudedev_phase_* tools asks a question: answer it yourself only if the answer follows from the ground truth or what is already decided, is easily undone, and is technical; ' +
+  'if it changes scope, cost or the product\'s direction, can\'t be undone, or is a matter of taste, put it to the user with the options and your recommendation. Either way, tell the user what was asked and what was answered.';
 
 // Not listed any more; a client that still calls it (an old chat) gets this instead of "Unknown tool".
 const MONITOR_REMOVED =

@@ -20,6 +20,8 @@
                     </NavigationViewItem.InfoBadge>
                 </NavigationViewItem>
                 
+                <NavigationViewItem Content="Phases" Tag="phases" Icon="Play"/>
+
                 <NavigationViewItem Content="Activity" Tag="activity" Icon="Calendar"/>
                 
                 <NavigationViewItem Content="Approvals" Tag="approvals" Icon="Accept">

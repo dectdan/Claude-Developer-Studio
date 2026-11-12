@@ -33,8 +33,31 @@
 // Never --dangerously-skip-permissions, never --permission-mode bypassPermissions: the mode is
 // always acceptEdits, with the allowed tools listed.
 //
-// CDS_PHASE_CLAUDE is for tests only (mcp-server\test\smoke.mjs points it at a fake claude);
-// normal use never sets it.
+// Modes (from P9, Dan's DEC002): who answers a phase's questions.
+//   collaborative (default)  headless; chat-side Claude answers what plainly follows from the ground
+//                            truth and is easily undone and technical, and brings real decisions to
+//                            the user; either way it tells the user what was asked and answered.
+//   delegated                headless; chat-side Claude answers everything and tells the user after.
+//   manual                   a visible, interactive Claude Code window in the project (Windows
+//                            Terminal if there is one, else a console) with the prompt as its first
+//                            message, in the user's own permission mode: the user watches and
+//                            approves. The runner sits in that window (its pid holds the lock);
+//                            Status reads the session's transcript (--session-id is set at start).
+// A phase that asks something ends its turn with a QUESTION: block (templates\HOW_WE_WORK.md);
+// Status returns its question, options and recommendation verbatim (parseQuestion).
+//
+// The runner also records each run's outcome (finished / question / error / no result / closed) in
+// the .json, and phaseStart adds the run to [Documents]\ClaudeDevStudio\phases.json (the index the
+// tray app watches for notifications and the Dashboard's Phases page lists).
+//
+// From the command line (the Dashboard's Phases page uses these):
+//   node cds-phase.js --status <project> [phase]       Status's text
+//   node cds-phase.js --stop <project> <phase> [--force]
+//   node cds-phase.js --conversation <log or transcript> [--from <byte>] [--json]
+//
+// CDS_PHASE_CLAUDE and CDS_PHASE_WINDOW=hidden are for tests only (mcp-server\test\smoke.mjs points
+// the first at a fake claude; the second opens a manual run's window hidden); normal use never sets
+// them.
 
 import { execFile, spawn } from 'child_process';
 import crypto from 'crypto';
@@ -42,7 +65,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { isExcluded, looksLikeProject } from './cds-paths.js';
+import { isExcluded, looksLikeProject, memoryRoot } from './cds-paths.js';
 
 const SELF = fileURLToPath(import.meta.url);
 const HERE = path.dirname(SELF);
@@ -76,6 +99,21 @@ const CTRL_C_WAIT_MS = [10000, 5000];
 
 const defaultPrompt = (phase) =>
   `Read docs\\${phase}_prompt.md and carry it out. You are running unattended: nobody can answer questions. Follow the prompt's rules for decisions it doesn't cover.`;
+// Collaborative and delegated runs: someone (chat-side Claude, or the user through it) does answer,
+// so a real decision may end the turn with a QUESTION: block instead of a guess.
+const answeredPrompt = (phase) =>
+  `Read docs\\${phase}_prompt.md and carry it out. You are running headless: nobody watches this session, but a reply can come. When the prompt's rules decide something, follow them. Only when you truly need a decision, end your turn with a block that starts "QUESTION:" (the question in one or two sentences, then numbered options each with a one-line consequence, then "RECOMMENDATION:" the option you would pick and why), and stop there.`;
+const manualPrompt = (phase) => `Read docs\\${phase}_prompt.md and carry it out.`;
+
+export const MODES = ['collaborative', 'delegated', 'manual'];
+export const DEFAULT_MODE = 'collaborative';
+
+// What chat-side Claude does with a question, said in every start and status result (DEC002).
+export const MODE_GUIDANCE = {
+  collaborative: 'Mode: collaborative. If it asks something, answer it yourself only if the answer follows from the ground truth or what is already decided, is easily undone, and is technical; otherwise put it to the user with the options and your recommendation, and send their answer with claudedev_phase_reply. Either way, tell the user what was asked and what was answered.',
+  delegated: 'Mode: delegated. If it asks something, answer it yourself with claudedev_phase_reply, and tell the user afterwards what was asked and what you answered.',
+  manual: 'Mode: manual. The user works in the Claude Code window and approves its actions there; don\'t answer for them. When the window is closed, read the output as usual.',
+};
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -205,7 +243,7 @@ export async function findClaude() {
   if (!file) {
     return { error: override
       ? `The test Claude Code (CDS_PHASE_CLAUDE) ${override} doesn't exist.`
-      : 'Claude Code isn\'t installed or isn\'t on PATH (no "claude" found). Install it (https://code.claude.com/docs/en/setup), sign in once by running "claude" in a terminal, then restart Claude Desktop so its servers see the new PATH.' };
+      : 'Claude Code isn\'t installed or isn\'t on PATH (no "claude" found). Install it: in PowerShell, irm https://claude.ai/install.ps1 | iex (https://code.claude.com/docs/en/setup); sign in once by running "claude" in a new terminal; then quit Claude Desktop fully and reopen it, so its servers see the new PATH (a Claude Code installed after Claude Desktop started isn\'t seen until then). The tray app\'s Claude Code menu item shows the next step.' };
   }
   const command = commandFor(file);
   if (!command) return { error: `Found ${file}, but couldn't tell what it runs. Install Claude Code's native build (https://code.claude.com/docs/en/setup).` };
@@ -213,9 +251,16 @@ export async function findClaude() {
   const version = parseVersion(v.out);
   if (!version) return { error: `${file} --version didn't answer with a version (exit ${v.code}: ${oneLine(v.out + v.err, 200)}).` };
   if (older(version, MIN_CLAUDE)) {
-    return { error: `Claude Code ${version.join('.')} is too old: phases need ${MIN_CLAUDE.join('.')} or later (for --effort and the stream-json log). Update it with "claude update".` };
+    return { error: `Claude Code ${version.join('.')} is too old: phases need ${MIN_CLAUDE.join('.')} or later (for --effort and the stream-json log). Update it with "claude update" in a terminal, then restart Claude Desktop.` };
   }
-  return { file, command, version: version.join('.') };
+  // Signed in? `claude auth status` exits 0 when logged in, 1 when not (Claude Code's CLI reference);
+  // its JSON (which names the account) is read for nothing and never shown. Any other answer (an
+  // older Claude Code without the command, a timeout) doesn't refuse.
+  const auth = await run(command[0], [...command.slice(1), 'auth', 'status'], { timeout: 20000 });
+  if (auth.code === 1 && !auth.error?.killed) {
+    return { error: `Claude Code ${version.join('.')} is installed but not signed in. Open a terminal, run "claude" once and sign in (a Pro, Max, Team, Enterprise or Console account), then start the phase again.` };
+  }
+  return { file, command, version: version.join('.'), signedIn: auth.code === 0 ? true : null };
 }
 
 function splitTools(s) {
@@ -257,6 +302,18 @@ function claudeArgs(meta, { prompt, resume }) {
   ];
 }
 
+// Manual mode: an interactive session (`claude "query"` starts one with an initial prompt), with a
+// session id chosen here so Status can find its transcript and the "open it" hint can name it. No
+// --permission-mode, no --allowedTools: the user's own permission mode, and the user approves.
+function manualArgs(meta, prompt) {
+  return [
+    ...(meta.model ? ['--model', meta.model] : []),
+    ...(meta.effort ? ['--effort', meta.effort] : []),
+    '--session-id', meta.session_id,
+    prompt,
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // Processes: is it alive and ours? (pids are reused, e.g. after a restart)
 // ---------------------------------------------------------------------------
@@ -289,7 +346,7 @@ function isOurs(info, pid, startedIso, mustContain) {
 // Every process below rootPid (pid, created ms), from one WMI snapshot. A child must have started
 // after its parent, so a parent pid that was reused doesn't pull in strangers.
 export async function processTree(rootPid) {
-  const ps = "$r = @(Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; " +
+  const ps = "$r = @(Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; name = $_.Name; " +
     "created = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { '' }) } }); ConvertTo-Json -InputObject $r -Compress";
   const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps]);
   let all = [];
@@ -444,6 +501,52 @@ export function phaseEnv(base = cleanEnv()) {
 // From P8 the runner gets --console: it has its own (hidden) console from WMI, and Claude Code
 // shares it, so Stop can send Ctrl+C into it. (The detached fallback has no console: no --console,
 // and Claude Code gets a windowless one of its own, as in P7.)
+// Windows Terminal, if the user has it (its app execution alias, else on PATH).
+export function findTerminal() {
+  if (process.env.CDS_PHASE_WINDOW === 'hidden') return null; // tests only
+  // An app execution alias is a reparse point that stat() can't follow (existsSync says false): lstat.
+  const alias = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Microsoft', 'WindowsApps', 'wt.exe');
+  try { fs.lstatSync(alias); return alias; } catch { /* no Windows Terminal alias */ }
+  for (const dir of String(process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    const f = path.join(dir.replace(/^"|"$/g, ''), 'wt.exe');
+    try { fs.lstatSync(f); return f; } catch { /* not here */ }
+  }
+  return null;
+}
+
+// Manual mode: the runner (and the interactive Claude Code it starts) in a window the user sees,
+// also through WMI (outside Claude Desktop's process tree, so closing Claude Desktop doesn't close
+// the window). Windows Terminal (a new window, titled, in the project) if present, else a console
+// window. CDS_PHASE_WINDOW=hidden (tests only) opens it hidden instead.
+async function launchManual(metaFile, index, cwd, title) {
+  const runnerCmd = `"${process.execPath}" "${SELF}" --run "${metaFile}" ${index} --manual`;
+  const hidden = process.env.CDS_PHASE_WINDOW === 'hidden';
+  const wt = findTerminal();
+  if (wt) {
+    // WMI can't start an app execution alias (Win32_Process.Create returns 8), and doesn't need to:
+    // the alias hands the window to Windows Terminal's own process, which hosts the runner there,
+    // outside Claude Desktop's process tree. So wt.exe is started directly, detached.
+    try {
+      const safeTitle = String(title).replace(/[;"^&|<>]/g, ' ');
+      const child = spawn(wt, ['-w', 'new', '--title', safeTitle, '-d', cwd, process.execPath, SELF, '--run', metaFile, String(index), '--manual'],
+        { cwd, detached: true, stdio: 'ignore', env: cleanEnv() });
+      const failed = await new Promise((res) => { child.once('error', (e) => res(e)); setTimeout(() => res(null), 300); });
+      if (!failed) { child.unref(); return { pid: child.pid, how: 'windows-terminal', window: 'Windows Terminal' }; }
+    } catch { /* fall back to a console window below */ }
+  }
+  const cmdline = runnerCmd;
+  const ps = `$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]${hidden ? 0 : 1} }; ` +
+    "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $env:CDS_PHASE_CMD; CurrentDirectory = $env:CDS_PHASE_CWD; ProcessStartupInformation = $si }; " +
+    "\"$($r.ReturnValue) $($r.ProcessId)\"";
+  const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+    env: { ...process.env, CDS_PHASE_CMD: cmdline, CDS_PHASE_CWD: cwd },
+  });
+  const m = /^(\d+)\s+(\d+)/.exec(r.out.trim());
+  if (m && m[1] === '0' && Number(m[2]) > 0) return { pid: Number(m[2]), how: 'wmi', window: hidden ? 'hidden (test)' : 'console' };
+  return { error: `Couldn't open the Claude Code window (WMI: ${oneLine(r.out + r.err, 160) || `exit ${r.code}`}).` };
+}
+
 async function launchRunner(metaFile, index, cwd) {
   const cmdline = `"${process.execPath}" "${SELF}" --run "${metaFile}" ${index} --console`;
   const env = cleanEnv();
@@ -514,7 +617,7 @@ function parseLog(text) {
     } else if (e.type === 'assistant' && e.message && Array.isArray(e.message.content)) {
       for (const c of e.message.content) {
         if (c.type === 'tool_use') { s.toolCalls++; names.set(c.id, c.name); }
-        else if (c.type === 'text' && c.text && c.text.trim() && !e.parent_tool_use_id) s.texts.push(c.text.trim());
+        else if (c.type === 'text' && c.text && c.text.trim() && !e.parent_tool_use_id && !e.isSidechain) s.texts.push(c.text.trim());
       }
     } else if (e.type === 'user' && e.message && Array.isArray(e.message.content)) {
       for (const c of e.message.content) {
@@ -533,6 +636,171 @@ export function looksLikeQuestion(text) {
   if (!t) return false;
   if (/\?\s*[*_)"'”’`]*\s*$/.test(t)) return true;
   return /\b(should I|do you want|would you like|which (one|option)|please confirm|waiting for (you|your))\b/i.test(t.slice(-600));
+}
+
+// A phase's QUESTION: block (from P9; the templates' HOW_WE_WORK.md says how to write one): a line
+// starting "QUESTION:" (markdown emphasis or a heading mark allowed) with the question, then numbered
+// options ("1." or "1)"), each with its consequence, then a recommendation ("RECOMMENDATION:", or "I'd
+// pick ..."). The last such block in the text counts. Everything is returned verbatim (trimmed), so
+// chat-side Claude can relay it as written; null when there is no block.
+const OPTION = /^\s*[*_]*\(?(\d{1,2})[.)][*_]*\s+/;
+const RECO = /^\s*[*_>]*\s*(RECOMMENDATION|RECOMMENDED|MY RECOMMENDATION|MY PICK|I would pick|I'd pick|I would choose|I'd choose|I recommend)\b/i;
+export function parseQuestion(text) {
+  const t = String(text || '').replace(/\r\n/g, '\n');
+  const re = /^[ \t>#*_]*QUESTION[*_]*[ \t]*:[*_]*[ \t]*(.*)$/gim;
+  let m, last = null;
+  while ((m = re.exec(t))) last = m;
+  if (!last) return null;
+  const before = t.slice(0, last.index).trim();
+  const lines = t.slice(last.index + last[0].length).split('\n');
+  const q = [last[1].trim()].filter(Boolean);
+  const options = [];
+  const reco = [];
+  let part = 'question';
+  for (const l of lines) {
+    if (RECO.test(l)) { part = 'reco'; reco.push(l.trim()); continue; }
+    if (part !== 'reco' && OPTION.test(l)) { part = 'options'; options.push(l.trim()); continue; }
+    if (!l.trim()) { if (part === 'reco' && reco.length) part = 'after'; continue; }
+    if (part === 'question') q.push(l.trim());
+    else if (part === 'options') options[options.length - 1] += `\n${l.trim()}`;
+    else if (part === 'reco') reco.push(l.trim());
+  }
+  const question = q.join('\n').trim();
+  if (!question) return null;
+  return { question, options, recommendation: reco.join('\n').trim() || null, before };
+}
+
+// The block as Status and the Dashboard show it (verbatim lines).
+export function questionBlock(pq) {
+  return [pq.question, ...pq.options, ...(pq.recommendation ? [pq.recommendation] : [])].join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// The conversation as readable text (the Dashboard's Phases page; from P9)
+// ---------------------------------------------------------------------------
+
+const TOOL_TARGET = ['command', 'file_path', 'notebook_path', 'path', 'pattern', 'url', 'query', 'description', 'subject', 'skill', 'prompt'];
+function toolLine(name, input) {
+  const short = String(name || 'tool').replace(/^mcp__([^_]+(?:_[^_]+)*)__/, (s, srv) => `${srv}: `);
+  let target = '';
+  if (input && typeof input === 'object') {
+    for (const k of TOOL_TARGET) if (typeof input[k] === 'string' && input[k].trim()) { target = input[k]; break; }
+    if (!target) { const v = Object.values(input).find(x => typeof x === 'string' && x.trim()); if (v) target = v; }
+  }
+  return target ? `${short}: ${oneLine(String(target).split('\n')[0], 140)}` : short;
+}
+
+function resultBody(c) {
+  if (typeof c.content === 'string') return c.content;
+  if (Array.isArray(c.content)) return c.content.map(x => (x && x.type === 'text' ? x.text : x && x.type === 'image' ? '[image]' : JSON.stringify(x))).join('\n');
+  return c.content == null ? '' : JSON.stringify(c.content);
+}
+
+// Entries { kind, text, detail?, error? } from a phase log (stream-json) or a Claude Code transcript:
+//   start    the session's start (model, permission mode)
+//   user     a message to Claude (the first prompt in a transcript, an interruption)
+//   claude   Claude's text, in full
+//   question a QUESTION: block, verbatim (its text before it is a claude entry)
+//   tool     one line per tool call: the tool and its target
+//   result   a tool's result, collapsed to one line; detail = its text (up to 4,000 characters)
+//   end      a run's result (subtype, turns, time)
+// Subagents' messages are left out (their tool calls show as the Agent/Task call).
+export function conversation(text) {
+  const entries = [];
+  let sessionId = null, lastClaude = null;
+  const pushText = (t) => {
+    const s = String(t || '').trim();
+    if (!s) return;
+    const pq = parseQuestion(s);
+    if (pq) {
+      if (pq.before) entries.push({ kind: 'claude', text: pq.before });
+      entries.push({ kind: 'question', text: questionBlock(pq) });
+    } else entries.push({ kind: 'claude', text: s });
+    lastClaude = s;
+  };
+  for (const line of String(text || '').split('\n')) {
+    if (!line.trim()) continue;
+    let e; try { e = JSON.parse(line); } catch { continue; }
+    if (e.session_id || e.sessionId) sessionId = e.session_id || e.sessionId;
+    if (e.parent_tool_use_id || e.isSidechain || e.isMeta) continue;
+    if (e.type === 'system' && e.subtype === 'init') {
+      entries.push({ kind: 'start', text: `Session started${e.model ? `: ${e.model}` : ''}${e.permissionMode ? `, ${e.permissionMode}` : ''}${Array.isArray(e.tools) ? `, ${e.tools.length} tools` : ''}` });
+    } else if (e.type === 'assistant' && e.message && Array.isArray(e.message.content)) {
+      for (const c of e.message.content) {
+        if (c.type === 'text') pushText(c.text);
+        else if (c.type === 'tool_use') entries.push({ kind: 'tool', text: toolLine(c.name, c.input) });
+      }
+    } else if (e.type === 'user' && e.message) {
+      const content = e.message.content;
+      if (typeof content === 'string') { if (content.trim()) entries.push({ kind: 'user', text: content.trim() }); continue; }
+      if (!Array.isArray(content)) continue;
+      for (const c of content) {
+        if (c.type === 'text' && c.text && c.text.trim()) entries.push({ kind: 'user', text: c.text.trim() });
+        else if (c.type === 'tool_result') {
+          const body = resultBody(c);
+          const ls = body.split(/\r?\n/).filter(x => x.trim());
+          const first = ls.length ? oneLine(ls[0], 120) : '(empty)';
+          entries.push({ kind: 'result', error: !!c.is_error, text: `${c.is_error ? 'error' : 'result'}: ${first}${ls.length > 1 ? ` (+${ls.length - 1} line${ls.length === 2 ? '' : 's'})` : ''}`, detail: body.length > 4000 ? `${body.slice(0, 4000)}\n…` : body });
+        }
+      }
+    } else if (e.type === 'result') {
+      const r = String(e.result || '').trim();
+      if (r && r !== lastClaude) pushText(r);
+      entries.push({ kind: 'end', error: !!e.is_error, text: `Run ended: ${e.subtype || 'result'}${e.num_turns != null ? `, ${e.num_turns} turns` : ''}${e.duration_ms != null ? `, ${minutes(e.duration_ms)}` : ''}${e.is_error ? ' (is_error)' : ''}` });
+    }
+  }
+  return { session_id: sessionId, entries };
+}
+
+export function conversationText(conv) {
+  const out = [];
+  for (const x of conv.entries) {
+    if (x.kind === 'claude') out.push(`Claude: ${x.text}`, '');
+    else if (x.kind === 'question') out.push('=== QUESTION ===', x.text, '================', '');
+    else if (x.kind === 'tool') out.push(`  > ${x.text}`);
+    else if (x.kind === 'result') out.push(`    ${x.text}`);
+    else if (x.kind === 'user') out.push(`You: ${x.text}`, '');
+    else out.push(`-- ${x.text} --`, '');
+  }
+  return out.join('\n').trim();
+}
+
+// Claude Code's transcripts: <config dir>\projects\<project>\<session-id>.jsonl (the config dir is
+// %USERPROFILE%\.claude, or CLAUDE_CONFIG_DIR; Claude Code's docs, "Where transcripts are stored").
+// Searched by the session id, so the <project> name's encoding doesn't matter.
+export function findTranscript(sessionId) {
+  if (!sessionId) return null;
+  const base = process.env.CLAUDE_CONFIG_DIR ? path.resolve(process.env.CLAUDE_CONFIG_DIR) : path.join(os.homedir(), '.claude');
+  const dir = path.join(base, 'projects');
+  try {
+    for (const d of fs.readdirSync(dir)) {
+      const f = path.join(dir, d, `${sessionId}.jsonl`);
+      if (fs.existsSync(f)) return f;
+    }
+  } catch { /* none */ }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// The index of runs (from P9): [Documents]\ClaudeDevStudio\phases.json, for the tray app's
+// notifications and the Dashboard's project list. In Documents, not %LOCALAPPDATA%: phaseStart runs
+// inside Claude Desktop's server, and files a packaged app's process creates under AppData are
+// redirected into the package (docs\GROUND_TRUTH.md section 11); Documents isn't.
+// ---------------------------------------------------------------------------
+
+export const phasesIndexFile = () => path.join(memoryRoot(), 'phases.json');
+const INDEX_MAX = 60;
+
+export function addToIndex(project, phase, mode, meta) {
+  try {
+    const file = phasesIndexFile();
+    const cur = readJson(file);
+    const list = (cur && Array.isArray(cur.runs) ? cur.runs : []).filter(x => !(String(x.project).toLowerCase() === project.toLowerCase() && x.phase === phase));
+    list.unshift({ project, phase, mode, started: new Date().toISOString(), meta });
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    writeJson(file, { about: 'Phase runs started by ClaudeDevStudio (newest first); the tray app and the Dashboard read it.', runs: list.slice(0, INDEX_MAX) });
+    return null;
+  } catch (e) { return e.message; }
 }
 
 function sessionFromLog(fl) {
@@ -554,19 +822,27 @@ async function begin(fl, meta, kind, opts) {
   meta.runs.push({
     kind, requested: new Date().toISOString(), log_offset: size(fl.log), err_offset: size(fl.err),
     ...(opts.message != null ? { message: oneLine(opts.message, 300), stdin: opts.stdin } : {}),
-    command: [...meta.claude.command, ...claudeArgs(meta, opts)],
+    command: [...meta.claude.command, ...(kind === 'manual' ? manualArgs(meta, opts.prompt) : claudeArgs(meta, opts))],
   });
   writeJson(fl.meta, meta);
-  const l = await launchRunner(fl.meta, index, meta.project);
+  const l = kind === 'manual'
+    ? await launchManual(fl.meta, index, meta.project, `CDS ${meta.phase} - ${path.basename(meta.project)}`)
+    : await launchRunner(fl.meta, index, meta.project);
   if (l.error) {
     updateMeta(fl.meta, m => { Object.assign(m.runs[index], { ended: new Date().toISOString(), error: l.error }); });
     releaseLock(fl, meta.phase);
     return { error: l.error };
   }
-  updateMeta(fl.meta, m => { m.runs[index].launched_by = l.how; });
-  const r = await waitForRunner(fl.meta, index);
+  updateMeta(fl.meta, m => { m.runs[index].launched_by = l.how; if (l.window) m.runs[index].window = l.window; });
+  const r = await waitForRunner(fl.meta, index, kind === 'manual' ? 20000 : 8000);
   if (r && r.ended && r.error) return { error: `Claude Code didn't start: ${r.error}` };
-  return { pid: (r && r.runner_pid) || l.pid, claudePid: r && r.claude_pid, note: l.note };
+  if (kind === 'manual' && !(r && r.runner_pid)) {
+    // A window that never started its runner (e.g. Windows Terminal refused the command line).
+    updateMeta(fl.meta, m => { Object.assign(m.runs[index], { ended: new Date().toISOString(), error: 'the window did not start Claude Code within 20 s' }); });
+    releaseLock(fl, meta.phase);
+    return { error: `The ${l.window || 'Claude Code'} window didn't start Claude Code within 20 s. Open it by hand: in a terminal in ${meta.project}, run: claude "${manualPrompt(meta.phase)}"` };
+  }
+  return { pid: (r && r.runner_pid) || l.pid, claudePid: r && r.claude_pid, note: l.note, window: l.window };
 }
 
 export async function phaseStart(args = {}) {
@@ -581,7 +857,10 @@ export async function phaseStart(args = {}) {
   }
   if (args.model != null && args.model !== '' && !/^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,79}$/.test(String(args.model))) return refuse('model must be a model name or alias, e.g. claude-opus-5-5 or sonnet.');
   if (args.effort != null && args.effort !== '' && !EFFORTS.includes(String(args.effort))) return refuse(`effort must be one of ${EFFORTS.join(', ')}.`);
-  const tools = checkTools(args.allowed_tools);
+  const mode = args.mode == null || args.mode === '' ? DEFAULT_MODE : String(args.mode).toLowerCase();
+  if (!MODES.includes(mode)) return refuse(`mode must be one of ${MODES.join(', ')} (default ${DEFAULT_MODE}).`);
+  const manual = mode === 'manual';
+  const tools = checkTools(manual ? null : args.allowed_tools);
   if (tools.error) return refuse(tools.error);
   const claude = await findClaude();
   if (claude.error) return refuse(claude.error);
@@ -589,6 +868,7 @@ export async function phaseStart(args = {}) {
   const lock = await takeLock(fl, phase);
   if (lock.error) return refuse(lock.error);
   const notes = [...lock.notes];
+  if (manual && args.allowed_tools) notes.push('allowed_tools is not used in manual mode: the user approves each action in the window.');
   try {
     // A finished run of the same phase: its files are kept, moved to docs\phase_runs\.
     if (fs.existsSync(fl.meta) || fs.existsSync(fl.log)) {
@@ -600,24 +880,46 @@ export async function phaseStart(args = {}) {
       }
       notes.push(`The previous ${phase} run's files were moved to docs\\phase_runs\\ (${phase}_${stamp}_run.*).`);
     }
-    const meta = {
-      phase, project, tool: 'cds-phase', pid: null, started: new Date().toISOString(),
+    const meta = manual ? {
+      phase, project, tool: 'cds-phase', mode, pid: null, started: new Date().toISOString(),
+      model: args.model || null, effort: args.effort || null, permission_mode: 'the user\'s own (interactive)',
+      session_id: crypto.randomUUID(),
+      claude: { file: claude.file, command: claude.command, version: claude.version },
+      runs: [],
+    } : {
+      phase, project, tool: 'cds-phase', mode, pid: null, started: new Date().toISOString(),
       model: args.model || null, effort: args.effort || null, permission_mode: PERMISSION_MODE,
       allowed_tools: tools.tools, mcp_config: mcpConfig(project, phase),
       claude: { file: claude.file, command: claude.command, version: claude.version },
       log: fl.log, err: fl.err, runs: [],
     };
-    fs.writeFileSync(fl.log, '', { flag: 'a' });
-    fs.writeFileSync(fl.err, '', { flag: 'a' });
-    const b = await begin(fl, meta, 'start', { prompt: defaultPrompt(phase) });
+    if (!manual) {
+      fs.writeFileSync(fl.log, '', { flag: 'a' });
+      fs.writeFileSync(fl.err, '', { flag: 'a' });
+    }
+    const b = manual
+      ? await begin(fl, meta, 'manual', { prompt: manualPrompt(phase) })
+      : await begin(fl, meta, 'start', { prompt: answeredPrompt(phase) });
     if (b.error) return refuse(b.error);
     if (b.note) notes.push(b.note);
+    const ix = addToIndex(project, phase, mode, fl.meta);
+    if (ix) notes.push(`(Couldn't add it to the tray app's list of runs: ${oneLine(ix, 120)}.)`);
+    if (manual) {
+      return ok([
+        `Opened ${phase} in a Claude Code window the user can see (${b.window}), in ${project}: Claude Code ${claude.version}, ${meta.model || 'its default model'}, interactive, in the user's own permission mode (runner pid ${b.pid}${b.claudePid ? `, claude pid ${b.claudePid}` : ''}).`,
+        `Its first message is "${manualPrompt(phase)}". The user watches it and approves what it asks; the lock holds the project until the window is closed. Session ${meta.session_id}.`,
+        MODE_GUIDANCE.manual,
+        'claudedev_phase_status shows what it is doing (from the session\'s transcript); claudedev_phase_stop asks the user to close the window (force: true ends it).',
+        ...notes,
+      ].join('\n'));
+    }
     return ok([
       `Started ${phase} in ${project}: Claude Code ${claude.version}, ${meta.model || 'its default model'}, effort ${meta.effort || 'its default'}, permission mode ${PERMISSION_MODE} (runner pid ${b.pid}${b.claudePid ? `, claude pid ${b.claudePid}` : ''}).`,
       `It is working on docs\\${phase}_prompt.md now, unattended, with ${meta.allowed_tools === DEFAULT_ALLOWED_TOOLS
         ? 'the default tools (Read, Edit, Write, Glob, Grep, Bash, PowerShell, WebFetch, WebSearch and the like, and the CDS memory tools)'
         : `these tools: ${oneLine(meta.allowed_tools, 400)}`}.`,
       `Log: docs\\${phase}_run.log (and .err, .json). Check it with claudedev_phase_status every 10-20 minutes; stop it with claudedev_phase_stop.`,
+      MODE_GUIDANCE[mode],
       ...notes,
     ].join('\n'));
   } catch (e) {
@@ -658,13 +960,18 @@ export async function phaseStatus(args = {}) {
     const l = readJson(fl.lock);
     if (l && l.phase === phase) { try { fs.unlinkSync(fl.lock); } catch { /* raced */ } notes.push('Its lock was stale (the process is gone) and has been cleared.'); }
   }
-  const text = readShared(fl.log, r.log_offset || 0);
+  const manual = meta.mode === 'manual';
+  const transcript = manual ? findTranscript(meta.session_id) : null;
+  const text = manual ? (transcript ? readShared(transcript, 0) : '') : readShared(fl.log, r.log_offset || 0);
   const s = parseLog(text);
   const res = s.result;
   const startedAt = r.runner_started || r.requested || meta.started;
   const endMs = r.ended ? Date.parse(r.ended) : (res && res.duration_ms ? Date.parse(startedAt) + res.duration_ms : Date.now());
+  const mode = meta.mode || (Array.isArray(meta.runs) ? 'collaborative' : null);
   let label;
   if (st.state === 'starting') label = 'STARTING';
+  else if (manual && st.state === 'running') label = `OPEN in a Claude Code window (manual mode${r.window ? `, ${r.window}` : ''}: the user works in it and approves its actions)`;
+  else if (manual && st.state === 'ended') label = `CLOSED (Claude Code exited${r.exit_code != null ? ` with code ${r.exit_code}` : ''}${r.error ? `: ${oneLine(r.error, 120)}` : ''}; the window is gone)`;
   else if (st.state === 'running') label = res ? 'RUNNING (it has a result and is waiting for background work it started)' : 'RUNNING';
   else if (st.state === 'stopped') {
     label = r.stop_method === 'ctrl_c' ? 'STOPPED (by request, with Ctrl+C: Claude Code ended its turn and exited, so its SessionEnd hooks ran)'
@@ -677,6 +984,8 @@ export async function phaseStatus(args = {}) {
 
   const lines = [];
   lines.push(`${phase} in ${project}: ${label}, ${minutes(endMs - Date.parse(startedAt))} (started ${localTime(startedAt)}${r.count > 1 ? `; run ${r.index + 1} of ${r.count}, ${r.kind === 'reply' ? 'a reply' : 'the start'}` : ''}${r.legacy ? '; started by run-phase.ps1' : ''}).`);
+  if (mode) lines.push(`${MODE_GUIDANCE[mode] || `Mode: ${mode}.`}${meta.mode ? '' : ' (Started before modes existed: collaborative assumed.)'}`);
+  if (manual) lines.push(transcript ? `Transcript: ${transcript} (session ${meta.session_id}).` : `No transcript yet for session ${meta.session_id} (Claude Code writes it once the first message is sent; the window may be waiting for the user, e.g. to trust the folder).`);
   if (s.init) {
     // CDS's own servers by name; the user's other servers only counted.
     const all = s.init.mcp_servers || [];
@@ -690,26 +999,54 @@ export async function phaseStatus(args = {}) {
   for (const n of deniedNames) counts[n] = (counts[n] || 0) + 1;
   lines.push(`Tool calls: ${s.toolCalls} | permission denials: ${deniedNames.length}${deniedNames.length ? ` (${Object.entries(counts).map(([n, c]) => c > 1 ? `${n} ×${c}` : n).join(', ')})` : ''}`);
   if (r.kind === 'reply' && r.message) lines.push(`Reply sent: "${oneLine(r.message, 160)}"`);
-  const latest = s.texts.slice(-3).filter(t => !res || t !== String(res.result || '').trim()).slice(-2);
+  // The text that ends the run: the result's, else (a manual session, or a run that ended without a
+  // result) Claude's last text.
+  const live = st.state === 'running' || st.state === 'starting';
+  const finalText = String(res ? res.result || '' : (manual || !live ? s.texts[s.texts.length - 1] || '' : '')).trim();
+  const pq = parseQuestion(finalText);
+  const latest = s.texts.slice(-3).filter(t => t !== finalText).slice(-2);
   if (latest.length) { lines.push('Latest from Claude:'); for (const t of latest) lines.push(`- ${oneLine(t, 300)}`); }
-  if (res) {
-    lines.push(`Result: ${res.subtype}, ${res.num_turns ?? '?'} turns, ${res.duration_ms != null ? minutes(res.duration_ms) : '?'}${res.is_error ? ', is_error' : ''}.`);
-    if (String(res.result || '').trim()) lines.push(`"${oneLine(res.result, 700)}"`);
-    if (looksLikeQuestion(res.result)) lines.push(`It ends with a QUESTION: answer it with claudedev_phase_reply (project_path, phase "${phase}", message).`);
+  if (res) lines.push(`Result: ${res.subtype}, ${res.num_turns ?? '?'} turns, ${res.duration_ms != null ? minutes(res.duration_ms) : '?'}${res.is_error ? ', is_error' : ''}.`);
+  let qBlock = null;
+  if (pq) {
+    if (pq.before) lines.push(`"${oneLine(pq.before, 500)}"`);
+    qBlock = [
+      `It ends with a QUESTION (verbatim from the phase; relay it as written)${manual ? '; the user answers it in the window' : ''}:`,
+      'Question:', pq.question,
+      ...(pq.options.length ? ['Options:', ...pq.options] : ['Options: none given.']),
+      `Its recommendation: ${pq.recommendation || 'none given.'}`,
+      ...(manual ? [] : [`Answer with claudedev_phase_reply (project_path, phase "${phase}", message), as the mode above says.`]),
+    ].join('\n');
+    if (qBlock.length > 2400) qBlock = `${qBlock.slice(0, 2399)}…`;
+    lines.push('\u0000QUESTION');
+  } else {
+    if (res && finalText) lines.push(`"${oneLine(finalText, 700)}"`);
+    else if (!res && finalText && !live) lines.push(`Its last text: "${oneLine(finalText, 500)}"`);
+    if (looksLikeQuestion(finalText)) lines.push(manual ? 'It ends with a question for the user, in the window.' : `It ends with a QUESTION (no QUESTION: block; read its text above): answer it with claudedev_phase_reply (project_path, phase "${phase}", message), as the mode above says.`);
   }
   let out = 'not written yet';
   try { const o = fs.statSync(fl.output); out = `written ${localTime(o.mtime.toISOString())}, ${shownSize(o.size)}`; } catch { /* none */ }
   lines.push(`docs\\${phase}_OUTPUT.md: ${out}.`);
   const errText = readShared(fl.err, r.err_offset || 0).trim();
-  if (errText) lines.push(`stderr: ${oneLine(errText.split(/\r?\n/).slice(-3).join(' | '), 300)}`);
-  lines.push(`Log: docs\\${phase}_run.log (${shownSize(size(fl.log))}).`);
+  if (errText && !manual) lines.push(`stderr: ${oneLine(errText.split(/\r?\n/).slice(-3).join(' | '), 300)}`);
+  if (!manual) lines.push(`Log: docs\\${phase}_run.log (${shownSize(size(fl.log))}).`);
+  // "Open it": the whole conversation in Claude Code, to read or take over (not while a headless run
+  // still writes to it; a manual run's window is already open).
+  // (A manual session with no transcript never sent its first message: nothing to open.)
+  const sid = manual ? (transcript ? meta.session_id : null) : (s.sessionId || sessionFromLog(fl));
+  if (!live && sid) lines.push(`Open it: in ${project}, run claude --resume ${sid} (read the whole conversation, or take it over).`);
   lines.push(...notes);
 
-  let textOut = lines.join('\n');
-  // Budget: shorten the latest texts first, then the result.
-  if (textOut.length > STATUS_MAX) textOut = lines.map(l => l.startsWith('- ') ? oneLine(l, 160) : l).join('\n');
-  if (textOut.length > STATUS_MAX) textOut = lines.map(l => l.startsWith('- ') ? oneLine(l, 100) : (l.startsWith('"') ? oneLine(l, 400) : l)).join('\n');
-  if (textOut.length > STATUS_MAX) textOut = `${textOut.slice(0, STATUS_MAX - 1)}…`;
+  // Budget: shorten the latest texts first, then the result; the question block is never cut (it
+  // has its own cap above), the rest gets what is left.
+  const max = STATUS_MAX - (qBlock ? qBlock.length : 0);
+  const join = (ls) => ls.join('\n');
+  let body = lines;
+  if (join(body).length > max) body = lines.map(l => l.startsWith('- ') ? oneLine(l, 160) : l);
+  if (join(body).length > max) body = lines.map(l => l.startsWith('- ') ? oneLine(l, 100) : (l.startsWith('"') ? oneLine(l, 300) : l));
+  let textOut = join(body);
+  if (textOut.length > Math.max(max, 1000)) textOut = `${textOut.slice(0, Math.max(max, 1000) - 1)}…`;
+  if (qBlock) textOut = textOut.includes('\u0000QUESTION') ? textOut.replace('\u0000QUESTION', qBlock) : `${textOut}\n${qBlock}`;
   return ok(textOut);
 }
 
@@ -725,6 +1062,9 @@ export async function phaseReply(args = {}) {
   const fl = files(project, phase);
   const meta = readJson(fl.meta);
   if (!meta) return refuse(`No run recorded for ${phase} in ${project}: start it with claudedev_phase_start.`);
+  if (meta.mode === 'manual') {
+    return refuse(`${phase} runs in manual mode: the user answers in its Claude Code window. If the window is closed, the user can open the session again with claude --resume ${meta.session_id} in ${project}, or start the phase again in another mode.`);
+  }
   const st = await runState(meta);
   if (st.state === 'running' || st.state === 'starting') return refuse(`${phase} is still running: wait until claudedev_phase_status says it finished, or stop it first.`);
   const sid = sessionFromLog(fl);
@@ -748,9 +1088,11 @@ export async function phaseReply(args = {}) {
     fs.writeFileSync(stdin, message, 'utf8');
     const b = await begin(fl, meta, 'reply', { prompt: null, resume: sid, message, stdin });
     if (b.error) return refuse(b.error);
+    addToIndex(project, phase, meta.mode || DEFAULT_MODE, fl.meta);
     return ok([
       `Sent the reply to ${phase} (session ${sid}): it continues with the same model (${meta.model || 'default'}), effort (${meta.effort || 'default'}) and tools (runner pid ${b.pid}).`,
       `Appended to docs\\${phase}_run.log; claudedev_phase_status shows it as run ${meta.runs.length}.`,
+      'Tell the user what it asked and what you answered.',
       ...lock.notes, ...(b.note ? [b.note] : []),
     ].join('\n'));
   } catch (e) {
@@ -777,25 +1119,33 @@ export async function phaseStop(args = {}) {
     if (cleared) { try { fs.unlinkSync(fl.lock); } catch { /* gone */ } }
     return ok(`${phase} isn't running (${st.state === 'stopped' ? 'already stopped' : 'it has ended'}); nothing to stop.${cleared ? ' Its leftover lock was cleared.' : ''}`);
   }
+  // Manual mode (P9): the user's window. Stop asks for it to be closed; force: true ends it.
+  const manual = meta.mode === 'manual';
+  if (manual && !args.force) {
+    return ok(`${phase} is open in the user's Claude Code window (manual mode, ${project}). Ask the user to finish there and close the window (or type /exit in it). If they want it ended now, call claudedev_phase_stop again with force: true: Claude Code gets Ctrl+C twice (it exits and runs its SessionEnd hooks), else the window's process tree is ended by force.`);
+  }
   // Ours? (checked again right before ending it: a reused pid is never touched)
   const pids = [r.runner_pid, r.claude_pid].filter(Boolean);
   const info = await procInfo(pids);
   if (!isOurs(info, r.runner_pid, r.runner_started, runnerMark(r))) return ok(`${phase}'s process ${r.runner_pid} is no longer the run's (it has ended); nothing stopped.`);
 
-  // 1. Ctrl+C (from P8), when Claude Code shares the runner's console.
+  // 1. Ctrl+C (from P8), when Claude Code shares the runner's console. An interactive session (manual)
+  // exits on a second Ctrl+C pressed soon after the first, so its two presses are half a second apart.
   const t0 = Date.now();
   let method = 'force', why = null, presses = 0, ended = 0;
   if (r.shares_console && !r.legacy) {
     const tree = await processTree(r.runner_pid);
-    for (const wait of CTRL_C_WAIT_MS) {
+    for (const wait of manual ? [500, 8000] : CTRL_C_WAIT_MS) {
       const c = await sendCtrlC(r.runner_pid);
       if (c.error) { why = c.error; break; }
       presses++;
-      if (await waitGone(r.runner_pid, wait)) { method = 'ctrl_c'; break; }
+      // A manual runner keeps its window open 10 s after Claude Code exits, so there Claude Code is watched.
+      if (await waitGone(manual && r.claude_pid ? r.claude_pid : r.runner_pid, wait)) { method = 'ctrl_c'; break; }
     }
     if (method === 'ctrl_c') {
       // What the run started and left behind (a command in a console of its own): ended, if still the same process.
-      const rest = tree.filter(x => x.pid !== r.runner_pid);
+      // (Not the console host: it is the window itself, which a manual runner keeps open for its last note.)
+      const rest = tree.filter(x => x.pid !== r.runner_pid && !/^(conhost|openconsole)\.exe$/i.test(String(x.name || '')));
       const now = await procInfo(rest.map(x => x.pid));
       for (const x of rest) {
         const y = now[x.pid];
@@ -803,17 +1153,18 @@ export async function phaseStop(args = {}) {
         const k3 = await run('taskkill.exe', ['/PID', String(x.pid), '/T', '/F'], { timeout: 30000 });
         ended += (k3.out.match(/SUCCESS/g) || []).length;
       }
-    } else if (!why) why = `Ctrl+C (sent ${presses} time${presses === 1 ? '' : 's'}) didn't end it within ${CTRL_C_WAIT_MS.reduce((a, b) => a + b, 0) / 1000} s`;
+    } else if (!why) why = `Ctrl+C (sent ${presses} time${presses === 1 ? '' : 's'}) didn't end it within ${(manual ? 8500 : CTRL_C_WAIT_MS.reduce((a, b) => a + b, 0)) / 1000} s`;
   } else {
     why = r.legacy ? 'a run started by run-phase.ps1 (its Claude Code has a console of its own)' : 'a run started before P8 (its Claude Code has a console of its own)';
   }
+  if (method === 'force' && manual) why = `${why}; the window closes`;
   if (method === 'ctrl_c') {
     const after = readJson(fl.meta);
     const rr = after && after.runs ? after.runs[after.runs.length - 1] : {};
     updateMeta(fl.meta, m => { Object.assign(m.runs[m.runs.length - 1], { stopped_by_request: true, stop_method: 'ctrl_c', ctrl_c_presses: presses, stop_ms: Date.now() - t0, ...(rr.ended ? {} : { ended: new Date().toISOString() }), ...(ended ? { leftover_processes_ended: ended } : {}) }); });
     releaseLock(fl, phase);
-    return ok(`Stopped ${phase} in ${project} with Ctrl+C (${((Date.now() - t0) / 1000).toFixed(1)} s${presses > 1 ? `, ${presses} presses` : ''}): Claude Code ended its turn and exited (exit code ${rr.exit_code ?? '?'}), so its SessionEnd hooks ran (with CDS's Claude Code hooks: an automatic handoff).` +
-      `${ended ? ` ${ended} process${ended === 1 ? '' : 'es'} it left running ${ended === 1 ? 'was' : 'were'} ended.` : ''} The lock is released; docs\\${phase}_run.json records it as stopped by request. claudedev_phase_reply can continue the session.`);
+    return ok(`Stopped ${phase} in ${project} with Ctrl+C (${((Date.now() - t0) / 1000).toFixed(1)} s${presses > 1 ? `, ${presses} presses` : ''}): ${manual ? `Claude Code in the user's window exited (exit code ${rr.exit_code ?? '?'}), so its SessionEnd hooks ran if a session had started (with CDS's Claude Code hooks: an automatic handoff); the window shows a last note and closes 10 s later.` : `Claude Code ended its turn and exited (exit code ${rr.exit_code ?? '?'}), so its SessionEnd hooks ran (with CDS's Claude Code hooks: an automatic handoff).`}` +
+      `${ended ? ` ${ended} process${ended === 1 ? '' : 'es'} it left running ${ended === 1 ? 'was' : 'were'} ended.` : ''} The lock is released; docs\\${phase}_run.json records it as stopped by request. ${manual ? `The user can open the session again with claude --resume ${meta.session_id}.` : 'claudedev_phase_reply can continue the session.'}`);
   }
 
   // 2. By force: the runner's process tree.
@@ -848,7 +1199,25 @@ export async function phaseStop(args = {}) {
 // The runner: node cds-phase.js --run <docs\<phase>_run.json> <run index>
 // ---------------------------------------------------------------------------
 
-async function runner(metaFile, index, shareConsole) {
+// How a run ended, for the tray's notification and the Dashboard (from P9): 'finished', 'question'
+// (its result or last text asks something), 'error', 'no_result', or for a manual run 'closed'.
+export function runOutcome(meta, run) {
+  const fl = files(meta.project, meta.phase);
+  const manual = meta.mode === 'manual';
+  const t = manual ? findTranscript(meta.session_id) : null;
+  const s = parseLog(manual ? (t ? readShared(t, 0) : '') : readShared(fl.log, run.log_offset || 0));
+  const finalText = String(s.result ? s.result.result || '' : s.texts[s.texts.length - 1] || '').trim();
+  const pq = parseQuestion(finalText);
+  const question = pq ? pq.question : (looksLikeQuestion(finalText) ? oneLine(finalText.split(/\n/).filter(Boolean).pop(), 300) : null);
+  let outcome;
+  if (manual) outcome = 'closed';
+  else if (!s.result) outcome = 'no_result';
+  else if (s.result.is_error) outcome = 'error';
+  else outcome = question ? 'question' : 'finished';
+  return { outcome, ...(question ? { question: oneLine(question, 300) } : {}), output_written: fs.existsSync(fl.output) };
+}
+
+async function runner(metaFile, index, shareConsole, manual) {
   // Stop's Ctrl+C reaches every process on this console, the runner too: it waits for Claude Code
   // to end instead (Node would otherwise exit at once and record nothing).
   for (const sig of ['SIGINT', 'SIGBREAK']) process.on(sig, () => { /* Claude Code handles it; we wait for its exit */ });
@@ -857,16 +1226,36 @@ async function runner(metaFile, index, shareConsole) {
   const fl = files(meta.project, meta.phase);
   const runEntry = meta.runs[index];
   const started = new Date().toISOString();
-  const env = phaseEnv();
-  const runEnv = Object.fromEntries(Object.keys(PHASE_ENV).map(k => [k, env[k]]));
-  updateMeta(metaFile, m => { Object.assign(m.runs[index], { runner_pid: process.pid, runner_started: started, shares_console: !!shareConsole, env: runEnv }); m.pid = process.pid; });
+  // A manual session is the user's own Claude Code: their environment as it is, no phase settings.
+  const env = manual ? cleanEnv() : phaseEnv();
+  const runEnv = manual ? {} : Object.fromEntries(Object.keys(PHASE_ENV).map(k => [k, env[k]]));
+  updateMeta(metaFile, m => { Object.assign(m.runs[index], { runner_pid: process.pid, runner_started: started, shares_console: !!(shareConsole || manual), env: runEnv }); m.pid = process.pid; });
   try { const l = readJson(fl.lock); if (l && l.phase === meta.phase) { l.runner_pid = process.pid; l.started = started; writeJson(fl.lock, l); } } catch { /* best effort */ }
 
   const finish = (fields) => {
-    try { updateMeta(metaFile, m => { Object.assign(m.runs[index], { ended: new Date().toISOString(), ...fields }); }); } catch { /* best effort */ }
+    let outcome = {};
+    try { const m = readJson(metaFile); if (m && !m.runs[index].stopped_by_request) outcome = runOutcome(m, m.runs[index]); } catch { /* best effort */ }
+    try { updateMeta(metaFile, m => { Object.assign(m.runs[index], { ended: new Date().toISOString(), ...fields, ...(m.runs[index].stopped_by_request ? {} : outcome) }); }); } catch { /* best effort */ }
     releaseLock(fl, meta.phase, process.pid);
     if (runEntry.stdin) { try { fs.unlinkSync(runEntry.stdin); } catch { /* gone */ } }
   };
+
+  if (manual) {
+    // The window: Claude Code interactive on this console (stdio inherited), the user at the keyboard.
+    try { process.title = `CDS ${meta.phase} - ${path.basename(meta.project)} (Claude Code)`; } catch { /* cosmetic */ }
+    const [mfile, ...margs] = runEntry.command;
+    let mchild;
+    try { mchild = spawn(mfile, margs, { cwd: meta.project, stdio: 'inherit', env }); }
+    catch (e) { finish({ error: e.message }); process.exit(1); }
+    mchild.on('error', (e) => { finish({ error: e.message }); console.log(`\nClaude Code didn't start: ${e.message}`); setTimeout(() => process.exit(1), 15000); });
+    if (mchild.pid) updateMeta(metaFile, m => { m.runs[index].claude_pid = mchild.pid; });
+    mchild.on('exit', (code, signal) => {
+      finish({ exit_code: code, ...(signal ? { signal } : {}) });
+      console.log(`\nClaude Code has ended (exit code ${code}). ClaudeDevStudio released ${meta.phase}'s lock. Open the session again with: claude --resume ${meta.session_id}\nThis window closes in 10 seconds.`);
+      setTimeout(() => process.exit(0), 10000);
+    });
+    return;
+  }
   let out, err, inp = 'ignore';
   try {
     out = fs.openSync(fl.log, 'a');
@@ -886,6 +1275,21 @@ async function runner(metaFile, index, shareConsole) {
 }
 
 const argv = process.argv.slice(2);
-if (argv[0] === '--run' && process.argv[1] && path.resolve(process.argv[1]).toLowerCase() === SELF.toLowerCase()) {
-  runner(path.resolve(argv[1]), Number(argv[2] || 0), argv.includes('--console')).catch(() => process.exit(1));
+const isMain = process.argv[1] && path.resolve(process.argv[1]).toLowerCase() === SELF.toLowerCase();
+if (isMain && argv[0] === '--run') {
+  runner(path.resolve(argv[1]), Number(argv[2] || 0), argv.includes('--console'), argv.includes('--manual')).catch(() => process.exit(1));
+} else if (isMain && ['--status', '--stop', '--conversation'].includes(argv[0])) {
+  // The Dashboard's Phases page (and anyone at a terminal): the same text the tools return.
+  (async () => {
+    if (argv[0] === '--conversation') {
+      const fi = argv.indexOf('--from');
+      const conv = conversation(readShared(path.resolve(argv[1] || ''), fi > 0 ? Number(argv[fi + 1]) || 0 : 0));
+      process.stdout.write(argv.includes('--json') ? JSON.stringify(conv) : `${conversationText(conv)}\n`);
+      return 0;
+    }
+    const a = { project_path: argv[1], phase: argv[2] && !argv[2].startsWith('--') ? argv[2] : undefined, force: argv.includes('--force') };
+    const r = argv[0] === '--status' ? await phaseStatus(a) : await phaseStop(a);
+    process.stdout.write(`${r.text}\n`);
+    return r.ok ? 0 : 1;
+  })().then(c => { process.exitCode = c; }, (e) => { process.stderr.write(`${e.message}\n`); process.exitCode = 1; });
 }

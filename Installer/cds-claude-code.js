@@ -54,6 +54,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--no-claude-cli') out.noClaudeCli = true;
     else if (a === '--if-set-up') out['if-set-up'] = true;
+    else if (a === '--no-claude' || a === '--remember-choice') out[a.slice(2)] = true;
     else if (a.startsWith('--')) out[a.slice(2)] = argv[++i];
   }
   return out;
@@ -196,6 +197,94 @@ function findClaudeExe() {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Is Claude Code there, new enough, signed in? (from P9: status's State line, the installer's
+// detect, the tray app's menu item)
+// ---------------------------------------------------------------------------
+
+const MIN_CLAUDE = [2, 1, 0];
+const INSTALL_HELP = 'install it: in PowerShell, irm https://claude.ai/install.ps1 | iex (or see https://code.claude.com/docs/en/setup)';
+
+// What runs a candidate: an .exe directly; a .js/.mjs (the tests' fake) with this Node; an npm
+// claude.cmd resolved to the file it runs.
+function claudeCommand(file) {
+  const ext = path.extname(file).toLowerCase();
+  if (ext === '.js' || ext === '.mjs') return [process.execPath, file];
+  if (ext === '.cmd' || ext === '.bat') {
+    try {
+      const m = /"%~?dp0%?\\?([^"]+?\.(?:js|exe))"/i.exec(fs.readFileSync(file, 'utf8'));
+      if (m) { const t = path.join(path.dirname(file), m[1]); if (fs.existsSync(t)) return t.toLowerCase().endsWith('.exe') ? [t] : [process.execPath, t]; }
+    } catch { /* unreadable */ }
+    return null;
+  }
+  return [file];
+}
+
+function quiet(cmd, args, timeout) {
+  try {
+    const out = execFileSync(cmd[0], [...cmd.slice(1), ...args], { encoding: 'utf8', timeout, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { code: 0, out };
+  } catch (e) {
+    return { code: typeof e.status === 'number' ? e.status : -1, out: `${e.stdout || ''}${e.stderr || ''}`, timedOut: e.code === 'ETIMEDOUT' || e.signal === 'SIGTERM' };
+  }
+}
+
+// { found, file, version, old, signedIn } where signedIn is true, false, or null (couldn't tell).
+// --claude <file> (tests: a fake) replaces the search; --no-claude means "not installed" (tests).
+function detectClaude(opts, { auth = true } = {}) {
+  if (opts['no-claude'] !== undefined) return { found: false };
+  let candidates = [];
+  if (opts.claude) candidates = [path.resolve(opts.claude)];
+  else {
+    const w = quiet(['where.exe'], ['claude'], 10000);
+    if (w.code === 0) candidates = w.out.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    const native = path.join(process.env.USERPROFILE || os.homedir(), '.local', 'bin', 'claude.exe');
+    if (fs.existsSync(native)) candidates.push(native);
+    candidates.sort((a, b) => (b.toLowerCase().endsWith('.exe') ? 1 : 0) - (a.toLowerCase().endsWith('.exe') ? 1 : 0));
+  }
+  const file = candidates.find(f => fs.existsSync(f));
+  if (!file) return { found: false };
+  const cmd = claudeCommand(file);
+  if (!cmd) return { found: true, file, version: null, old: false, signedIn: null };
+  const v = quiet(cmd, ['--version'], 30000);
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(v.out);
+  const version = m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  let old = false;
+  if (version) for (let i = 0; i < 3; i++) { if (version[i] !== MIN_CLAUDE[i]) { old = version[i] < MIN_CLAUDE[i]; break; } }
+  // `claude auth status` exits 0 when logged in, 1 when not (Claude Code's CLI reference). Its
+  // output names the account: it is never printed or logged.
+  let signedIn = null;
+  if (auth && version && !old) {
+    const a = quiet(cmd, ['auth', 'status'], 20000);
+    if (!a.timedOut) signedIn = a.code === 0 ? true : a.code === 1 ? false : null;
+  }
+  return { found: true, file, version: version ? version.join('.') : null, old, signedIn };
+}
+
+// The one state the user is in, and the next step for it.
+function claudeState(c, setUp) {
+  if (!c.found) return { state: 'not-installed', next: `Claude Code isn't installed. To use it with ClaudeDevStudio, ${INSTALL_HELP}; then run "claude" once in a new terminal to sign in, and set it up (the tray app's menu, or claudedev claude-code setup).` };
+  if (c.old) return { state: 'too-old', next: `Claude Code ${c.version} is too old (ClaudeDevStudio's phases need ${MIN_CLAUDE.join('.')} or later): run "claude update" in a terminal.` };
+  if (c.signedIn === false) return { state: 'not-signed-in', next: 'Claude Code is installed but not signed in: run "claude" once in a terminal and sign in.' };
+  if (!setUp) return { state: 'not-set-up', next: `Claude Code ${c.version || ''} is installed${c.signedIn ? ' and signed in' : ' (sign in once by running "claude" if you haven\'t)'}, but ClaudeDevStudio isn't set up in it: run claudedev claude-code setup (or the tray app's "Set up Claude Code...").`.replace('  ', ' ') };
+  return { state: 'ready', next: `Ready: Claude Code ${c.version || ''} is installed${c.signedIn ? ', signed in,' : ''} and set up for ClaudeDevStudio${c.signedIn === null ? ' (sign in once by running "claude" if you haven\'t)' : ''}.`.replace('  ', ' ') };
+}
+
+// node cds-claude-code.js detect: for the installer. Exit 0 found and new enough, 3 too old, 4 not
+// found. One line on stdout.
+function detect(opts) {
+  const c = detectClaude(opts, { auth: false });
+  if (!c.found) { say(`Claude Code: not found. To use it, ${INSTALL_HELP}.`); return 4; }
+  if (c.old) { say(`Claude Code ${c.version} found at ${c.file}: older than ${MIN_CLAUDE.join('.')} (run "claude update").`); return 3; }
+  say(`Claude Code ${c.version || '(version unknown)'} found at ${c.file}.`);
+  return 0;
+}
+
+// The user's "no" (from P9): remove --remember-choice (the tray app and the CLI pass it) leaves a
+// marker beside this script, so the installer's default ("set it up when Claude Code is there")
+// doesn't put it back on an upgrade; setup takes the marker away.
+const DECLINED = path.join(__dirname, 'claude-code-declined.txt');
+
 function runClaude(claudeExe, args) {
   try {
     const out = execFileSync(claudeExe, args, { encoding: 'utf8', timeout: 60000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -303,6 +392,7 @@ function setup(opts) {
     say(`  Hooks: already set up; ${p.settingsFile} not changed.`);
   }
   if (settings.data.disableAllHooks === true) say('  Note: this settings file has "disableAllHooks": true, so Claude Code runs no hooks until that is removed.');
+  if (opts['if-set-up'] === undefined && fs.existsSync(DECLINED)) { try { fs.unlinkSync(DECLINED); } catch { /* best effort */ } }
   say('  Done. New Claude Code sessions load the project\'s memory at the start. Undo with: claudedev claude-code remove');
   return 0;
 }
@@ -341,6 +431,9 @@ function remove(opts) {
     saveIfChanged(p.settingsFile, settings.data, withoutCds(settings.data).settings, settings.style, true);
     say(`  Hooks: removed CDS's from ${p.settingsFile}; everything else kept.`);
   }
+  if (opts['remember-choice']) {
+    try { fs.writeFileSync(DECLINED, `Claude Code setup removed by the user on ${localTime()}; the installer won't set it up again by itself.\r\n`, 'utf8'); say('  Remembered: the installer won\'t set it up again by itself (setup undoes that).'); } catch { /* best effort */ }
+  }
   return 0;
 }
 
@@ -348,9 +441,19 @@ function status(opts) {
   const p = paths(opts);
   say('ClaudeDevStudio and Claude Code:');
   const { settings, claude, problems } = readBoth(p);
-  for (const x of problems) say(`  Problem: ${x}.`);
   let w = null;
   try { w = wanted(opts); } catch { /* status without --node/--mcp: presence only */ }
+  // The state first (P9): not installed, too old, not signed in, not set up, ready.
+  const cur0 = !claude.invalid && isObj(claude.data.mcpServers) ? claude.data.mcpServers : {};
+  const serversOk = SERVERS.every(n => cur0[n] !== undefined && (!w || sameServer(cur0[n], w.servers[n])));
+  const hooksOk = !settings.invalid && HOOKS.every(spec => cdsHooksIn(settings.data).some(x => x.event === spec.event));
+  const c = detectClaude(opts);
+  const st = claudeState(c, serversOk && hooksOk);
+  say(`  State: ${st.state}`);
+  say(`  Claude Code: ${c.found ? `${c.version || 'version unknown'} at ${c.file}${c.old ? ' (too old)' : ''}; ${c.signedIn === true ? 'signed in' : c.signedIn === false ? 'not signed in' : 'sign-in not checked'}` : 'not found'}`);
+  say(`  Next: ${st.next}`);
+  if (fs.existsSync(DECLINED)) say('  (The user removed the setup before: the installer won\'t set it up by itself.)');
+  for (const x of problems) say(`  Problem: ${x}.`);
   if (!claude.invalid) {
     const cur = isObj(claude.data.mcpServers) ? claude.data.mcpServers : {};
     for (const n of SERVERS) {
@@ -374,12 +477,14 @@ function status(opts) {
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.log) logFile = path.resolve(opts.log);
-  if (!['setup', 'remove', 'status'].includes(opts.action) || (opts.action === 'setup' && (!opts.node || !opts.mcp))) {
+  if (!['setup', 'remove', 'status', 'detect'].includes(opts.action) || (opts.action === 'setup' && (!opts.node || !opts.mcp))) {
     console.error('usage: node cds-claude-code.js setup --node <node.exe> --mcp <mcp-server dir> [--settings <file>] [--claude-json <file>] [--no-claude-cli] [--log <file>]');
-    console.error('       node cds-claude-code.js remove|status [the same options]');
+    console.error('       node cds-claude-code.js remove|status [the same options] [--remember-choice] [--claude <file> | --no-claude]');
+    console.error('       node cds-claude-code.js detect [--claude <file> | --no-claude]   exit 0 found, 3 too old, 4 not found');
     return 1;
   }
   try {
+    if (opts.action === 'detect') return detect(opts);
     if (opts.action === 'setup') return setup(opts);
     if (opts.action === 'remove') return remove(opts);
     return status(opts);
@@ -390,4 +495,4 @@ function main() {
 }
 
 if (require.main === module) process.exitCode = main();
-module.exports = { setup, remove, status, withCds, withoutCds, readJson, render, HOOKS, SERVERS };
+module.exports = { setup, remove, status, detect, detectClaude, claudeState, withCds, withoutCds, readJson, render, HOOKS, SERVERS };

@@ -242,6 +242,17 @@ function Get-InstallLogLines {
     return @(Get-Content -LiteralPath $logPath | Select-Object -Skip $script:InstallLogStart)
 }
 
+# The last install's finish text (it spans several lines: from "Finish page:" up to "Installation complete!").
+function Get-FinishText {
+    $fin = @(); $inFin = $false
+    foreach ($l in (Get-InstallLogLines)) {
+        if ($l -match 'Finish page:') { $inFin = $true; $fin = @() }
+        elseif ($l -match 'Installation complete!') { $inFin = $false }
+        if ($inFin -and $l.Trim()) { $fin += $l.Trim() }
+    }
+    return ($fin -join ' ')
+}
+
 # Runs Uninstall.exe /S and waits for its temp copy to finish. Returns @{ code; running; secs }.
 function Run-Uninstaller {
     $un = Join-Path $Inst 'Uninstall.exe'
@@ -493,7 +504,10 @@ try {
     $al = Get-InstallLogLines
     $Info.installLogA = ($al | Where-Object { $_ -match '\.NET|Node|Windows App Runtime' }) -join ' / '
     Check-Program $S
-    Check $S 'a silent install without /CLAUDECODE=1 leaves Claude Code alone (opt-in)' ((-not (Test-Path $ClaudeSettings)) -and (-not (Test-Path $ClaudeJson))) "settings.json exists: $(Test-Path $ClaudeSettings); .claude.json exists: $(Test-Path $ClaudeJson)"
+    Check $S 'no Claude Code on this PC: a silent install leaves its settings alone' ((-not (Test-Path $ClaudeSettings)) -and (-not (Test-Path $ClaudeJson))) "settings.json exists: $(Test-Path $ClaudeSettings); .claude.json exists: $(Test-Path $ClaudeJson)"
+    $finA = Get-FinishText
+    $ccA = @($al | Where-Object { $_ -match '\[setup\] Claude Code:' })
+    Check $S 'no Claude Code: the finish text says how to get it (the install command) and that the tray app sets it up later' (($finA -match 'Claude Code is not installed') -and ($finA -match 'irm https://claude\.ai/install\.ps1') -and ($finA -match 'tray app') -and (($ccA -join ' ') -match 'not found')) "$($ccA -join ' / ') // $finA"
     $dl = Join-Path $Res 'A-dotnet-install.log'
     if (Test-Path $dl) { $Info.dotnetGapsA = Get-LogGaps $dl }
     Check-Config $S 'expect-cds' 'config: both CDS entries (full node.exe path, files exist); keep-me, preferences, someOtherSetting unchanged; no BOM'
@@ -654,6 +668,39 @@ try {
     $j = & $ccFiles 'expect-cds'
     Check $S 'a silent install with /CLAUDECODE=1 sets Claude Code up (seeded entries kept)' ([bool]$j.ok) "hooks: $($j.cdsHooks -join ', '); $($j.problems -join ' | ')"
     Stop-CdsProcesses
+
+    # 8. (P9) Set up by default when Claude Code is there. The sandbox has no Claude Code, so one is
+    # simulated: a copy of node.exe as %USERPROFILE%\.local\bin\claude.exe (where Claude Code's native
+    # installer puts it) answers "--version" with Node's 26.13.1, which the installer reads as a
+    # Claude Code new enough (2.1 or later). Nothing else runs it: setup edits ~/.claude.json itself.
+    $u = Run-Uninstaller
+    $j = & $ccFiles 'expect-seed'
+    Check $S 'P9 start: uninstalled, both files as seeded' ($u.code -eq 0 -and $j.ok) "uninstaller exit $($u.code); $($j.problems -join ' | ')"
+    $fakeDir = Join-Path $env:USERPROFILE '.local\bin'
+    New-Item -ItemType Directory -Force -Path $fakeDir | Out-Null
+    Copy-Item $Node (Join-Path $fakeDir 'claude.exe') -Force
+    Run-Installer $S '/S'
+    $el = Get-InstallLogLines
+    $j = & $ccFiles 'expect-cds'
+    $ccE = @($el | Where-Object { $_ -match '\[setup\] Claude Code:|Setting up Claude Code' })
+    Check $S 'Claude Code found: a plain silent install sets it up (the new default; seeded entries kept)' ($j.ok -and (($ccE -join ' ') -match 'found at') -and (($ccE -join ' ') -match 'found; silent install')) "$($ccE -join ' / '); hooks: $($j.cdsHooks -join ', '); $($j.problems -join ' | ')"
+    $finE = Get-FinishText
+    Check $S 'Claude Code found: the finish text says the ticked box sets it up' ($finE -match 'Claude Code was found: the ticked box') $finE
+    $r = Invoke-Tool $cli 'claude-code status' 120
+    Check $S 'claudedev claude-code status: a State line and the next step' ($r.code -eq 0 -and $r.out -match 'State: (ready|not-signed-in|not-set-up)' -and $r.out -match 'Next: ') (($r.out -split "`n" | Select-Object -First 4) -join ' / ')
+    Stop-CdsProcesses
+    $r = Invoke-Tool $cli 'claude-code remove' 120
+    $declined = Test-Path (Join-Path $Inst 'claude-code-declined.txt')
+    Run-Installer $S '/S'
+    $j = & $ccFiles 'expect-seed'
+    Check $S 'the user removed it (claudedev claude-code remove): the next silent install leaves it out' ($declined -and $j.ok) "declined marker: $declined; $($j.problems -join ' | ')"
+    Stop-CdsProcesses
+    Remove-Item (Join-Path $Inst 'claude-code-declined.txt') -Force -ErrorAction SilentlyContinue
+    Run-Installer $S '/S /CLAUDECODE=0'
+    $j = & $ccFiles 'expect-seed'
+    Check $S '/CLAUDECODE=0: a silent install with Claude Code there leaves it out' ([bool]$j.ok) "$($j.problems -join ' | ')"
+    Stop-CdsProcesses
+    Remove-Item (Join-Path $fakeDir 'claude.exe') -Force -ErrorAction SilentlyContinue
     }
 
     # ---------------------------------------------------------------- F. a PC that never had Claude Desktop (P5)

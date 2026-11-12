@@ -21,8 +21,28 @@ namespace ClaudeDevStudio.Dashboard
             NavView.SelectedItem = NavView.MenuItems[0];
         }
 
+        // The Phases page (P9), on a project and phase when given (the tray's notification, or
+        // ClaudeDevStudio.Dashboard.exe --phases [<project> [<phase>]]).
+        public void NavigateToPhases(string? project, string? phase)
+        {
+            _navigatingByCode = true;
+            foreach (var item in NavView.MenuItems)
+            {
+                if (item is NavigationViewItem navItem && navItem.Tag?.ToString() == "phases")
+                {
+                    NavView.SelectedItem = navItem;
+                    break;
+                }
+            }
+            _navigatingByCode = false;
+            ContentFrame.Navigate(typeof(PhasesPage), new PhasesPage.Target(project, phase));
+        }
+
+        private bool _navigatingByCode;
+
         private void NavView_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
         {
+            if (_navigatingByCode) return;
             if (args.IsSettingsSelected)
             {
                 ContentFrame.Navigate(typeof(SettingsPage));
@@ -34,6 +54,9 @@ namespace ClaudeDevStudio.Dashboard
                 {
                     case "projects":
                         ContentFrame.Navigate(typeof(ProjectsPage));
+                        break;
+                    case "phases":
+                        ContentFrame.Navigate(typeof(PhasesPage), new PhasesPage.Target(null, null));
                         break;
                     case "activity":
                         ContentFrame.Navigate(typeof(ActivityPage));

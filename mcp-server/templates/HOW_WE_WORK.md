@@ -14,6 +14,7 @@
    - **Conventions:** this phase's rules, on top of `docs\CONVENTIONS.md`.
    - **The work:** numbered items, each specific enough to check.
    - **Verification:** the builds, tests and checks that prove it.
+   - **Questions:** what the phase decides by itself (the safest reading that keeps the rules, written down in the output) and when it stops to ask instead: only for a real decision, with a `QUESTION:` block (see "Asking a question" below).
    - **On completion:** the output file, the ground truth update, the commit.
 2. **Do.** Claude Code carries out the prompt and writes `docs\Pn_OUTPUT.md`:
    - first, anything the owner must do;
@@ -30,12 +31,26 @@ One prompt, one concern. A prompt that grows too big becomes two phases.
 
 - **The prompt names four things:** its scope (the files it may change and create), what it must never touch, how to verify the work, and its output file (`docs\Pn_OUTPUT.md`).
 - **Long steps stay in the foreground.** Builds, installers and test suites run as foreground commands with a timeout long enough for them, or are started and then checked in a loop in the same turn. A phase never ends its turn to wait for something running in the background: nobody is there to wake it up, and the work is left half done.
-- **Running it from a chat** (Claude Desktop with ClaudeDevStudio, Windows):
-  1. `claudedev_phase_start` with the project folder and the phase (for example `P3`). It starts Claude Code on `docs\P3_prompt.md`.
-  2. `claudedev_phase_status` every 15 to 20 minutes: running or finished, what it is doing, any refused tools.
-  3. If it finished with a question, answer with `claudedev_phase_reply`.
+- **Asking a question.** When the phase truly needs a decision, it ends its turn with a block like this, and stops there:
+
+  ```
+  QUESTION: Should the export keep the old file names, or switch to the new scheme?
+  1. Keep the old names: nothing else changes; the inconsistency stays.
+  2. Switch to the new scheme: consistent, but two scripts that read the old names must change too.
+  RECOMMENDATION: 2, because the two scripts are in this phase's scope anyway.
+  ```
+
+  The question in one or two sentences; numbered options, each with its consequence in one line; the option it would pick and why. It is not a question when the prompt's rules already decide it: then the phase decides, and says so in its output.
+- **Running it from a chat** (Claude Desktop with ClaudeDevStudio, Windows), in one of three modes:
+  - **Collaborative** (the default): Claude Code runs headless. When it asks something, Claude in the chat answers by itself only when the answer follows from the ground truth or decisions already made, is easily undone, and is technical; anything that changes the scope, the cost or the product's direction, can't be undone, or is a matter of taste goes to the owner, with the options and a recommendation. Either way, the chat says what was asked and what was answered.
+  - **Delegated:** headless; Claude in the chat answers every question itself and tells the owner afterwards.
+  - **Manual:** a Claude Code window opens in the project with the prompt as its first message; the owner watches it and approves what it asks.
+
+  1. `claudedev_phase_start` with the project folder, the phase (for example `P3`) and the mode. It starts Claude Code on `docs\P3_prompt.md`.
+  2. `claudedev_phase_status` every 15 to 20 minutes: running or finished, what it is doing, any refused tools, and a `QUESTION:` block word for word.
+  3. If it finished with a question, answer it as the mode says, with `claudedev_phase_reply`.
   4. If it goes wrong, `claudedev_phase_stop`.
-  5. When it has finished, read `docs\P3_OUTPUT.md` and check the work before writing the next prompt.
+  5. When it has finished, read `docs\P3_OUTPUT.md` and check the work before writing the next prompt. Status's "Open it" line (`claude --resume <session>`) opens the whole conversation in Claude Code.
 
 ## Where ClaudeDevStudio fits
 

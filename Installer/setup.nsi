@@ -12,11 +12,18 @@
 ;   1024 characters, too short to read and rewrite a long PATH safely);
 ; - the TrayApp auto-start entry is written on a first install only.
 ;
-; Claude Code (from v1.4.0) is opt-in: cds-claude-code.js adds CDS's hooks and servers to the
-; user's Claude Code settings only when the finish page's unticked box is ticked, or a silent
-; install is given /CLAUDECODE=1. An install where it is already set up refreshes its paths
-; (setup --if-set-up never turns it on). The uninstaller takes out only CDS's entries.
-;   ClaudeDevStudio-Setup.exe /S /CLAUDECODE=1
+; Claude Code (from v1.6.0, P9: Dan's "the Claude Code integration is a core feature"): the
+; installer looks for Claude Code (cds-claude-code.js detect: where claude, then
+; %USERPROFILE%\.local\bin\claude.exe, and its version). Found and 2.1 or later: the finish page's
+; "Also set up Claude Code" box is ticked (still visible; the user can untick it), and a silent
+; install sets it up unless given /CLAUDECODE=0. Not found (or too old): the box is hidden and the
+; finish text says how to get it and that the tray app can set it up later. /CLAUDECODE=1 sets it
+; up whatever was found (as before). A user who removed the setup (tray app or claudedev
+; claude-code remove: claude-code-declined.txt) gets the box unticked and no silent setup.
+; An install where it is already set up refreshes its paths (setup --if-set-up never turns it on).
+; The uninstaller takes out only CDS's entries.
+;   ClaudeDevStudio-Setup.exe /S                  (sets up Claude Code if it is there)
+;   ClaudeDevStudio-Setup.exe /S /CLAUDECODE=0    (doesn't)
 
 Unicode True
 SetCompressor /SOLID lzma
@@ -47,7 +54,9 @@ SetCompressor /SOLID lzma
 Var NodeExe       ; full path to node.exe, or "" when there is none
 Var FinishText    ; the finish page text (set at the end of the install)
 Var NoClaudeDesktop ; "1" when Claude Desktop was never set up on this account (P5)
-Var ClaudeCode    ; "1" when /CLAUDECODE=1 was given
+Var ClaudeCode    ; "1" when /CLAUDECODE=1 was given, "0" for /CLAUDECODE=0
+Var CCFound       ; Claude Code: "ok" (2.1 or later), "old", "none" (cds-claude-code.js detect)
+Var CCLine        ; the finish text's Claude Code sentence
 
 ;---------------------------------------------------------------------------
 ; MUI Settings
@@ -67,16 +76,16 @@ Var ClaudeCode    ; "1" when /CLAUDECODE=1 was given
 ; The installer runs elevated; the tray app must not, so Explorer (the user's own, un-elevated
 ; shell) starts it.
 !define MUI_FINISHPAGE_RUN_FUNCTION StartTrayAppUnelevated
-; The second box: Claude Code, unticked (opt-in).
+; The second box: Claude Code, ticked when Claude Code was found (FinishPageShow hides or unticks it).
 !define MUI_FINISHPAGE_SHOWREADME          ""
-!define MUI_FINISHPAGE_SHOWREADME_TEXT     "Also set up Claude Code (optional; undo any time)"
-!define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
+!define MUI_FINISHPAGE_SHOWREADME_TEXT     "Also set up Claude Code (recommended; undo any time)"
 !define MUI_FINISHPAGE_SHOWREADME_FUNCTION FinishClaudeCodeSetup
 !define MUI_FINISHPAGE_LINK         "View on GitHub"
 !define MUI_FINISHPAGE_LINK_LOCATION "${PRODUCT_URL}"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_INSTFILES
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW FinishPageShow
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -137,6 +146,20 @@ Function RunClaudeCodeSetup
   ${EndIf}
   nsExec::ExecToLog '"$NodeExe" "${INSTALL_DIR}\cds-claude-code.js" setup --node "$NodeExe" --mcp "${INSTALL_DIR}\mcp-server" --log "${INSTALL_DIR}\install.log"'
   Pop $0
+FunctionEnd
+
+; The finish page: the Claude Code box only when Claude Code (2.1 or later) was found, ticked unless
+; the user removed the setup before.
+Function FinishPageShow
+  ${If} $CCFound != "ok"
+  ${OrIf} $ClaudeCode == "1"
+  ${OrIf} $ClaudeCode == "0"
+    ; Not there (the finish text says how to get it), or already set up by /CLAUDECODE=1.
+    ShowWindow $mui.FinishPage.ShowReadme ${SW_HIDE}
+    SendMessage $mui.FinishPage.ShowReadme ${BM_SETCHECK} 0 0
+  ${ElseIf} ${FileExists} "${INSTALL_DIR}\claude-code-declined.txt"
+    SendMessage $mui.FinishPage.ShowReadme ${BM_SETCHECK} 0 0
+  ${EndIf}
 FunctionEnd
 
 ; The finish page's "Also set up Claude Code" box.
@@ -293,9 +316,30 @@ Section "Install" SecMain
   nsExec::ExecToLog '"${POWERSHELL}" -NoProfile -ExecutionPolicy Bypass -File "${INSTALL_DIR}\cds-vsix.ps1" -Action install -Vsix "${INSTALL_DIR}\VSExtension\CdsVsBridge.vsix" -Log "${INSTALL_DIR}\install.log"'
   Pop $0
 
+  ;--- Step 7b: Is Claude Code there? (P9; decides the finish page's box and a silent install's setup) ---
+  StrCpy $CCFound "none"
+  ${If} $NodeExe != ""
+    nsExec::ExecToStack '"$NodeExe" "${INSTALL_DIR}\cds-claude-code.js" detect'
+    Pop $0
+    Pop $1
+    ${STEP} "Claude Code: $1"
+    ${If} $0 == "0"
+      StrCpy $CCFound "ok"
+    ${ElseIf} $0 == "3"
+      StrCpy $CCFound "old"
+    ${EndIf}
+  ${EndIf}
+  ${If} $CCFound == "ok"
+    StrCpy $CCLine "Claude Code was found: the ticked box below also sets it up for ClaudeDevStudio (its sessions load the project's memory, and chats can run phases in it; your settings are backed up first; untick to skip, undo from the tray app)."
+  ${ElseIf} $CCFound == "old"
+    StrCpy $CCLine "Claude Code is older than 2.1: run $\"claude update$\" in a terminal, then set it up from the tray app's menu."
+  ${Else}
+    StrCpy $CCLine "Claude Code is not installed. To use it with ClaudeDevStudio: in PowerShell run irm https://claude.ai/install.ps1 | iex (see code.claude.com/docs/en/setup), run $\"claude$\" once to sign in, then set it up from the tray app's menu."
+  ${EndIf}
+
   ;--- Step 8: Claude Desktop's config: add CDS's two entries, keep everything else ---
   Delete "${INSTALL_DIR}\${MANUAL_FILE}"
-  StrCpy $FinishText "ClaudeDevStudio is installed.$\r$\n$\r$\nQuit Claude Desktop fully (tray icon, Quit) and reopen it. Then ask Claude: $\"Load CDS for C:\path\to\my\project$\".$\r$\n$\r$\nIf you use Visual Studio, reopen it too.$\r$\n$\r$\nOptional: if you use Claude Code, the second box below adds CDS's servers and four hooks to your Claude Code settings, so its sessions load the project's memory by themselves (backed up first; undo from the tray app)."
+  StrCpy $FinishText "ClaudeDevStudio is installed.$\r$\n$\r$\nQuit Claude Desktop fully (tray icon, Quit) and reopen it. Then ask Claude: $\"Load CDS for C:\path\to\my\project$\".$\r$\n$\r$\nIf you use Visual Studio, reopen it too.$\r$\n$\r$\n$CCLine"
   ; Claude Desktop never set up on this account (P5): no %APPDATA%\Claude and no packaged (MSIX)
   ; Claude. cds-config.js still creates the file with CDS's two servers, which Claude Desktop reads
   ; once it is installed; the finish page says what to do.
@@ -309,7 +353,7 @@ Section "Install" SecMain
   ${EndIf}
   ${If} $NoClaudeDesktop == "1"
     ${STEP} "Claude Desktop is not installed on this account yet: its settings file will be created with only ClaudeDevStudio's two servers."
-    StrCpy $FinishText "ClaudeDevStudio is installed.$\r$\n$\r$\nClaude Desktop is not installed yet. ClaudeDevStudio has already added itself to Claude Desktop's settings, so: install Claude Desktop from https://claude.ai/download, sign in, then quit it fully (tray icon, Quit) and reopen it once. Then ask Claude: $\"Load CDS for C:\path\to\my\project$\".$\r$\n$\r$\nOptional: if you use Claude Code, the second box below adds CDS's servers and four hooks to your Claude Code settings, so its sessions load the project's memory by themselves (backed up first; undo from the tray app)."
+    StrCpy $FinishText "ClaudeDevStudio is installed.$\r$\n$\r$\nClaude Desktop is not installed yet. ClaudeDevStudio has already added itself to Claude Desktop's settings, so: install Claude Desktop from https://claude.ai/download, sign in, then quit it fully (tray icon, Quit) and reopen it once. Then ask Claude: $\"Load CDS for C:\path\to\my\project$\".$\r$\n$\r$\n$CCLine"
   ${EndIf}
   ${If} $NodeExe == ""
     StrCpy $FinishText "ClaudeDevStudio's files are installed, but Node.js was not found, so it could not add itself to Claude Desktop.$\r$\n$\r$\nInstall Node.js LTS from https://nodejs.org and run this installer again."
@@ -325,9 +369,17 @@ Section "Install" SecMain
     ${EndIf}
   ${EndIf}
 
-  ;--- Step 8b: Claude Code (opt-in) ---
+  ;--- Step 8b: Claude Code ---
   ${If} $ClaudeCode == "1"
     ${STEP} "Setting up Claude Code (/CLAUDECODE=1)..."
+    Call RunClaudeCodeSetup
+    ${STEP} "Claude Code setup done (code $0)."
+  ${ElseIf} ${Silent}
+  ${AndIf} $ClaudeCode != "0"
+  ${AndIf} $CCFound == "ok"
+  ${AndIfNot} ${FileExists} "${INSTALL_DIR}\claude-code-declined.txt"
+    ; A silent install sets it up when Claude Code is there (P9), unless /CLAUDECODE=0 or the user removed it before.
+    ${STEP} "Setting up Claude Code (found; silent install)..."
     Call RunClaudeCodeSetup
     ${STEP} "Claude Code setup done (code $0)."
   ${ElseIf} $NodeExe != ""
@@ -436,6 +488,7 @@ Section "Uninstall"
   RMDir /r "${INSTALL_DIR}\VSExtension"
   Delete   "${INSTALL_DIR}\cds-config.js"
   Delete   "${INSTALL_DIR}\cds-claude-code.js"
+  Delete   "${INSTALL_DIR}\claude-code-declined.txt"
   Delete   "${INSTALL_DIR}\hooks.log"
   Delete   "${INSTALL_DIR}\hook_cache.json"
   Delete   "${INSTALL_DIR}\cds-vsix.ps1"

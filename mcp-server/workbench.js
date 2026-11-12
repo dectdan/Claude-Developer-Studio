@@ -239,12 +239,13 @@ class WorkbenchServer {
         // P7: run a phase (docs\<phase>_prompt.md) in Claude Code, headless. cds-phase.js.
         {
           name: 'claudedev_phase_start',
-          description: 'Windows. Start Claude Code headless on docs\\<phase>_prompt.md in a project (the file must exist). It is an agent that reads, edits and runs commands there with the allowed tools, without asking (acceptEdits; never bypasses permissions), on the user\'s Claude Code sign-in and plan. Returns at once; one phase per project; logs in docs\\.',
+          description: 'Windows. Start Claude Code on docs\\<phase>_prompt.md in a project (the file must exist), on the user\'s sign-in and plan. Headless modes: an agent that reads, edits and runs commands there with the allowed tools, without asking (acceptEdits; never bypasses permissions). Returns at once; one phase per project; logs in docs\\.',
           inputSchema: {
             type: 'object',
             properties: {
               project_path: { type: 'string' },
               phase: { type: 'string', description: 'e.g. P8' },
+              mode: { type: 'string', enum: ['collaborative', 'delegated', 'manual'], description: 'collaborative (default, headless): you answer its questions only when the answer follows from the ground truth, is easily undone and technical, else ask the user; delegated (headless): you answer; manual: a visible Claude Code window, the user approves' },
               model: { type: 'string', description: 'Optional, e.g. claude-opus-5-5' },
               effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
               allowed_tools: { type: 'string', description: 'Optional, comma-separated; default: file, shell and web tools plus CDS memory' },
@@ -254,7 +255,7 @@ class WorkbenchServer {
         },
         {
           name: 'claudedev_phase_status',
-          description: 'Status of a phase run: running/finished/stopped, minutes, tool calls, permission denials, Claude\'s latest text, the result, whether it ends in a question, whether docs\\<phase>_OUTPUT.md exists.',
+          description: 'Status of a phase run: running/finished/stopped, mode, minutes, tool calls, permission denials, Claude\'s latest text, the result, a QUESTION block verbatim (relay it as written), docs\\<phase>_OUTPUT.md, how to open the session.',
           inputSchema: {
             type: 'object',
             properties: { project_path: { type: 'string' }, phase: { type: 'string', description: 'Default: the newest' } },
@@ -272,10 +273,10 @@ class WorkbenchServer {
         },
         {
           name: 'claudedev_phase_stop',
-          description: 'Stop a phase run: Ctrl+C first (Claude Code ends its turn and runs its SessionEnd hooks), else ends its process tree by force; releases the project\'s lock. Touches no other process.',
+          description: 'Stop a phase run: Ctrl+C first (Claude Code ends its turn and runs its SessionEnd hooks), else ends its process tree by force; releases the project\'s lock. Touches no other process. A manual run: asks the user to close its window unless force.',
           inputSchema: {
             type: 'object',
-            properties: { project_path: { type: 'string' }, phase: { type: 'string' } },
+            properties: { project_path: { type: 'string' }, phase: { type: 'string' }, force: { type: 'boolean', description: 'Manual mode only: end the user\'s window' } },
             required: ['project_path', 'phase'],
           },
         },

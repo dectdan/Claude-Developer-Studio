@@ -34,13 +34,28 @@ namespace ClaudeDevStudio.TrayApp
         private Process? _mcpServerProcess;
         private UpdateInfo? _availableUpdate;
         private static readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        // What clicking the current balloon does (an update's download page, or a phase on the Dashboard).
+        private Action? _balloonAction;
+        private PhaseWatcher? _phaseWatcher;
+        private ToolStripMenuItem _phaseNotifyItem = null!;
+        // Claude Code's state from `claudedev claude-code status` (P9): not-installed, too-old,
+        // not-signed-in, not-set-up, ready; null until the first check has run.
+        private string? _ccState;
+        private string _ccNext = "";
+        private string _ccVersion = "";
+        private DateTime _ccChecked = DateTime.MinValue;
+        private int _ccChecking;
+        private readonly System.Threading.SynchronizationContext? _ui;
 
         public TrayApplication()
         {
             InitializeTrayIcon();
+            _ui = System.Threading.SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
             StartMCPServer();
             CheckFirstRun();
-            
+            StartPhaseWatcher();
+            RefreshClaudeCodeState();
+
             // Check for updates asynchronously (don't block startup)
             Task.Run(async () => await CheckForUpdatesAsync());
         }
@@ -49,12 +64,20 @@ namespace ClaudeDevStudio.TrayApp
         {
             _contextMenu = new ContextMenuStrip();
             _contextMenu.Items.Add("Open Dashboard", null, OnOpenDashboard);
+            _contextMenu.Items.Add("Phases...", null, (s, e) => OpenDashboardPhases(null, null));
             _contextMenu.Items.Add("View Activity", null, OnViewActivity);
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add("Link Claude Desktop...", null, OnLinkClaudeDesktop);
-            _claudeCodeItem = new ToolStripMenuItem("Set up Claude Code...", null, OnClaudeCode);
+            _claudeCodeItem = new ToolStripMenuItem("Claude Code...", null, OnClaudeCode);
             _contextMenu.Items.Add(_claudeCodeItem);
-            _contextMenu.Opening += (s, e) => _claudeCodeItem.Text = ClaudeCodeIsSetUp() ? "Remove from Claude Code..." : "Set up Claude Code...";
+            _contextMenu.Opening += (s, e) =>
+            {
+                UpdateClaudeCodeItem();
+                if ((DateTime.Now - _ccChecked).TotalSeconds > 60) RefreshClaudeCodeState();
+            };
+            _phaseNotifyItem = new ToolStripMenuItem("Phase notifications") { CheckOnClick = true, Checked = PhaseNotificationsOn() };
+            _phaseNotifyItem.CheckedChanged += (s, e) => SetPhaseNotifications(_phaseNotifyItem.Checked);
+            _contextMenu.Items.Add(_phaseNotifyItem);
             _contextMenu.Items.Add("Configure AI Keys...", null, OnConfigureAiKeys);
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add("Pending Approvals (0)", null, OnPendingApprovals);
@@ -94,7 +117,150 @@ namespace ClaudeDevStudio.TrayApp
             };
 
             _trayIcon.DoubleClick += OnOpenDashboard;
-            _trayIcon.BalloonTipClicked += OnUpdateBalloonClicked;
+            _trayIcon.BalloonTipClicked += (s, e) => _balloonAction?.Invoke();
+        }
+
+        // ---------------------------------------------------------------------------------------
+        // Phase notifications (P9): a phase in any project finishes, asks a question, is stopped or
+        // fails -> a Windows notification; clicking it opens the Dashboard's Phases page on it.
+        // ---------------------------------------------------------------------------------------
+
+        private static bool PhaseNotificationsOn()
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(@"Software\ClaudeDevStudio", false);
+                return key?.GetValue("PhaseNotifications") is not int v || v != 0;
+            }
+            catch { return true; }
+        }
+
+        private static void SetPhaseNotifications(bool on)
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.CreateSubKey(@"Software\ClaudeDevStudio");
+                key.SetValue("PhaseNotifications", on ? 1 : 0, RegistryValueKind.DWord);
+            }
+            catch { /* the menu still shows the choice for this session */ }
+        }
+
+        private void StartPhaseWatcher()
+        {
+            _phaseWatcher = new PhaseWatcher();
+            _phaseWatcher.Changed += ev =>
+            {
+                // CDS_TRAY_EVENT_LOG (tests only): each event as a line, whether or not Windows shows it
+                // (Do Not Disturb keeps notifications off the screen).
+                var testLog = Environment.GetEnvironmentVariable("CDS_TRAY_EVENT_LOG");
+                if (!string.IsNullOrEmpty(testLog))
+                {
+                    try { File.AppendAllText(testLog, $"{DateTime.Now:O}\t{(_phaseNotifyItem.Checked ? "shown" : "off")}\t{ev.Title}\t{ev.Text}\t{ev.Project}\t{ev.Phase}{Environment.NewLine}"); } catch { }
+                }
+                if (_trayIcon == null || !_phaseNotifyItem.Checked) return;
+                _balloonAction = () => OpenDashboardPhases(ev.Project, ev.Phase);
+                _trayIcon.ShowBalloonTip(15000, ev.Title, ev.Text, ToolTipIcon.Info);
+            };
+            _phaseWatcher.Start();
+        }
+
+        // The Dashboard on its Phases page (on a project and phase when given).
+        private void OpenDashboardPhases(string? project, string? phase)
+        {
+            var exePath = Path.Combine(DashboardDir(), "ClaudeDevStudio.Dashboard.exe");
+            if (!File.Exists(exePath))
+            {
+                MessageBox.Show("Dashboard not found. Please reinstall ClaudeDevStudio.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            var psi = new ProcessStartInfo(exePath) { UseShellExecute = false };
+            psi.ArgumentList.Add("--phases");
+            if (!string.IsNullOrEmpty(project)) psi.ArgumentList.Add(project);
+            if (!string.IsNullOrEmpty(phase)) psi.ArgumentList.Add(phase);
+            try { Process.Start(psi); }
+            catch (Exception ex) { MessageBox.Show($"Failed to launch Dashboard: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        }
+
+        // ---------------------------------------------------------------------------------------
+        // Claude Code's state (P9), checked in the background: `claudedev claude-code status`.
+        // ---------------------------------------------------------------------------------------
+
+        private static string ClaudeDevExe() => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClaudeDevStudio", "CLI", "claudedev.exe");
+
+        private void RefreshClaudeCodeState()
+        {
+            if (System.Threading.Interlocked.Exchange(ref _ccChecking, 1) == 1) return;
+            Task.Run(() =>
+            {
+                string? state = null, next = "", version = "";
+                try
+                {
+                    var psi = new ProcessStartInfo(ClaudeDevExe())
+                    {
+                        UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
+                    };
+                    psi.ArgumentList.Add("claude-code");
+                    psi.ArgumentList.Add("status");
+                    using var p = Process.Start(psi);
+                    if (p != null)
+                    {
+                        var errTask = p.StandardError.ReadToEndAsync();
+                        var output = p.StandardOutput.ReadToEnd();
+                        p.WaitForExit(60000);
+                        foreach (var raw in output.Split('\n'))
+                        {
+                            var line = raw.Trim();
+                            if (line.StartsWith("State:")) state = line.Substring(6).Trim();
+                            else if (line.StartsWith("Next:")) next = line.Substring(5).Trim();
+                            else if (line.StartsWith("Claude Code:")) version = line.Substring(12).Trim();
+                        }
+                    }
+                }
+                catch { /* the CLI isn't there: fall back to the settings file below */ }
+                _ui?.Post(_ =>
+                {
+                    _ccState = state;
+                    _ccNext = next;
+                    _ccVersion = version;
+                    _ccChecked = DateTime.Now;
+                    System.Threading.Interlocked.Exchange(ref _ccChecking, 0);
+                    UpdateClaudeCodeItem();
+                }, null);
+            });
+        }
+
+        // The menu item offers the next step for the state.
+        private void UpdateClaudeCodeItem()
+        {
+            _claudeCodeItem.Text = _ccState switch
+            {
+                "not-installed" => "Install Claude Code...",
+                "too-old" => "Update Claude Code...",
+                "not-signed-in" => "Sign in to Claude Code...",
+                "not-set-up" => "Set up Claude Code...",
+                "ready" => "Remove from Claude Code...",
+                _ => ClaudeCodeIsSetUp() ? "Remove from Claude Code..." : "Set up Claude Code...",
+            };
+            _claudeCodeItem.ToolTipText = string.IsNullOrEmpty(_ccNext) ? null : _ccNext;
+        }
+
+        // A terminal the user can see, running a command (Windows Terminal if there is one).
+        private static void OpenTerminal(string command)
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var wt = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "WindowsApps", "wt.exe");
+            ProcessStartInfo psi;
+            if (File.Exists(wt))
+            {
+                psi = new ProcessStartInfo(wt) { UseShellExecute = false, WorkingDirectory = home };
+                foreach (var a in new[] { "-d", home, "cmd.exe", "/k", command }) psi.ArgumentList.Add(a);
+            }
+            else
+            {
+                psi = new ProcessStartInfo("cmd.exe") { UseShellExecute = true, WorkingDirectory = home, Arguments = "/k " + command };
+            }
+            Process.Start(psi);
         }
 
         private async Task CheckForUpdatesAsync()
@@ -110,6 +276,7 @@ namespace ClaudeDevStudio.TrayApp
                     // Show balloon notification
                     if (_trayIcon != null)
                     {
+                        _balloonAction = () => OnUpdateBalloonClicked(null, EventArgs.Empty);
                         _trayIcon.BalloonTipTitle = "Update Available";
                         _trayIcon.BalloonTipText = $"ClaudeDevStudio {updateInfo.LatestVersion} is available! Click to download.";
                         _trayIcon.BalloonTipIcon = ToolTipIcon.Info;
@@ -452,7 +619,38 @@ namespace ClaudeDevStudio.TrayApp
         // claudedev claude-code setup | remove and shows what it did. Opt-in: never done silently.
         private void OnClaudeCode(object? sender, EventArgs e)
         {
-            var setUp = ClaudeCodeIsSetUp();
+            // The steps before setup (P9): install, update, sign in. Each says what it will do first.
+            switch (_ccState)
+            {
+                case "not-installed":
+                    if (MessageBox.Show(
+                            "Claude Code isn't installed.\n\n" +
+                            "To install it, open PowerShell and run:\n    irm https://claude.ai/install.ps1 | iex\n\n" +
+                            "Then open a new terminal, run \"claude\" once and sign in, and come back to this menu to set it up. " +
+                            "If Claude Desktop is open, quit it fully and reopen it afterwards, so its tools see Claude Code.\n\n" +
+                            "Open Claude Code's install page now?",
+                            "Install Claude Code", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
+                        Process.Start(new ProcessStartInfo("https://code.claude.com/docs/en/setup") { UseShellExecute = true });
+                    RefreshClaudeCodeState();
+                    return;
+                case "too-old":
+                    if (MessageBox.Show(
+                            $"{_ccNext}\n\nOpen a terminal running \"claude update\" now?",
+                            "Update Claude Code", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
+                        OpenTerminal("claude update");
+                    RefreshClaudeCodeState();
+                    return;
+                case "not-signed-in":
+                    if (MessageBox.Show(
+                            "Claude Code is installed but not signed in.\n\n" +
+                            "Open a terminal running \"claude\" now? Sign in in the browser when it asks, then type /exit. " +
+                            "After that, this menu sets up ClaudeDevStudio in Claude Code.",
+                            "Sign in to Claude Code", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
+                        OpenTerminal("claude");
+                    RefreshClaudeCodeState();
+                    return;
+            }
+            var setUp = _ccState == "ready" || (_ccState == null && ClaudeCodeIsSetUp());
             var question = setUp
                 ? "Remove ClaudeDevStudio from Claude Code?\n\n" +
                   "This takes out only what \"Set up Claude Code\" added: the claudedevstudio and cds-workbench servers " +
@@ -502,6 +700,7 @@ namespace ClaudeDevStudio.TrayApp
                 MessageBox.Show($"Could not run claudedev claude-code:\n{ex.Message}", "Error",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+            RefreshClaudeCodeState();
         }
 
         // The Dashboard folder: InstallDir (written by the installer) + Dashboard. (Before v1.4.0
@@ -642,6 +841,7 @@ namespace ClaudeDevStudio.TrayApp
 
         public void Dispose()
         {
+            _phaseWatcher?.Dispose();
             if (_mcpServerProcess != null && !_mcpServerProcess.HasExited)
             {
                 _mcpServerProcess.Kill();
