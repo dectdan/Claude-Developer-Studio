@@ -36,7 +36,7 @@ $Redirected = Join-Path $Profile0 'RedirectedDocs'
 $UserShellFolders = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
 $ShellFolders     = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
 $Downloads = 'C:\cds\downloads'
-$ExpectVersion = '1.6.0'
+$ExpectVersion = '1.7.0'
 $Scenarios = @('A', 'B', 'C', 'D', 'E', 'F')
 $Networking = $false
 $TimeoutMinutes = 60
@@ -541,8 +541,24 @@ try {
     Check $S 'test key put into qwen_config.json (groq)' ([bool]$set.ok) "$($set.problems -join ' | ')"
     $memDir = Join-Path $docsA 'ClaudeDevStudio\Projects\SandboxProj'
     $memBefore = Get-TreeSnapshot $memDir
+    $bStart = (Get-Date).AddSeconds(-2)
     Run-Installer $S
     $bl = Get-InstallLogLines
+    # P10: the installer backs the whole memory store up before an upgrade.
+    $storeDir = Join-Path $docsA 'ClaudeDevStudio\Backups\store'
+    $up = @(Get-ChildItem -LiteralPath $storeDir -Filter 'ClaudeDevStudio-store-*-upgrade.zip' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $bStart } | Sort-Object LastWriteTime -Descending)
+    $upLine = @($bl | Where-Object { $_ -match 'Memory backup \(exit' }) -join ' / '
+    $vr = if ($up.Count) { Invoke-Tool (Join-Path $Inst 'CLI\claudedev.exe') "backup --verify `"$($up[0].FullName)`"" 120 } else { @{ code = -1; out = 'no pre-upgrade backup' } }
+    $hasProj = $false
+    if ($up.Count) {
+        try {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zf = [System.IO.Compression.ZipFile]::OpenRead($up[0].FullName)
+            $hasProj = @($zf.Entries | Where-Object { $_.FullName -like 'Projects/SandboxProj/*' }).Count -gt 0
+            $zf.Dispose()
+        } catch { }
+    }
+    Check $S 'upgrade: a store backup was made before the upgrade; it opens, every hash matches, and it holds A''s project' ($up.Count -ge 1 -and $vr.code -eq 0 -and $hasProj -and ($upLine -match 'exit 0')) "$(if ($up.Count) { "$($up[0].Name), $($up[0].Length) bytes" } else { "none in $storeDir" }); verify: $(($vr.out -split "`n")[0]); SandboxProj inside: $hasProj; log: $upLine"
     $war = @($bl | Where-Object { $_ -match 'Windows App Runtime' })
     Check $S 'upgrade: the Windows App Runtime is found, not installed again' (($war -join ' ') -match 'already installed' -and -not (($war -join ' ') -match 'Installing bundled')) ($war -join ' / ')
     $net = @($bl | Where-Object { $_ -match '\.NET 8' })
@@ -555,6 +571,27 @@ try {
     Check-Path $S ($pathBeforeCds + ';' + $cliDir) 'user PATH: CLI folder still there once, rest unchanged'
     $v = Invoke-Tool (Join-Path $Inst 'CLI\claudedev.exe') 'version' 60
     Check $S "claudedev version still $ExpectVersion" ($v.code -eq 0 -and $v.out -match $VersionPattern) (($v.out -split "`n")[0])
+    Stop-CdsProcesses
+    }
+
+    # ---------------------------------------------------------------- M. machine to machine (P10)
+    # The host exported a throwaway store (run-sandbox-test.ps1 -HostExport); this "other PC" imports
+    # it and loads the project through the installed memory server.
+    $hostExport = Join-Path $Res 'host-export.zip'
+    if ((Want 'B') -and (Test-Path -LiteralPath $hostExport) -and (Test-Path (Join-Path $Inst 'CLI\claudedev.exe'))) {
+    $S = 'M'
+    Log '=== M. Machine to machine: import the host''s export ==='
+    $cli = Join-Path $Inst 'CLI\claudedev.exe'
+    $m2mMem = Join-Path $docsA 'ClaudeDevStudio\Projects\M2MProj'
+    $dry = Invoke-Tool $cli "import `"$hostExport`" --dry-run" 300
+    Check $S 'import --dry-run of the host''s export: names the project it would add, writes nothing' ($dry.code -eq 0 -and $dry.out -match 'Projects added: 1 \(M2MProj\)' -and -not (Test-Path $m2mMem)) "exit $($dry.code): $(($dry.out -split "`n" | Select-Object -First 4) -join ' / ')"
+    $imp = Invoke-Tool $cli "import `"$hostExport`"" 300
+    Check $S 'import of the host''s export: the project added' ($imp.code -eq 0 -and $imp.out -match 'Projects added: 1' -and (Test-Path (Join-Path $m2mMem 'HANDOFFS.jsonl'))) "exit $($imp.code): $(($imp.out -split "`n" | Select-Object -First 5) -join ' / ')"
+    $proj = 'C:\cds-projects\M2MProj'
+    New-Item -ItemType Directory -Force -Path (Join-Path $proj 'docs') | Out-Null
+    $t = Copy-McpTests
+    $j = Node-Json "`"$t\mcp-probe.mjs`" load `"$Inst\mcp-server\index.js`" `"$proj`" `"M2M handoff written on the host`""
+    Check $S 'claudedev_load in the sandbox shows the host''s project: its handoff and mistake' ($j.ok -and -not $j.isError -and $j.shown -and ($j.text -match 'M2M mistake from the host')) "shown: $($j.shown); $(($j.text -split "`n" | Select-Object -First 6) -join ' / ') $($j.error)"
     Stop-CdsProcesses
     }
 

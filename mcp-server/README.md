@@ -35,6 +35,8 @@ This folder holds the two MCP servers that the installer adds to Claude Desktop 
 
 Every write goes through `%LOCALAPPDATA%\ClaudeDevStudio\CLI\claudedev.exe`. If the CLI fails, the tool says the entry was **not** recorded.
 
+**From 1.7.0 (P10):** the CLI's `load` first merges any OneDrive conflict copies of the project's memory files (`MISTAKES-<PC name>.jsonl`, `Activity\<date>-<PC name>.jsonl`, `session_handoff-<PC name>.md`, and `LESSONS-<PC name>.jsonl` at the root) into the main files, moves them to `Backups\conflicts\`, and prints a `OneDrive: …` line for each; `claudedev_load` shows at most two of those lines in its header (and says if copies are still there, with an older CLI). The readers (`cds-context.js`, `cds-search.js`) also read a copy that isn't merged yet; search never writes, so it leaves the copy where it is. `load` also starts the day's store backup in the background when none was made today (`claudedev backup --auto`; it doesn't wait for it).
+
 ## `cds-workbench` (tools)
 
 `claudedev_vs_get_state`, `claudedev_vs_get_errors`, `claudedev_vs_get_output`, `claudedev_vs_get_events`, `claudedev_vs_get_debugger`, `claudedev_vs_evaluate`, `claudedev_vs_command` (Visual Studio, through the VS Bridge extension; `claudedev_vs_get_output` reads the Build pane by default, `pane: "debug"` a running program's `Debug.WriteLine`/trace output, any other pane by name, and `pane: "list"` names the panes); `display_review`, `display_image` (the Review Panel at `http://127.0.0.1:63000`); `qwen_generate`, `list_models`, `generate_image` (another AI provider, with your own key); `fetch_url`.
@@ -75,7 +77,7 @@ node mcp-server\test\show.mjs claudedev_search "curly quotes PowerShell"   # a s
 node mcp-server\test\show.mjs --tools                                 # the size of tools/list
 ```
 
-The smoke test uses throwaway projects in `%TEMP%` and removes their memory folders afterwards. Its phase checks run a fake Claude Code (`test\fixtures\fake-claude.mjs`, through `CDS_PHASE_CLAUDE`). Its search and lessons checks use a throwaway memory root (`CDS_MEMORY_ROOT`, `CDS_LEGACY_ROOT`: test-only variables, read by the servers, the hook and the CLI; never set them in normal use). See `docs\GROUND_TRUTH.md`, section 10.
+The smoke test uses throwaway projects in `%TEMP%` and removes their memory folders afterwards. With `--cli` (from 1.7.0) the whole run uses a throwaway memory root, so it writes nothing to your real store; give `--cli` the installed `claudedev.exe` to test the installed copy that way. Its phase checks run a fake Claude Code (`test\fixtures\fake-claude.mjs`, through `CDS_PHASE_CLAUDE`). Its search and lessons checks use a throwaway memory root (`CDS_MEMORY_ROOT`, `CDS_LEGACY_ROOT`: test-only variables, read by the servers, the hook and the CLI; never set them in normal use). See `docs\GROUND_TRUTH.md`, section 10.
 
 ## Running by hand
 

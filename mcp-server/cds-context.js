@@ -9,7 +9,7 @@
 import { execFile } from 'child_process';
 import path from 'path';
 import fs from 'fs';
-import { HOME, memoryRoot } from './cds-paths.js';
+import { HOME, memoryRoot, conflictCopyOf } from './cds-paths.js';
 
 const LOCAL = process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local');
 // CDS_CLI_PATH is for tests only (mcp-server\test\smoke.mjs --cli): it points the server at
@@ -106,6 +106,32 @@ function readJsonLines(file) {
   return out;
 }
 
+// The file and any OneDrive conflict copies of it beside it (P10). The 1.7 CLI merges the copies on
+// load before this reads; with an older CLI they are still read, so no entry is missing (duplicates
+// are dropped by the readers).
+function withConflictCopies(dir, file) {
+  const out = [path.join(dir, file)];
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { /* none */ }
+  const base = file.replace(/\.jsonl$/i, '').toLowerCase();
+  for (const n of names) {
+    const c = conflictCopyOf(n);
+    if (c && c.base.toLowerCase() === base && /\.jsonl$/i.test(n)) out.push(path.join(dir, n));
+  }
+  return out;
+}
+
+// The conflict copies still in a project's memory folder (after the CLI's load, which merges them).
+function conflictCopiesIn(dir) {
+  const out = [];
+  for (const d of [dir, path.join(dir, 'Activity')]) {
+    let names = [];
+    try { names = fs.readdirSync(d); } catch { continue; }
+    for (const n of names) if (conflictCopyOf(n)) out.push(n);
+  }
+  return out;
+}
+
 // A FACTS.md or UNCERTAINTIES.md that still holds only the CLI's template has no
 // bullet other than the project path; don't spend context on it.
 function hasRealContent(md) {
@@ -124,7 +150,7 @@ function collectEntries(dirs) {
   for (const dir of dirs) {
     if (!dir || !fs.existsSync(dir)) continue;
     const from = (list) => { for (const e of list) if (e && typeof e === 'object') entrySource.set(e, dir); return list; };
-    mistakes.push(...from(readJsonLines(path.join(dir, 'MISTAKES.jsonl'))));
+    for (const f of withConflictCopies(dir, 'MISTAKES.jsonl')) mistakes.push(...from(readJsonLines(f)));
     const actDir = path.join(dir, 'Activity');
     if (!fs.existsSync(actDir)) continue;
     let files = [];
@@ -455,11 +481,17 @@ function buildContext(projectPath, cliLoad, createdNow, max = LOAD_MAX) {
   const header = [`=== ClaudeDevStudio: ${name} ===`, `Memory folder: ${dir}`];
   if (createdNow) header.push('New project: memory was created just now. Record activities and mistakes as you work.');
   if (cliLoad.code !== 0) header.push(`(claudedev load failed: ${oneLine(cliMessage(cliLoad))})`);
+  // OneDrive conflict copies the CLI's load merged (P10): one short line each, at most two.
+  const merged = cliLoad.stdout.split('\n').map(l => l.trim()).filter(l => /^OneDrive:\s/.test(l)).map(l => l.replace(/^OneDrive:\s*/, ''));
+  for (const note of merged.slice(0, 2)) header.push(`OneDrive: ${oneLine(note, 300)}`);
+  if (merged.length > 2) header.push(`OneDrive: ${merged.length - 2} more conflict copies merged (the copies: ${path.join(memoryRoot(), 'Backups', 'conflicts')}).`);
+  const unmerged = conflictCopiesIn(dir);
+  if (unmerged.length) header.push(`OneDrive: conflict copies from another PC are here, not merged yet (${oneLine(unmerged.join(', '), 200)}); their entries are read below. ClaudeDevStudio 1.7's CLI merges them on load.`);
   add('header', header);
 
   // Anything the CLI's load says beyond the session ID (a current task, pending decisions).
   const session = cliLoad.stdout.split('\n')
-    .filter(l => l.trim() && !/Context loaded in|^Session:|^Started:/i.test(l.trim())).join('\n').trim();
+    .filter(l => l.trim() && !/Context loaded in|^Session:|^Started:|^OneDrive:\s/i.test(l.trim())).join('\n').trim();
   if (cliLoad.code === 0 && session) add('session', ['\n--- Session ---', oneLine(session, 1200)]);
 
   const handoff = handoffSection(dir);
@@ -522,7 +554,9 @@ function buildContext(projectPath, cliLoad, createdNow, max = LOAD_MAX) {
       [`\n(${lessons.length} lessons for every project, not shown to keep load short: ${lessonsFile()}; claudedev_check_mistake checks them.)`]);
   }
 
-  const decisions = readJsonLines(memFile('DECISIONS.jsonl'))
+  const decSeen = new Set();
+  const decisions = withConflictCopies(dir, 'DECISIONS.jsonl').flatMap(readJsonLines)
+    .filter(d => { const k = `${String(d.timestamp || '').slice(0, 19)}|${oneLine(d.decision || d.chose, 200)}`; if (decSeen.has(k)) return false; decSeen.add(k); return true; })
     .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
   if (decisions.length) {
     add('decisions', ...[5, 3, 1].map(n => {

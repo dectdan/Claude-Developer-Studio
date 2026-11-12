@@ -26,7 +26,10 @@ param(
     [string]$InstallerDir = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'Installer\Output'),
     [int]$TimeoutMinutes = 60,
     [string[]]$Scenarios = @('A', 'B', 'C', 'D', 'E', 'F'),
-    [switch]$Networking
+    [switch]$Networking,
+    # P10: a store export made on the host (claudedev export, from a throwaway CDS_MEMORY_ROOT holding a
+    # project M2MProj); copied into the results folder, the sandbox imports it after B (scenario M).
+    [string]$HostExport
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,6 +66,10 @@ if ($vm.Count -gt 0) {
 }
 
 New-Item -ItemType Directory -Force -Path $Results | Out-Null
+if ($HostExport) {
+    if (-not (Test-Path -LiteralPath $HostExport)) { Write-Host "HostExport not found: $HostExport" -ForegroundColor Red; exit 3 }
+    Copy-Item -LiteralPath $HostExport (Join-Path $Results 'host-export.zip')
+}
 $Downloads = Join-Path $Repo 'Installer\downloads'
 New-Item -ItemType Directory -Force -Path $Downloads | Out-Null
 $version = ([regex]::Match((Get-Content (Join-Path $Repo 'Directory.Build.props') -Raw), '<Version>\s*([^<\s]+)')).Groups[1].Value

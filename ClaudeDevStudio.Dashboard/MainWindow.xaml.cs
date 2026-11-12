@@ -73,6 +73,9 @@ namespace ClaudeDevStudio.Dashboard
                     case "mistakes":
                         ContentFrame.Navigate(typeof(MistakesPage));
                         break;
+                    case "backups":
+                        ContentFrame.Navigate(typeof(BackupsPage));
+                        break;
                     case "help":
                         ContentFrame.Navigate(typeof(HelpPage));
                         break;

@@ -4,6 +4,7 @@
 //
 //   node mcp-probe.mjs tools  <server.js>                    (lists the tools)
 //   node mcp-probe.mjs memory <index.js> <project> <text>    (load, record an activity, load again)
+//   node mcp-probe.mjs load   <index.js> <project> <text>    (load only; is <text> shown? P10)
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -27,6 +28,12 @@ try {
     out.reload = await call('claudedev_load', { project_path: project });
     out.memoryFolder = (out.reload.text.match(/^Memory folder: (.+)$/m) || [])[1] || null;
     out.shown = out.reload.text.includes(text);
+  } else if (mode === 'load') {
+    // P10 (machine to machine): load only; is <text> in what Claude would see?
+    const r = await client.callTool({ name: 'claudedev_load', arguments: { project_path: project } });
+    out.isError = !!r.isError;
+    out.text = (r.content?.[0]?.text ?? '').slice(0, 4000);
+    out.shown = !!text && out.text.includes(text);
   }
   out.ok = true;
 } catch (e) {

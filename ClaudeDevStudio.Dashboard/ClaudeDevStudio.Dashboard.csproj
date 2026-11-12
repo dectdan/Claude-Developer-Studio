@@ -32,6 +32,7 @@
         <Compile Include="..\MemorySchemas.cs" Link="Core\MemorySchemas.cs" />
         <Compile Include="..\MemoryCurator.cs" Link="Core\MemoryCurator.cs" />
         <Compile Include="..\UpdateChecker.cs" Link="Core\UpdateChecker.cs" />
+        <Compile Include="..\StoreStatus.cs" Link="Core\StoreStatus.cs" />
     </ItemGroup>
 
     <ItemGroup>

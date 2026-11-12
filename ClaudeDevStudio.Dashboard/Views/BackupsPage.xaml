@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="ClaudeDevStudio.Dashboard.Views.BackupsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,16" Spacing="4">
+            <TextBlock Text="Backups" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock x:Name="SyncText" TextWrapping="Wrap"/>
+            <TextBlock x:Name="NewestText" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
+            <TextBlock Text="Daily, before every upgrade, and when you ask. The newest 14 daily and 4 pre-upgrade backups are kept; the others are never deleted. Export and import (to move to another PC) are in the tray icon's menu, or claudedev export / import."
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8" Margin="0,0,0,16">
+            <Button x:Name="BackupNowButton" Content="Back up now" Click="BackupNow_Click"/>
+            <Button Content="Open folder" Click="OpenFolder_Click"/>
+            <Button Content="Refresh" Click="Refresh_Click"/>
+            <TextBlock x:Name="BusyText" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        </StackPanel>
+
+        <ScrollViewer Grid.Row="2">
+            <StackPanel x:Name="BackupList" Spacing="6"/>
+        </ScrollViewer>
+    </Grid>
+</Page>

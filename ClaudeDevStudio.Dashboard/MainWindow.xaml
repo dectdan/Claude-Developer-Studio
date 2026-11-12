@@ -35,6 +35,7 @@
                 <NavigationViewItem Content="Memory" Tag="memory" Icon="Library"/>
                 <NavigationViewItem Content="Patterns" Tag="patterns" Icon="AlignLeft"/>
                 <NavigationViewItem Content="Mistakes" Tag="mistakes" Icon="Important"/>
+                <NavigationViewItem Content="Backups" Tag="backups" Icon="Save"/>
             </NavigationView.MenuItems>
             
             <NavigationView.FooterMenuItems>

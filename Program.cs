@@ -68,9 +68,9 @@ namespace ClaudeDevStudio
                     "backup" => BackupProject(args),
                     "restore" => RestoreBackup(args),
                     "backups" => ListBackups(args),
-                    "git" => GitCommand(args),
-                    "cloud" => CloudCommand(args),
-                    "sync" => SyncProject(args),
+                    "export" => ExportStore(args),
+                    "import" => ImportStore(args),
+                    "git" or "cloud" or "sync" => RemovedSyncCommand(command),
                     "update" => UpdateCommand(args),
                     "configure-claude" or "link-claude" => ConfigureClaude(),
                     "claude-code" => ClaudeCodeCommand(args),
@@ -119,12 +119,17 @@ namespace ClaudeDevStudio
                 return Error($"Project path does not exist: {projectPath}");
 
             var memory = new ClaudeMemory(projectPath);
+            // OneDrive conflict copies from a second PC (P10): merged before anything is read.
+            foreach (var note in MergeConflictCopies(projectPath))
+                Console.WriteLine($"OneDrive: {note}");
             memory.LoadContext();
 
             var state = memory.GetSessionState();
             Console.WriteLine($"Session: {state.SessionId}");
             Console.WriteLine($"Started: {state.Started:yyyy-MM-dd HH:mm}");
-            
+            // Today's automatic store backup, if due: started on its own, load doesn't wait (P10).
+            StoreBackup.StartDailyIfDue();
+
             if (state.CurrentTask != null)
             {
                 Console.WriteLine($"\nCurrent Task: {state.CurrentTask.Description}");
@@ -180,6 +185,9 @@ namespace ClaudeDevStudio
             var jsonData = string.Join(" ", args.Skip(3).Where(a => a != "--auto"));
 
             var memory = new ClaudeMemory(projectPath);
+            // Conflict copies first (P10), so a new ID is numbered after their entries too.
+            foreach (var note in MergeConflictCopies(projectPath))
+                Console.WriteLine($"OneDrive: {note}");
 
             switch (type)
             {
@@ -317,6 +325,10 @@ namespace ClaudeDevStudio
                 try { return System.Text.Json.JsonSerializer.Deserialize<Lesson>(json); }
                 catch (System.Text.Json.JsonException ex) { Console.Error.WriteLine($"Not JSON: {ex.Message}"); return null; }
             }
+
+            // A OneDrive conflict copy of LESSONS.jsonl (P10): merged first, with the near-duplicate rule.
+            foreach (var note in ConflictCopies.MergeRoot())
+                Console.WriteLine($"OneDrive: {note}");
 
             switch (action)
             {
@@ -661,6 +673,10 @@ namespace ClaudeDevStudio
                 Console.WriteLine("Run 'claudedev restart all' to start all components");
             }
 
+            // The memory's sync and backups (P10).
+            Console.WriteLine();
+            Console.WriteLine($"Memory:      {SyncStatus.Line()}");
+
             return status.AllRunning ? 0 : 1;
         }
 
@@ -812,77 +828,184 @@ namespace ClaudeDevStudio
             return $"{(int)(span.TotalDays / 365)} years ago";
         }
 
+        // OneDrive conflict copies of a project's memory files (and of LESSONS.jsonl, chat_mirror.jsonl),
+        // merged into the main files and moved to Backups\conflicts\ (P10). One line per copy.
+        static System.Collections.Generic.List<string> MergeConflictCopies(string projectPath)
+        {
+            var notes = new System.Collections.Generic.List<string>();
+            try
+            {
+                var name = Path.GetFileName(Path.GetFullPath(projectPath).TrimEnd(Path.DirectorySeparatorChar));
+                notes.AddRange(ConflictCopies.MergeProject(SessionStateManager.GetMemoryPath(name)));
+                notes.AddRange(ConflictCopies.MergeRoot());
+            }
+            catch (Exception ex)
+            {
+                notes.Add($"conflict copies not checked: {ex.Message}");
+            }
+            return notes;
+        }
+
+        static string Kb(long bytes) => bytes >= 1024 * 1024 ? $"{bytes / 1024.0 / 1024.0:F1} MB" : $"{bytes / 1024.0:F0} KB";
+
+        static void PrintCreated(StoreBackup.CreateResult r, string what)
+        {
+            Console.WriteLine($"✓ {what}: {r.Path}");
+            Console.WriteLine($"  {r.Files} files, {Kb(r.Bytes)} → {Kb(r.ZipBytes)} zipped, {r.Seconds:F1} s");
+            if (r.Pruned.Count > 0)
+                Console.WriteLine($"  Older automatic backups deleted (keeping the newest 14 daily, 4 before an upgrade): {string.Join(", ", r.Pruned)}");
+        }
+
+        // claudedev backup --all | --auto | --upgrade | --status | --verify <zip> | [project_path]
         static int BackupProject(string[] args)
         {
+            var flags = args.Skip(1).Select(a => a.ToLowerInvariant()).ToList();
+
+            if (flags.Contains("--status"))
+            {
+                Console.WriteLine(SyncStatus.Line());
+                var list = StoreBackups.List();
+                Console.WriteLine($"Store backups: {list.Count} in {StoreBackups.Folder}");
+                foreach (var b in list.Take(5))
+                    Console.WriteLine($"  {b.Name}  {Kb(b.Size)}  {StoreBackups.Describe(b.Kind)}, {StoreBackups.Age(b.Created)}");
+                return 0;
+            }
+
+            if (flags.Contains("--verify"))
+            {
+                var file = args.SkipWhile(a => !a.Equals("--verify", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
+                if (file == null || !File.Exists(file))
+                    return Error("Usage: claudedev backup --verify <store backup .zip>");
+                using var archive = new StoreBackup.Archive(file);
+                var problems = archive.Verify();
+                if (problems.Count > 0)
+                {
+                    Console.WriteLine($"✗ {Path.GetFileName(file)}: {string.Join("; ", problems.Take(10))}");
+                    return 1;
+                }
+                Console.WriteLine($"✓ {Path.GetFileName(file)} opens: {archive.Files.Count} files, every hash matches (made on {archive.Machine}, {archive.Created}, CDS {archive.CdsVersion}, {archive.Kind})");
+                return 0;
+            }
+
+            if (flags.Contains("--auto"))
+            {
+                // Today's daily backup if it is due (load starts this; the tray app's timer too). Quiet.
+                var r = StoreBackup.RunDailyIfDue();
+                if (r != null) PrintCreated(r, "Daily backup of the memory store");
+                else Console.WriteLine("No backup needed: today's daily backup exists (or one is being made).");
+                return 0;
+            }
+
+            if (flags.Contains("--upgrade") || flags.Contains("--all"))
+            {
+                var kind = flags.Contains("--upgrade") ? "upgrade" : "manual";
+                if (StoreBackup.StoreFiles(MemoryPaths.Root).Count == 0)
+                {
+                    Console.WriteLine($"Nothing to back up: no memory in {MemoryPaths.Root} yet.");
+                    return 0;
+                }
+                PrintCreated(StoreBackup.Create(kind), kind == "upgrade" ? "Backup of the memory store before the upgrade" : "Backup of the whole memory store");
+                return 0;
+            }
+
+            // One project, the pre-1.7 way (Backups\<project>\<project>_<time>.backup).
             var projectPath = args.Length > 1 ? args[1] : Directory.GetCurrentDirectory();
-            
             if (!Directory.Exists(projectPath))
                 return Error($"Project path does not exist: {projectPath}");
 
-            Console.WriteLine("Creating backup...");
-
-            // Get memory path for the project
-            var projectName = Path.GetFileName(projectPath.TrimEnd(Path.DirectorySeparatorChar));
+            var projectName = Path.GetFileName(Path.GetFullPath(projectPath).TrimEnd(Path.DirectorySeparatorChar));
             var memoryPath = SessionStateManager.GetMemoryPath(projectName);
-            
+            if (!Directory.Exists(memoryPath))
+                return Error($"No memory for {projectName} in {Path.Combine(MemoryPaths.Root, "Projects")} (for the whole store: claudedev backup --all)");
+
+            Console.WriteLine("Creating backup...");
             var backupManager = new Core.BackupManager(memoryPath);
             var result = backupManager.CreateBackup(Core.BackupTrigger.Manual);
 
             if (result.Success)
             {
-                if (result.Skipped)
-                {
-                    Console.WriteLine($"✓ {result.Message}");
-                }
-                else
-                {
-                    Console.WriteLine($"✓ Backup created successfully");
-                    Console.WriteLine($"  File: {Path.GetFileName(result.BackupPath)}");
-                    Console.WriteLine($"  Size: {result.Size / 1024.0:F2} KB");
-                    Console.WriteLine($"  Location: {Path.GetDirectoryName(result.BackupPath)}");
-                }
+                Console.WriteLine($"✓ Backup created successfully");
+                Console.WriteLine($"  File: {Path.GetFileName(result.BackupPath)}");
+                Console.WriteLine($"  Size: {result.Size / 1024.0:F2} KB");
+                Console.WriteLine($"  Location: {Path.GetDirectoryName(result.BackupPath)}");
+                Console.WriteLine("  (One project. The whole store, all projects and the lessons: claudedev backup --all)");
                 return 0;
             }
-            else
-            {
-                Console.WriteLine($"✗ {result.Message}");
-                return 1;
-            }
+            Console.WriteLine($"✗ {result.Message}");
+            return 1;
         }
 
+        // claudedev restore <store backup .zip> [--yes]      (replace: the store as it was in the backup)
+        // claudedev restore <project .backup> [project_path] (one project, the pre-1.7 format)
         static int RestoreBackup(string[] args)
         {
             if (args.Length < 2)
             {
-                Console.WriteLine("Usage: claudedev restore <backup_file> [project_path]");
+                Console.WriteLine("Usage: claudedev restore <store backup .zip> [--yes]");
+                Console.WriteLine("       claudedev restore <project .backup> [project_path]");
                 return 1;
             }
 
             var backupFile = args[1];
-            var projectPath = args.Length > 2 ? args[2] : Directory.GetCurrentDirectory();
-
+            var yes = args.Skip(2).Any(a => a.Equals("--yes", StringComparison.OrdinalIgnoreCase) || a == "-y");
             if (!File.Exists(backupFile))
                 return Error($"Backup file not found: {backupFile}");
 
+            bool isStore;
+            try { using var a = new StoreBackup.Archive(backupFile); isStore = a.IsStoreBackup; }
+            catch (System.IO.InvalidDataException) { return Error($"Not a zip file: {backupFile}"); }
+
+            if (isStore)
+            {
+                Console.WriteLine($"Restore puts every file in {Path.GetFileName(backupFile)} back into {MemoryPaths.Root} as it was then,");
+                Console.WriteLine("overwriting the current copies (the current store is backed up first; files not in the backup are left alone).");
+                Console.WriteLine("To ADD another PC's memory to this one instead, use: claudedev import <file>");
+                if (!yes)
+                {
+                    Console.Write("Continue? (y/n): ");
+                    var answer = Console.ReadLine()?.Trim().ToLowerInvariant();
+                    if (answer != "y" && answer != "yes")
+                    {
+                        Console.WriteLine("Restore cancelled; nothing was changed.");
+                        return 0;
+                    }
+                }
+                try
+                {
+                    var s = StoreBackup.Restore(backupFile);
+                    Console.WriteLine($"✓ Restored {s.Written} files ({s.Same} were already the same; {s.LeftAlone} files not in the backup left as they are)");
+                    if (s.BackupFirst != null)
+                        Console.WriteLine($"  Backed up first: {s.BackupFirst}");
+                    return 0;
+                }
+                catch (System.IO.InvalidDataException ex)
+                {
+                    Console.WriteLine($"✗ {ex.Message}");
+                    return 1;
+                }
+            }
+
+            var projectPath = args.Length > 2 && !args[2].StartsWith("-") ? args[2] : Directory.GetCurrentDirectory();
             if (!Directory.Exists(projectPath))
                 return Error($"Project path does not exist: {projectPath}");
 
-            Console.WriteLine("⚠️ This will restore from backup and overwrite current files.");
-            Console.Write("Continue? (y/n): ");
-            var confirm = Console.ReadLine()?.ToLower();
-
-            if (confirm != "y" && confirm != "yes")
+            Console.WriteLine("⚠️ This will restore one project from backup and overwrite its current files (they are backed up first).");
+            if (!yes)
             {
-                Console.WriteLine("Restore cancelled");
-                return 0;
+                Console.Write("Continue? (y/n): ");
+                var confirm = Console.ReadLine()?.ToLower();
+                if (confirm != "y" && confirm != "yes")
+                {
+                    Console.WriteLine("Restore cancelled");
+                    return 0;
+                }
             }
 
             Console.WriteLine("Restoring from backup...");
-
-            // Get memory path for the project
-            var projectName = Path.GetFileName(projectPath.TrimEnd(Path.DirectorySeparatorChar));
+            var projectName = Path.GetFileName(Path.GetFullPath(projectPath).TrimEnd(Path.DirectorySeparatorChar));
             var memoryPath = SessionStateManager.GetMemoryPath(projectName);
-            
+            Directory.CreateDirectory(memoryPath);
+
             var backupManager = new Core.BackupManager(memoryPath);
             var result = backupManager.RestoreBackup(backupFile, createBackupFirst: true);
 
@@ -891,30 +1014,45 @@ namespace ClaudeDevStudio
                 Console.WriteLine($"✓ Restored {result.FilesRestored} files successfully");
                 return 0;
             }
-            else
-            {
-                Console.WriteLine($"✗ {result.Message}");
-                return 1;
-            }
+            Console.WriteLine($"✗ {result.Message}");
+            return 1;
         }
 
+        // claudedev backups                 the store backups (and the sync line)
+        // claudedev backups <project_path>  one project's backups (the pre-1.7 format)
         static int ListBackups(string[] args)
         {
-            var projectPath = args.Length > 1 ? args[1] : Directory.GetCurrentDirectory();
-            
+            if (args.Length < 2)
+            {
+                var list = StoreBackups.List();
+                Console.WriteLine(SyncStatus.Line(null, list.FirstOrDefault()));
+                Console.WriteLine();
+                if (list.Count == 0)
+                {
+                    Console.WriteLine($"No store backups yet in {StoreBackups.Folder}. Make one: claudedev backup --all");
+                    return 0;
+                }
+                Console.WriteLine($"=== Store backups ({list.Count}) in {StoreBackups.Folder} ===");
+                foreach (var b in list)
+                    Console.WriteLine($"  {b.Name}  {Kb(b.Size)}  {StoreBackups.Describe(b.Kind)}, {StoreBackups.Age(b.Created)}");
+                Console.WriteLine();
+                Console.WriteLine("Kept: the newest 14 daily and 4 made before an upgrade; the others are never deleted.");
+                return 0;
+            }
+
+            var projectPath = args[1];
             if (!Directory.Exists(projectPath))
                 return Error($"Project path does not exist: {projectPath}");
 
-            // Get memory path for the project
-            var projectName = Path.GetFileName(projectPath.TrimEnd(Path.DirectorySeparatorChar));
+            var projectName = Path.GetFileName(Path.GetFullPath(projectPath).TrimEnd(Path.DirectorySeparatorChar));
             var memoryPath = SessionStateManager.GetMemoryPath(projectName);
-            
+
             var backupManager = new Core.BackupManager(memoryPath);
             var backups = backupManager.ListBackups();
 
             if (!backups.Any())
             {
-                Console.WriteLine("No backups found");
+                Console.WriteLine($"No backups of {projectName} alone (the store backups: claudedev backups)");
                 return 0;
             }
 
@@ -933,218 +1071,68 @@ namespace ClaudeDevStudio
             return 0;
         }
 
-        static int GitCommand(string[] args)
+        // claudedev export [file]: the whole store in one zip, the backup format (so a backup can be
+        // imported too). Default: [Documents]\ClaudeDevStudio-export-<time>.zip, beside the store.
+        static int ExportStore(string[] args)
         {
-            if (args.Length < 2)
-            {
-                Console.WriteLine("Usage: claudedev git <subcommand>");
-                Console.WriteLine();
-                Console.WriteLine("Subcommands:");
-                Console.WriteLine("  init [remote_url]    Initialize Git repository");
-                Console.WriteLine("  commit [message]     Commit current state");
-                Console.WriteLine("  push [branch]        Push to remote");
-                Console.WriteLine("  pull [branch]        Pull from remote");
-                Console.WriteLine("  status               Show Git status");
-                Console.WriteLine("  history [limit]      Show commit history");
-                return 1;
-            }
-
-            var projectPath = Directory.GetCurrentDirectory();
-            var subcommand = args[1].ToLower();
-
-            if (!Core.GitSyncManager.IsGitInstalled())
-            {
-                Console.WriteLine("✗ Git is not installed or not in PATH");
-                Console.WriteLine("  Install Git from: https://git-scm.com/download/win");
-                return 1;
-            }
-
-            // Get memory path for the project
-            var projectName = Path.GetFileName(projectPath.TrimEnd(Path.DirectorySeparatorChar));
-            var memoryPath = SessionStateManager.GetMemoryPath(projectName);
-            
-            var gitSync = new Core.GitSyncManager(memoryPath);
-
-            switch (subcommand)
-            {
-                case "init":
-                    var remoteUrl = args.Length > 2 ? args[2] : null;
-                    var initResult = gitSync.InitializeRepo(remoteUrl);
-                    Console.WriteLine(initResult.Success ? $"✓ {initResult.Message}" : $"✗ {initResult.Message}");
-                    return initResult.Success ? 0 : 1;
-
-                case "commit":
-                    var message = args.Length > 2 ? string.Join(" ", args.Skip(2)) : null;
-                    var commitResult = gitSync.CommitChanges(message);
-                    Console.WriteLine(commitResult.Success ? $"✓ {commitResult.Message}" : $"✗ {commitResult.Message}");
-                    return commitResult.Success ? 0 : 1;
-
-                case "push":
-                    var pushBranch = args.Length > 2 ? args[2] : "main";
-                    var pushResult = gitSync.Push(pushBranch);
-                    Console.WriteLine(pushResult.Success ? $"✓ {pushResult.Message}" : $"✗ {pushResult.Message}");
-                    return pushResult.Success ? 0 : 1;
-
-                case "pull":
-                    var pullBranch = args.Length > 2 ? args[2] : "main";
-                    var pullResult = gitSync.Pull(pullBranch);
-                    Console.WriteLine(pullResult.Success ? $"✓ {pullResult.Message}" : $"✗ {pullResult.Message}");
-                    return pullResult.Success ? 0 : 1;
-
-                case "status":
-                    var status = gitSync.GetStatus();
-                    Console.WriteLine($"Git Repository: {(status.IsInitialized ? "Initialized" : "Not initialized")}");
-                    if (status.IsInitialized)
-                    {
-                        Console.WriteLine($"Has changes: {(status.HasChanges ? "Yes" : "No")}");
-                        Console.WriteLine($"Has remote: {(status.HasRemote ? "Yes" : "No")}");
-                        if (status.LastCommitHash != null)
-                        {
-                            Console.WriteLine($"Last commit: {status.LastCommitHash.Substring(0, 7)} - {status.LastCommitMessage}");
-                            Console.WriteLine($"            {status.LastCommitDate:yyyy-MM-dd HH:mm:ss}");
-                        }
-                    }
-                    return 0;
-
-                case "history":
-                    var limit = args.Length > 2 ? int.Parse(args[2]) : 10;
-                    var history = gitSync.GetHistory(limit);
-                    Console.WriteLine($"=== Last {history.Length} commits ===");
-                    Console.WriteLine();
-                    foreach (var commit in history)
-                    {
-                        Console.WriteLine($"{commit.Hash.Substring(0, 7)} - {commit.Message}");
-                        Console.WriteLine($"  {commit.Author} - {commit.Date:yyyy-MM-dd HH:mm:ss}");
-                        Console.WriteLine();
-                    }
-                    return 0;
-
-                default:
-                    return Error($"Unknown git subcommand: {subcommand}");
-            }
-        }
-
-        static int CloudCommand(string[] args)
-        {
-            if (args.Length < 2)
-            {
-                Console.WriteLine("Usage: claudedev cloud <subcommand>");
-                Console.WriteLine();
-                Console.WriteLine("Subcommands:");
-                Console.WriteLine("  configure <account_id> <api_token> <bucket>  Configure cloud sync");
-                Console.WriteLine("  upload           Upload current state to cloud");
-                Console.WriteLine("  download [file]  Download from cloud");
-                Console.WriteLine("  list             List cloud backups");
-                Console.WriteLine("  status           Show cloud sync status");
-                return 1;
-            }
-
-            var projectPath = Directory.GetCurrentDirectory();
-            var subcommand = args[1].ToLower();
-            
-            // Get memory path for the project
-            var projectName = Path.GetFileName(projectPath.TrimEnd(Path.DirectorySeparatorChar));
-            var memoryPath = SessionStateManager.GetMemoryPath(projectName);
-            
-            var cloudSync = new Core.CloudSyncManager(memoryPath);
-
-            switch (subcommand)
-            {
-                case "configure":
-                    if (args.Length < 5)
-                    {
-                        Console.WriteLine("Usage: claudedev cloud configure <account_id> <api_token> <bucket_name>");
-                        return 1;
-                    }
-                    cloudSync.Configure(args[2], args[3], args[4]);
-                    Console.WriteLine("✓ Cloud sync configured");
-                    return 0;
-
-                case "upload":
-                    Console.WriteLine("Uploading to cloud...");
-                    var uploadResult = cloudSync.UploadAsync().Result;
-                    Console.WriteLine(uploadResult.Success ? $"✓ {uploadResult.Message}" : $"✗ {uploadResult.Message}");
-                    return uploadResult.Success ? 0 : 1;
-
-                case "download":
-                    var fileName = args.Length > 2 ? args[2] : null;
-                    Console.WriteLine("Downloading from cloud...");
-                    var downloadResult = cloudSync.DownloadAsync(fileName).Result;
-                    Console.WriteLine(downloadResult.Success ? $"✓ {downloadResult.Message}" : $"✗ {downloadResult.Message}");
-                    return downloadResult.Success ? 0 : 1;
-
-                case "list":
-                    var backups = cloudSync.ListBackupsAsync().Result;
-                    Console.WriteLine($"Found {backups.Length} cloud backup(s)");
-                    foreach (var backup in backups)
-                    {
-                        Console.WriteLine($"  {backup.FileName} - {backup.Size / 1024.0:F2} KB");
-                    }
-                    return 0;
-
-                case "status":
-                    var status = cloudSync.GetStatus();
-                    Console.WriteLine($"Cloud Sync: {(status.IsConfigured ? "Configured" : "Not configured")}");
-                    if (status.IsConfigured)
-                    {
-                        Console.WriteLine($"Provider: {status.Provider}");
-                        Console.WriteLine($"Last upload: {(status.LastUpload.HasValue ? GetTimeSince(status.LastUpload.Value) : "Never")}");
-                        Console.WriteLine($"Last download: {(status.LastDownload.HasValue ? GetTimeSince(status.LastDownload.Value) : "Never")}");
-                        Console.WriteLine($"Upload count: {status.UploadCount}");
-                        Console.WriteLine($"Download count: {status.DownloadCount}");
-                    }
-                    return 0;
-
-                default:
-                    return Error($"Unknown cloud subcommand: {subcommand}");
-            }
-        }
-
-        static int SyncProject(string[] args)
-        {
-            var projectPath = args.Length > 1 ? args[1] : Directory.GetCurrentDirectory();
-            
-            if (!Directory.Exists(projectPath))
-                return Error($"Project path does not exist: {projectPath}");
-
-            Console.WriteLine("Synchronizing project memory...");
-            Console.WriteLine();
-
-            // Create backup first
-            var backupManager = new Core.BackupManager(projectPath);
-            var backupResult = backupManager.CreateBackup(Core.BackupTrigger.Manual);
-
-            if (backupResult.Success && !backupResult.Skipped)
-            {
-                Console.WriteLine($"✓ Created local backup: {Path.GetFileName(backupResult.BackupPath)}");
-            }
-
-            // Try Git sync if available
-            if (Core.GitSyncManager.IsGitInstalled())
-            {
-                var gitSync = new Core.GitSyncManager(projectPath);
-                var status = gitSync.GetStatus();
-
-                if (status.IsInitialized && status.HasChanges)
-                {
-                    var commitResult = gitSync.CommitChanges($"Auto-sync: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-                    if (commitResult.Success)
-                    {
-                        Console.WriteLine($"✓ Git: {commitResult.Message}");
-
-                        if (status.HasRemote)
-                        {
-                            var pushResult = gitSync.Push();
-                            Console.WriteLine(pushResult.Success ? "✓ Git: Pushed to remote" : "✗ Git: Push failed");
-                        }
-                    }
-                }
-            }
-
-            Console.WriteLine();
-            Console.WriteLine("✓ Sync complete");
-
+            var root = MemoryPaths.Root;
+            if (StoreBackup.StoreFiles(root).Count == 0)
+                return Error($"Nothing to export: no memory in {root}.");
+            var file = args.Length > 1
+                ? args[1]
+                : Path.Combine(Path.GetDirectoryName(root.TrimEnd(Path.DirectorySeparatorChar)) ?? root,
+                               $"ClaudeDevStudio-export-{DateTime.Now:yyyyMMdd-HHmmss}.zip");
+            if (Directory.Exists(file))
+                file = Path.Combine(file, $"ClaudeDevStudio-export-{DateTime.Now:yyyyMMdd-HHmmss}.zip");
+            if (!file.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                file += ".zip";
+            if (File.Exists(file))
+                return Error($"{file} already exists; give another name.");
+            var r = StoreBackup.Create("export", file);
+            PrintCreated(r, "Exported the memory store");
+            Console.WriteLine("  On the other PC: claudedev import <this file> (it adds what's missing and never removes anything;");
+            Console.WriteLine("  claudedev import <file> --dry-run shows what it would add first).");
             return 0;
+        }
+
+        // claudedev import <file> [--dry-run]: merge another store (an export or a backup) into this one.
+        static int ImportStore(string[] args)
+        {
+            var file = args.Skip(1).FirstOrDefault(a => !a.StartsWith("--"));
+            var dryRun = args.Any(a => a.Equals("--dry-run", StringComparison.OrdinalIgnoreCase));
+            if (file == null)
+                return Error("Usage: claudedev import <export or backup .zip> [--dry-run]");
+            if (!File.Exists(file))
+                return Error($"File not found: {file}");
+            try
+            {
+                var s = StoreBackup.Import(file, dryRun);
+                Console.WriteLine((dryRun ? "" : "✓ ") + s.Render(dryRun ? "Would import" : "Imported"));
+                if (dryRun)
+                    Console.WriteLine("Run it without --dry-run to import (the current store is backed up first).");
+                return 0;
+            }
+            catch (System.IO.InvalidDataException ex)
+            {
+                Console.WriteLine($"✗ {ex.Message}");
+                return 1;
+            }
+        }
+
+        // git, cloud and sync were removed in 1.7.0 (P10): git pull replaced memory files with the
+        // repository's copies (entries written on this PC since the last commit were lost), push used a
+        // branch name the repository might not have, both ignored the memory root and named the project
+        // after the current folder; cloud never authenticated to R2 (a bearer token, where R2 needs S3
+        // signatures), "list" always said 0 and "download" always failed, and it stored the API token in
+        // plain text in the synced memory folder; sync backed up the project folder instead of its memory
+        // and said "Sync complete". Evidence: docs\P10_OUTPUT.md.
+        static int RemovedSyncCommand(string command)
+        {
+            Console.WriteLine($"claudedev {command} was removed in ClaudeDevStudio 1.7.0: it could lose memory entries or did nothing.");
+            Console.WriteLine("Your memory is plain files in Documents (synced when Documents is in OneDrive) and backed up daily. To move it:");
+            Console.WriteLine("  claudedev export [file]    then, on the other PC:    claudedev import <file>");
+            Console.WriteLine("Status: claudedev backup --status");
+            return 1;
         }
 
         static int ShowHelp()
@@ -1185,26 +1173,20 @@ namespace ClaudeDevStudio
             Console.WriteLine("  active                   Show currently active project");
             Console.WriteLine("  autoload                 Auto-detect and load project context");
             Console.WriteLine();
-            Console.WriteLine("  BACKUP & SYNC:");
-            Console.WriteLine("  backup [project_path]    Create backup (OneDrive synced)");
-            Console.WriteLine("  restore <file> [path]    Restore from backup");
-            Console.WriteLine("  backups [project_path]   List available backups");
-            Console.WriteLine("  sync [project_path]      Sync to all configured backends");
-            Console.WriteLine();
-            Console.WriteLine("  GIT SYNC:");
-            Console.WriteLine("  git init [remote_url]    Initialize Git repository");
-            Console.WriteLine("  git commit [message]     Commit current state");
-            Console.WriteLine("  git push [branch]        Push to remote (default: main)");
-            Console.WriteLine("  git pull [branch]        Pull from remote (default: main)");
-            Console.WriteLine("  git status               Show Git status");
-            Console.WriteLine("  git history [limit]      Show commit history (default: 10)");
-            Console.WriteLine();
-            Console.WriteLine("  CLOUD SYNC:");
-            Console.WriteLine("  cloud configure <account_id> <token> <bucket>  Configure Cloudflare");
-            Console.WriteLine("  cloud upload             Upload to cloud");
-            Console.WriteLine("  cloud download [file]    Download from cloud");
-            Console.WriteLine("  cloud list               List cloud backups");
-            Console.WriteLine("  cloud status             Show cloud sync status");
+            Console.WriteLine("  BACKUPS, MOVING TO ANOTHER PC (the whole store: every project, the lessons):");
+            Console.WriteLine("  backup --all             Back up the whole memory store now (Backups\\store\\)");
+            Console.WriteLine("                           Automatic: once a day (on the first load) and before every upgrade;");
+            Console.WriteLine("                           the newest 14 daily and 4 pre-upgrade backups are kept, others never deleted");
+            Console.WriteLine("  backup --status          Synced (OneDrive)? Backed up? One line, and the newest backups");
+            Console.WriteLine("  backup --verify <zip>    Check that a backup opens and every file's hash matches");
+            Console.WriteLine("  backups                  List the store backups");
+            Console.WriteLine("  export [file]            The whole store in one zip, to take to another PC");
+            Console.WriteLine("  import <file> [--dry-run]  MERGE an export or backup into this store: adds what's missing,");
+            Console.WriteLine("                           never removes or duplicates an entry (backs up first)");
+            Console.WriteLine("  restore <zip> [--yes]    REPLACE: put the store back as it was in a backup (backs up first)");
+            Console.WriteLine("  backup <project_path>    One project only (Backups\\<project>\\, the older format);");
+            Console.WriteLine("  backups <project_path>, restore <file.backup> [project_path]");
+            Console.WriteLine("  (git, cloud and sync were removed in 1.7.0; claudedev git says why)");
             Console.WriteLine();
             Console.WriteLine("  BUILD AUTOMATION:");
             Console.WriteLine("  build <project_path>     Build project (Debug x64 by default)");
@@ -1221,14 +1203,10 @@ namespace ClaudeDevStudio
             Console.WriteLine("  claudedev init C:\\\\Projects\\\\MyProject");
             Console.WriteLine("  claudedev projects");
             Console.WriteLine("  claudedev switch MyProject");
-            Console.WriteLine("  claudedev backup");
+            Console.WriteLine("  claudedev backup --all");
             Console.WriteLine("  claudedev backups");
-            Console.WriteLine("  claudedev git init https://github.com/user/repo.git");
-            Console.WriteLine("  claudedev git commit \"Added auth module\"");
-            Console.WriteLine("  claudedev git push");
-            Console.WriteLine("  claudedev sync");
-            Console.WriteLine("  claudedev cloud configure account123 token456 my-bucket");
-            Console.WriteLine("  claudedev cloud upload");
+            Console.WriteLine("  claudedev export E:\\cds-memory.zip");
+            Console.WriteLine("  claudedev import E:\\cds-memory.zip --dry-run");
             Console.WriteLine();
             Console.WriteLine("For more info: https://github.com/dectdan/Claude-Developer-Studio");
             

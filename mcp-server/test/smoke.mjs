@@ -44,6 +44,7 @@ import { execFileSync, spawnSync, spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -62,7 +63,20 @@ const scratch = path.join(os.tmpdir(), scratchName);
 fs.mkdirSync(scratch, { recursive: true });
 
 const docs = execFileSync('powershell.exe', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('MyDocuments')"], { encoding: 'utf8' }).trim();
-const memDir = path.join(docs, 'ClaudeDevStudio', 'Projects', scratchName);
+// P10: with --cli (a CLI that honours CDS_MEMORY_ROOT) the whole run uses a throwaway memory root and old
+// store in %TEMP%, so it writes nothing to the real store (before P10 the main checks made a throwaway
+// project's memory folder there and removed it at the end; from 1.7.0 a load would also start the daily
+// store backup there). The checks that the real store is untouched still read `docs`. Without --cli
+// (an older installed CLI) the main checks use the real store as before.
+const isolated = !!cliPath;
+const storeRoot = isolated ? path.join(os.tmpdir(), `${scratchName}_root`) : path.join(docs, 'ClaudeDevStudio');
+const isolatedLegacy = isolated ? path.join(os.tmpdir(), `${scratchName}_old`) : null;
+if (isolated) {
+  process.env.CDS_MEMORY_ROOT = storeRoot;
+  process.env.CDS_LEGACY_ROOT = isolatedLegacy;
+  process.env.CDS_AUTO_BACKUP = 'off'; // the P10 checks turn it on where they test it
+}
+const memDir = path.join(storeRoot, 'Projects', scratchName);
 
 // More throwaway projects (P3): each is a folder in %TEMP% with a memory folder of the same name.
 const extraProjects = [];
@@ -70,7 +84,7 @@ const makeProject = (suffix) => {
   const name = `${scratchName}_${suffix}`;
   const dir = path.join(os.tmpdir(), name);
   fs.mkdirSync(dir, { recursive: true });
-  const mem = path.join(docs, 'ClaudeDevStudio', 'Projects', name);
+  const mem = path.join(storeRoot, 'Projects', name);
   extraProjects.push({ dir, mem });
   return { dir, mem };
 };
@@ -90,7 +104,9 @@ const check = (label, ok, detail = '') => {
 };
 
 // The v1.2.x store (read-only for index.js). Used only when it differs from the real one.
-const legacyDir = path.join(process.env.USERPROFILE || os.homedir(), 'Documents', 'ClaudeDevStudio', 'Projects', scratchName);
+const legacyDir = isolated
+  ? path.join(isolatedLegacy, 'Projects', scratchName)
+  : path.join(process.env.USERPROFILE || os.homedir(), 'Documents', 'ClaudeDevStudio', 'Projects', scratchName);
 const legacyIsSeparate = path.resolve(legacyDir).toLowerCase() !== path.resolve(memDir).toLowerCase();
 let createdLegacy = false; // only a folder this test made is removed
 
@@ -105,7 +121,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const client = new Client({ name: 'cds-smoke', version: '1.0.0' });
 await client.connect(new StdioClientTransport({
   command: process.execPath, args: [serverPath],
-  ...(cliPath ? { env: { CDS_CLI_PATH: cliPath } } : {}),
+  ...(cliPath ? { env: { CDS_CLI_PATH: cliPath, CDS_MEMORY_ROOT: storeRoot, CDS_LEGACY_ROOT: isolatedLegacy, CDS_AUTO_BACKUP: 'off' } } : {}),
 }));
 const call = async (name, args) => {
   const r = await client.callTool({ name, arguments: args });
@@ -120,7 +136,7 @@ try {
 
   let r = await call('claudedev_load', { project_path: scratch + '\\' });
   check('load creates memory for a new project (trailing backslash ok)', !r.isError && /created just now/.test(r.text) && fs.existsSync(path.join(memDir, 'session_state.json')), r.text);
-  check('memory is in the real Documents folder', r.text.includes(memDir), r.text);
+  check(isolated ? 'memory is in the memory root (the test\'s throwaway root with --cli, P10)' : 'memory is in the real Documents folder', r.text.includes(memDir), r.text);
   const noGtLoad = r;
 
   r = await call('claudedev_record_activity', { project_path: scratch, action: 'code_change', description: 'Edited "Main.cs" in C:\\Program Files\\x\nsecond line', file: 'src\\Main.cs' });
@@ -393,7 +409,7 @@ try {
       return { code: res.status, out: res.stdout || '', err: res.stderr || '', ms: Date.now() - t0 };
     };
     const base = (cwd, ev) => ({ session_id: `smoke-${scratchName}`, transcript_path: '', cwd, hook_event_name: ev });
-    const memOf = (dir) => path.join(docs, 'ClaudeDevStudio', 'Projects', path.basename(dir));
+    const memOf = (dir) => path.join(storeRoot, 'Projects', path.basename(dir));
     // (For a drive root the CLI's project name is empty, i.e. the Projects folder itself: its list of names.)
     const snapshotDir = (d) => !path.basename(d) || /[\\/]Projects$/.test(d) ? fs.readdirSync(d).join('|') : fs.existsSync(d) ? listTree(d).map(x => { const f = path.join(d, x); const s = fs.statSync(f); return `${x}|${s.isFile() ? s.size : 'd'}|${s.mtimeMs}`; }).join('\n') : '(none)';
 
@@ -1225,6 +1241,165 @@ try {
         md.includes('(2 files edited outside the project not listed.)') && !md.includes('_scratch.ps1') && !md.includes('other.txt'), md || h7.stderr);
     }
   }
+
+  // ---- P10: backups that run, export/import, restore, sync status, OneDrive conflict copies ----
+  // All against throwaway memory roots in %TEMP% (CDS_MEMORY_ROOT); the OneDrive state is set with the
+  // test-only CDS_ONEDRIVE_FOLDERS / CDS_ONEDRIVE_RUNNING. Needs a 1.7 CLI (--cli).
+  const p10Cli = cliPath && /export \[file\]/.test(cli('help').out);
+  if (!p10Cli) {
+    console.log('SKIP  P10 checks (need --cli with a 1.7 CLI): daily backup once a day and pruned, pre-upgrade backup, export -> import file by file, overlapping import, dry run, conflict copies merged and reported by load, restore backs up first, the sync line, git/cloud/sync removed, search reads a conflict copy');
+  } else {
+    const p10 = path.join(os.tmpdir(), `${scratchName}_p10`);
+    const env10 = (root, extra = {}) => ({ ...process.env, CDS_MEMORY_ROOT: root, CDS_AUTO_BACKUP: 'off', CDS_ONEDRIVE_FOLDERS: 'none', CDS_ONEDRIVE_RUNNING: '0', ...extra });
+    const c10 = (root, args, extra = {}, input = '') => { const x = spawnSync(cliPath, args, { encoding: 'utf8', windowsHide: true, timeout: 120000, env: env10(root, extra), input }); return { code: x.status, out: `${x.stdout || ''}${x.stderr || ''}` }; };
+    const RA = path.join(p10, 'A'), RB = path.join(p10, 'B'), RE = path.join(p10, 'E'), RC = path.join(p10, 'C');
+    const proj = path.join(p10, 'proj', 'P10Proj');
+    write(path.join(proj, 'docs', 'readme.md'), 'x\n');
+    const memA = path.join(RA, 'Projects', 'P10Proj'), memB = path.join(RB, 'Projects', 'P10Proj');
+    const storeOf = (root) => path.join(root, 'Backups', 'store');
+    const zips = (root) => { try { return fs.readdirSync(storeOf(root)).filter(n => n.endsWith('.zip')).sort(); } catch { return []; } };
+    const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+    const fileMap = (root) => {
+      const m = {};
+      const walk = (d, rel) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const r = rel ? `${rel}/${e.name}` : e.name; if (e.isDirectory()) { if (!rel && e.name === 'Backups') continue; walk(path.join(d, e.name), r); } else m[r] = sha(path.join(d, e.name)); } };
+      if (fs.existsSync(root)) walk(root, '');
+      return m;
+    };
+    const sameMap = (a, b) => { const ka = Object.keys(a).sort(), kb = Object.keys(b).sort(); return ka.length === kb.length && ka.every((k, i) => k === kb[i] && a[k] === b[k]); };
+    const lines = (f) => { try { return fs.readFileSync(f, 'utf8').split('\n').filter(l => l.trim()); } catch { return []; } };
+    const countText = (f, t) => lines(f).filter(l => l.includes(t)).length;
+
+    // Store A: a project with a mistake, an activity, a decision, a handoff, and a lesson.
+    c10(RA, ['init', proj]);
+    c10(RA, ['record', proj, 'mistake', JSON.stringify({ mistake: 'p10 mistake one', impact: 'i', fix: 'f', lesson: 'l' })]);
+    c10(RA, ['record', proj, 'activity', JSON.stringify({ action: 'code_change', description: 'p10 activity one' })]);
+    c10(RA, ['record', proj, 'decision', JSON.stringify({ decision: 'p10 decision one', reasoning: 'r' })]);
+    c10(RA, ['record', proj, 'handoff', JSON.stringify({ where_i_stopped: 'p10 handoff from A', next_step: 'n' })]);
+    c10(RA, ['lesson', 'add', JSON.stringify({ lesson: 'Zip the whole memory store before every upgrade', why: 'p10 smoke' })]);
+
+    // Daily: made once per day.
+    const d1 = c10(RA, ['backup', '--auto']);
+    const d2 = c10(RA, ['backup', '--auto']);
+    const daily = zips(RA).filter(n => n.endsWith('-daily.zip'));
+    check('P10: backup --auto makes today\'s daily store backup once (the second run makes none)', d1.code === 0 && d2.code === 0 && daily.length === 1 && /No backup needed/.test(d2.out), `${daily.join(', ')}\n${d1.out}\n${d2.out}`);
+
+    // Pruning: 20 older daily, 6 older pre-upgrade, 2 manual, 1 pre-import; then a pre-upgrade backup.
+    const src = path.join(storeOf(RA), daily[0]);
+    const stamp = (daysAgo, hh) => { const d = new Date(Date.now() - daysAgo * 86400000); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${hh}0000`; };
+    for (let i = 1; i <= 20; i++) fs.copyFileSync(src, path.join(storeOf(RA), `ClaudeDevStudio-store-${stamp(i, '02')}-daily.zip`));
+    for (let i = 1; i <= 6; i++) fs.copyFileSync(src, path.join(storeOf(RA), `ClaudeDevStudio-store-${stamp(i, '03')}-upgrade.zip`));
+    for (let i = 30; i <= 31; i++) fs.copyFileSync(src, path.join(storeOf(RA), `ClaudeDevStudio-store-${stamp(i, '04')}-manual.zip`));
+    fs.copyFileSync(src, path.join(storeOf(RA), `ClaudeDevStudio-store-${stamp(40, '05')}-pre-import.zip`));
+    const up = c10(RA, ['backup', '--upgrade']);
+    const kinds = (root) => zips(root).reduce((m, n) => { const k = n.replace(/^ClaudeDevStudio-store-\d{8}-\d{6}-/, '').replace(/\.zip$/, ''); m[k] = (m[k] || 0) + 1; return m; }, {});
+    const k1 = kinds(RA);
+    const newestDaily = zips(RA).filter(n => n.endsWith('-daily.zip')).sort().slice(-1)[0];
+    check('P10: pruning keeps the newest 14 daily and 4 pre-upgrade backups; manual and pre-import ones are never deleted', up.code === 0 && k1.daily === 14 && k1.upgrade === 4 && k1.manual === 2 && k1['pre-import'] === 1 && newestDaily === daily[0], `${JSON.stringify(k1)}\n${up.out}`);
+
+    // The pre-upgrade backup opens, every hash matches, and holds the project.
+    const upZip = zips(RA).filter(n => n.endsWith('-upgrade.zip')).sort().slice(-1)[0];
+    const ver = c10(RA, ['backup', '--verify', path.join(storeOf(RA), upZip)]);
+    const peek = c10(RE, ['import', path.join(storeOf(RA), upZip), '--dry-run']);
+    check('P10: a pre-upgrade backup (backup --upgrade, run by the installer) opens, every hash matches, and holds the store', ver.code === 0 && /every hash matches/.test(ver.out) && /Projects added: 1 \(P10Proj\)/.test(peek.out), `${ver.out}\n${peek.out}`);
+    check('P10: import --dry-run writes nothing (an empty root stays absent)', peek.code === 0 && !fs.existsSync(RE), peek.out);
+
+    // Export -> import into an empty root: the same files, byte for byte (Backups\ aside).
+    const exp1 = path.join(p10, 'export1.zip');
+    const ex = c10(RA, ['export', exp1]);
+    const im = c10(RE, ['import', exp1]);
+    const mA = fileMap(RA), mE = fileMap(RE);
+    check(`P10: export -> import into an empty store reproduces it file by file (${Object.keys(mA).length} files)`, ex.code === 0 && im.code === 0 && Object.keys(mA).length >= 8 && sameMap(mA, mE),
+      `${ex.out}\n${im.out}\nA only: ${Object.keys(mA).filter(k => mA[k] !== mE[k]).join(', ')}\nE only: ${Object.keys(mE).filter(k => mE[k] !== mA[k]).join(', ')}`);
+
+    // Overlap: B starts as A, both go on, then A's new export is imported into B.
+    c10(RB, ['import', exp1]);
+    c10(RB, ['record', proj, 'mistake', JSON.stringify({ mistake: 'p10 only on PC B', impact: 'i', fix: 'f', lesson: 'l' })]);
+    c10(RA, ['record', proj, 'mistake', JSON.stringify({ mistake: 'p10 only on PC A', impact: 'i', fix: 'f', lesson: 'l' })]);
+    c10(RA, ['lesson', 'add', JSON.stringify({ lesson: 'Before every upgrade zip the whole memory store', why: 'near duplicate' }), '--force']);
+    const exp2 = path.join(p10, 'export2.zip');
+    c10(RA, ['export', exp2]);
+    const treeB = fileMap(RB);
+    const dryB = c10(RB, ['import', exp2, '--dry-run']);
+    check('P10: import --dry-run into a store with entries changes nothing and says what it would add', dryB.code === 0 && sameMap(treeB, fileMap(RB)) && zips(RB).length === 0 && /Would import/.test(dryB.out) && /Entries added: 1/.test(dryB.out), dryB.out);
+    const imB = c10(RB, ['import', exp2]);
+    const mis = path.join(memB, 'MISTAKES.jsonl');
+    check('P10: import into an overlapping store adds only the missing entries and duplicates nothing',
+      imB.code === 0 && countText(mis, 'p10 mistake one') === 1 && countText(mis, 'p10 only on PC A') === 1 && countText(mis, 'p10 only on PC B') === 1 && lines(mis).length === 3 &&
+      countText(path.join(memB, 'DECISIONS.jsonl'), 'p10 decision one') === 1 && countText(path.join(memB, 'HANDOFFS.jsonl'), 'p10 handoff from A') === 1,
+      `${imB.out}\n${lines(mis).join('\n')}`);
+    const ids = lines(mis).map(l => JSON.parse(l).id);
+    check('P10: an imported entry whose ID is taken gets the next free ID (and keeps the old one as original_id); lessons: the near-duplicate is skipped',
+      new Set(ids).size === ids.length && lines(mis).some(l => /"original_id"/.test(l)) && /near-duplicates: 1/.test(imB.out) && countText(path.join(RB, 'LESSONS.jsonl'), 'memory store') === 1,
+      `${ids.join(', ')}\n${imB.out}`);
+    check('P10: the import backed the store up first (a pre-import backup)', zips(RB).some(n => n.endsWith('-pre-import.zip')) && /Backed up first/.test(imB.out), zips(RB).join(', '));
+    const again = c10(RB, ['import', exp2]);
+    check('P10: importing the same export again adds nothing', again.code === 0 && /Entries added: 0/.test(again.out) && lines(mis).length === 3, again.out);
+
+    // OneDrive conflict copies: merged through the CLI on load, moved to Backups\conflicts\, reported by load.
+    const firstLine = lines(mis)[0];
+    write(path.join(memB, 'MISTAKES-DESKTOP-SMOKE1.jsonl'), `${firstLine}\n${JSON.stringify({ id: 'ERR001', timestamp: '2026-11-12T09:00:00-06:00', mistake: 'p10 written on the other PC', impact: 'i', fix: 'f', lesson: 'l' })}\n`);
+    write(path.join(memB, 'session_handoff-DESKTOP-SMOKE1.md'), '<!-- cds-handoff: explicit -->\n# Handoff: P10Proj\n*Written 2020-01-01 09:00 (explicit) · HND009*\n\n**Where I stopped:** p10 an old handoff from the other PC\n\n**Next step:** n\n');
+    const handoffBefore = fs.readFileSync(path.join(memB, 'session_handoff.md'), 'utf8');
+    const c2 = new Client({ name: 'cds-smoke-p10', version: '1.0.0' });
+    await c2.connect(new StdioClientTransport({ command: process.execPath, args: [serverPath], env: { CDS_CLI_PATH: cliPath, CDS_MEMORY_ROOT: RB, CDS_LEGACY_ROOT: path.join(p10, 'old'), CDS_AUTO_BACKUP: 'off' } }));
+    try {
+      const l1 = await c2.callTool({ name: 'claudedev_load', arguments: { project_path: proj } });
+      const t1 = l1.content?.[0]?.text ?? '';
+      const moved = path.join(RB, 'Backups', 'conflicts', 'P10Proj', 'MISTAKES-DESKTOP-SMOKE1.jsonl');
+      check('P10: load merges a OneDrive conflict copy\'s new entry into the main file once (through the CLI) and moves the copy to Backups\\conflicts\\',
+        countText(mis, 'p10 written on the other PC') === 1 && lines(mis).length === 4 && !fs.existsSync(path.join(memB, 'MISTAKES-DESKTOP-SMOKE1.jsonl')) && fs.existsSync(moved), lines(mis).join('\n'));
+      check('P10: load says so in one short line ("merged 1 entry from a OneDrive conflict copy made on DESKTOP-SMOKE1")', /OneDrive: Merged 1 entry from a OneDrive conflict copy made on DESKTOP-SMOKE1/.test(t1) && t1.indexOf('OneDrive:') < t1.indexOf('--- '), t1.slice(0, 900));
+      check('P10: a conflict copy of session_handoff.md: the newer stays the handoff, the older is added to HANDOFFS.jsonl, the copy moved',
+        fs.readFileSync(path.join(memB, 'session_handoff.md'), 'utf8') === handoffBefore && countText(path.join(memB, 'HANDOFFS.jsonl'), 'p10 an old handoff from the other PC') === 1 &&
+        fs.existsSync(path.join(RB, 'Backups', 'conflicts', 'P10Proj', 'session_handoff-DESKTOP-SMOKE1.md')), lines(path.join(memB, 'HANDOFFS.jsonl')).join('\n'));
+      const l2 = await c2.callTool({ name: 'claudedev_load', arguments: { project_path: proj } });
+      check('P10: the next load has nothing to merge and says nothing about it', !/OneDrive:/.test(l2.content?.[0]?.text ?? ''), (l2.content?.[0]?.text ?? '').slice(0, 400));
+      // search reads an unmerged copy (read-only: it is still there afterwards)
+      write(path.join(memB, 'DECISIONS-LAPTOP-SMOKE2.jsonl'), JSON.stringify({ id: 'DEC001', timestamp: '2026-11-12T10:00:00-06:00', decision: 'p10 zebrafish decision from the laptop', reasoning: 'r' }) + '\n');
+      const s = await c2.callTool({ name: 'claudedev_search', arguments: { query: 'zebrafish decision', project_path: proj } });
+      const st = s.content?.[0]?.text ?? '';
+      check('P10: claudedev_search finds an entry in a conflict copy not merged yet, and leaves the copy where it is', /zebrafish/.test(st) && /DECISIONS-LAPTOP-SMOKE2\.jsonl/.test(st) && fs.existsSync(path.join(memB, 'DECISIONS-LAPTOP-SMOKE2.jsonl')), st);
+    } finally {
+      await c2.close().catch(() => {});
+    }
+
+    // Restore: replace, after backing up; a "no" changes nothing.
+    const restoreZip = path.join(storeOf(RB), zips(RB).find(n => n.endsWith('-pre-import.zip')));
+    const beforeNo = fileMap(RB);
+    const no = c10(RB, ['restore', restoreZip], {}, 'n\n');
+    check('P10: restore asks first; "n" changes nothing', no.code === 0 && /cancelled/.test(no.out) && sameMap(beforeNo, fileMap(RB)), no.out);
+    const preRestoreBefore = zips(RB).filter(n => n.endsWith('-pre-restore.zip')).length;
+    const yes = c10(RB, ['restore', restoreZip, '--yes']);
+    check('P10: restore backs the store up first, then puts the backup\'s files back (here: the mistakes before the import)',
+      yes.code === 0 && zips(RB).filter(n => n.endsWith('-pre-restore.zip')).length === preRestoreBefore + 1 && /Backed up first/.test(yes.out) && countText(mis, 'p10 only on PC A') === 0 && countText(mis, 'p10 only on PC B') === 1, `${yes.out}\n${lines(mis).join('\n')}`);
+
+    // load starts today's daily backup on its own and doesn't wait for it.
+    c10(RC, ['init', proj]);
+    const t0 = Date.now();
+    const ld = spawnSync(cliPath, ['load', proj], { encoding: 'utf8', windowsHide: true, timeout: 60000, env: { ...env10(RC), CDS_AUTO_BACKUP: '' } });
+    const loadMs = Date.now() - t0;
+    let made = false;
+    for (let i = 0; i < 40 && !made; i++) { made = zips(RC).some(n => n.endsWith('-daily.zip')); if (!made) await sleep(250); }
+    check(`P10: load starts the daily store backup in the background and returns at once (${loadMs} ms)`, ld.status === 0 && loadMs < 3000 && made, `${ld.stdout}${ld.stderr}; zips: ${zips(RC).join(', ')}`);
+
+    // The sync line.
+    const inOd = c10(RA, ['backup', '--status'], { CDS_ONEDRIVE_FOLDERS: p10, CDS_ONEDRIVE_RUNNING: '1' }).out;
+    const odOff = c10(RA, ['backup', '--status'], { CDS_ONEDRIVE_FOLDERS: p10, CDS_ONEDRIVE_RUNNING: '0' }).out;
+    const notOd = c10(RA, ['backup', '--status'], { CDS_ONEDRIVE_FOLDERS: 'none' }).out;
+    check('P10: the sync line: in OneDrive and backed up daily / OneDrive isn\'t running / not in a synced folder',
+      /Your memory is in OneDrive \(synced\) and backed up daily \(newest: /.test(inOd) && /OneDrive isn't running: your memory isn't syncing right now/.test(odOff) && /Your memory isn't in a synced folder: export it now and then/.test(notOd),
+      `${inOd}\n${odOff}\n${notOd}`);
+    const st2 = c10(RA, ['status']).out;
+    check('P10: claudedev status ends with the memory\'s sync line', /Memory:\s+Your memory isn't in a synced folder/.test(st2), st2);
+
+    // git, cloud and sync: removed, and say so (no command that silently does nothing).
+    const g = c10(RA, ['git', 'status']), cl = c10(RA, ['cloud', 'upload']), sy = c10(RA, ['sync']);
+    check('P10: git, cloud and sync are removed and say why and what to use (exit 1, nothing written)',
+      [g, cl, sy].every(x => x.code === 1 && /removed in ClaudeDevStudio 1\.7\.0/.test(x.out) && /claudedev export/.test(x.out)) && !fs.existsSync(path.join(memA, '.cds-memory')), `${g.out}\n${cl.out}\n${sy.out}`);
+    const leakedP10 = fs.existsSync(path.join(docs, 'ClaudeDevStudio', 'Projects', 'P10Proj')) || fs.existsSync(path.join(docs, 'ClaudeDevStudio', 'Projects', path.basename(p10)));
+    check('P10: nothing of these checks reached the real store', !leakedP10, docs);
+    try { fs.rmSync(p10, { recursive: true, force: true }); } catch { /* leave it */ }
+  }
 } catch (e) {
   check('no exception', false, e.stack || e.message);
 } finally {
@@ -1235,6 +1410,10 @@ try {
   for (const x of extraProjects) {
     try { fs.rmSync(x.mem, { recursive: true, force: true }); } catch { /* leave it */ }
     try { fs.rmSync(x.dir, { recursive: true, force: true }); } catch { /* leave it */ }
+  }
+  if (isolated) {
+    try { fs.rmSync(storeRoot, { recursive: true, force: true }); } catch { /* leave it */ }
+    try { fs.rmSync(isolatedLegacy, { recursive: true, force: true }); } catch { /* leave it */ }
   }
 }
 

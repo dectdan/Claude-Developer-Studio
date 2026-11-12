@@ -11,7 +11,7 @@
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
-import { memoryRoot } from './cds-paths.js';
+import { memoryRoot, conflictCopyOf } from './cds-paths.js';
 import { LEGACY_ROOT, oneLine, day, lessonsFile, STOP, keywords } from './cds-context.js';
 
 // ---------------------------------------------------------------------------
@@ -99,6 +99,14 @@ function listFiles(kinds, onlyProject) {
       const present = new Set(listDir(dir).filter(e => e.isFile()).map(e => e.name));
       for (const [f, kind] of Object.entries(PROJECT_FILES)) {
         if (kinds.has(kind) && present.has(f)) files.push({ file: path.join(dir, f), kind, project: name, store, rel: f });
+      }
+      // OneDrive conflict copies (P10, e.g. MISTAKES-DESKTOP-ABC.jsonl): read too, read-only (search
+      // never writes); the CLI merges them on the project's next load or record. An entry in both is
+      // shown once (the key below).
+      for (const n of present) {
+        const c = conflictCopyOf(n);
+        const kind = c && PROJECT_FILES[`${c.base.toUpperCase()}.jsonl`];
+        if (kind && kinds.has(kind) && /\.jsonl$/i.test(n)) files.push({ file: path.join(dir, n), kind, project: name, store, rel: n });
       }
       const wantAct = kinds.has('activity'), wantMis = kinds.has('mistakes');
       if (!wantAct && !wantMis) continue;

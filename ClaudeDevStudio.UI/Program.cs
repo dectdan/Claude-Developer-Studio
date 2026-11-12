@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using Microsoft.Win32;
+using ClaudeDevStudio.Memory;
 
 namespace ClaudeDevStudio.TrayApp
 {
@@ -46,6 +47,10 @@ namespace ClaudeDevStudio.TrayApp
         private DateTime _ccChecked = DateTime.MinValue;
         private int _ccChecking;
         private readonly System.Threading.SynchronizationContext? _ui;
+        private ToolStripMenuItem _memoryItem = null!;
+        private ToolStripMenuItem _memoryStatusItem = null!;
+        private System.Windows.Forms.Timer? _backupTimer;
+        private int _cliBusy;
 
         public TrayApplication()
         {
@@ -55,6 +60,7 @@ namespace ClaudeDevStudio.TrayApp
             CheckFirstRun();
             StartPhaseWatcher();
             RefreshClaudeCodeState();
+            StartBackupTimer();
 
             // Check for updates asynchronously (don't block startup)
             Task.Run(async () => await CheckForUpdatesAsync());
@@ -66,12 +72,23 @@ namespace ClaudeDevStudio.TrayApp
             _contextMenu.Items.Add("Open Dashboard", null, OnOpenDashboard);
             _contextMenu.Items.Add("Phases...", null, (s, e) => OpenDashboardPhases(null, null));
             _contextMenu.Items.Add("View Activity", null, OnViewActivity);
+            // Backups, export and import of the whole memory store (P10), all done by the CLI.
+            _memoryItem = new ToolStripMenuItem("Memory backups");
+            _memoryStatusItem = new ToolStripMenuItem("…") { Enabled = false };
+            _memoryItem.DropDownItems.Add(_memoryStatusItem);
+            _memoryItem.DropDownItems.Add(new ToolStripSeparator());
+            _memoryItem.DropDownItems.Add("Back up now", null, OnBackupNow);
+            _memoryItem.DropDownItems.Add("Export memory...", null, OnExportMemory);
+            _memoryItem.DropDownItems.Add("Import memory...", null, OnImportMemory);
+            _memoryItem.DropDownItems.Add("Open backups folder", null, (s, e) => OpenFolder(StoreBackups.Folder));
+            _contextMenu.Items.Add(_memoryItem);
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add("Link Claude Desktop...", null, OnLinkClaudeDesktop);
             _claudeCodeItem = new ToolStripMenuItem("Claude Code...", null, OnClaudeCode);
             _contextMenu.Items.Add(_claudeCodeItem);
             _contextMenu.Opening += (s, e) =>
             {
+                UpdateMemoryItem();
                 UpdateClaudeCodeItem();
                 if ((DateTime.Now - _ccChecked).TotalSeconds > 60) RefreshClaudeCodeState();
             };
@@ -179,6 +196,138 @@ namespace ClaudeDevStudio.TrayApp
             if (!string.IsNullOrEmpty(phase)) psi.ArgumentList.Add(phase);
             try { Process.Start(psi); }
             catch (Exception ex) { MessageBox.Show($"Failed to launch Dashboard: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        }
+
+        // ---------------------------------------------------------------------------------------
+        // Memory backups (P10): the daily store backup (claudedev backup --auto, checked every hour,
+        // the first time two minutes after start: it makes one only if today's is missing), the sync
+        // line, Back up now, Export and Import. The CLI does every write.
+        // ---------------------------------------------------------------------------------------
+
+        private void StartBackupTimer()
+        {
+            _backupTimer = new System.Windows.Forms.Timer { Interval = 2 * 60 * 1000 };
+            _backupTimer.Tick += (s, e) =>
+            {
+                _backupTimer.Interval = 60 * 60 * 1000;
+                Task.Run(() => RunCli(new[] { "backup", "--auto" }, 10 * 60 * 1000));
+            };
+            _backupTimer.Start();
+        }
+
+        private void UpdateMemoryItem()
+        {
+            try
+            {
+                var newest = StoreBackups.Newest();
+                var r = SyncStatus.Detect();
+                var sync = !r.InOneDrive ? "Not in a synced folder" : r.OneDriveRunning ? "In OneDrive (synced)" : "OneDrive isn't running";
+                var backed = newest == null ? "no backup yet" : $"newest backup {StoreBackups.Age(newest.Created)}";
+                _memoryStatusItem.Text = $"{sync}; {backed}";
+                _memoryStatusItem.ToolTipText = SyncStatus.Line(r, newest);
+                _memoryItem.ToolTipText = _memoryStatusItem.ToolTipText;
+            }
+            catch { _memoryStatusItem.Text = "(status unknown)"; }
+        }
+
+        // Runs claudedev.exe hidden; (exit code, everything it printed).
+        private static (int code, string output) RunCli(string[] args, int timeoutMs)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo(ClaudeDevExe())
+                {
+                    UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
+                };
+                foreach (var a in args) psi.ArgumentList.Add(a);
+                using var p = Process.Start(psi);
+                if (p == null) return (-1, "claudedev.exe did not start");
+                var err = p.StandardError.ReadToEndAsync();
+                var output = p.StandardOutput.ReadToEnd();
+                if (!p.WaitForExit(timeoutMs)) { try { p.Kill(true); } catch { } return (-1, output + "\n(timed out)"); }
+                return (p.ExitCode, (output + err.Result).Trim());
+            }
+            catch (Exception ex) { return (-1, $"claudedev.exe could not run: {ex.Message}"); }
+        }
+
+        // A long CLI job off the UI thread; the result in a message box.
+        private void RunCliThen(string[] args, Action<int, string> done)
+        {
+            if (System.Threading.Interlocked.Exchange(ref _cliBusy, 1) == 1)
+            {
+                MessageBox.Show("A backup, export or import is still running.", "ClaudeDevStudio", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            Task.Run(() =>
+            {
+                var (code, output) = RunCli(args, 30 * 60 * 1000);
+                _ui?.Post(_ => { System.Threading.Interlocked.Exchange(ref _cliBusy, 0); done(code, output); }, null);
+            });
+        }
+
+        private void OnBackupNow(object? sender, EventArgs e)
+        {
+            RunCliThen(new[] { "backup", "--all" }, (code, output) =>
+                MessageBox.Show(output, code == 0 ? "Memory backed up" : "Backup failed", MessageBoxButtons.OK,
+                    code == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Error));
+        }
+
+        private void OnExportMemory(object? sender, EventArgs e)
+        {
+            using var dlg = new SaveFileDialog
+            {
+                Title = "Export ClaudeDevStudio memory",
+                Filter = "Zip file (*.zip)|*.zip",
+                FileName = $"ClaudeDevStudio-export-{DateTime.Now:yyyyMMdd-HHmmss}.zip",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                OverwritePrompt = false
+            };
+            if (dlg.ShowDialog() != DialogResult.OK) return;
+            if (File.Exists(dlg.FileName))
+            {
+                MessageBox.Show($"{dlg.FileName} already exists. Choose another name.", "Export memory", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            RunCliThen(new[] { "export", dlg.FileName }, (code, output) =>
+                MessageBox.Show(output, code == 0 ? "Memory exported" : "Export failed", MessageBoxButtons.OK,
+                    code == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Error));
+        }
+
+        // Open, then the dry run's summary, then confirm (the import backs the store up first).
+        private void OnImportMemory(object? sender, EventArgs e)
+        {
+            using var dlg = new OpenFileDialog
+            {
+                Title = "Import ClaudeDevStudio memory (an export or a backup)",
+                Filter = "Zip file (*.zip)|*.zip",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+            };
+            if (dlg.ShowDialog() != DialogResult.OK) return;
+            var file = dlg.FileName;
+            RunCliThen(new[] { "import", file, "--dry-run" }, (code, preview) =>
+            {
+                if (code != 0)
+                {
+                    MessageBox.Show(preview, "Can't import this file", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+                var answer = MessageBox.Show(preview + "\n\nImport it? It adds what's missing, never removes or duplicates an entry, and backs up your current memory first.",
+                    "Import memory", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (answer != DialogResult.Yes) return;
+                RunCliThen(new[] { "import", file }, (c2, result) =>
+                    MessageBox.Show(result, c2 == 0 ? "Memory imported" : "Import failed", MessageBoxButtons.OK,
+                        c2 == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Error));
+            });
+        }
+
+        private static void OpenFolder(string folder)
+        {
+            try
+            {
+                Directory.CreateDirectory(folder);
+                Process.Start(new ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
+            }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "ClaudeDevStudio", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         }
 
         // ---------------------------------------------------------------------------------------
@@ -842,6 +991,7 @@ namespace ClaudeDevStudio.TrayApp
         public void Dispose()
         {
             _phaseWatcher?.Dispose();
+            _backupTimer?.Dispose();
             if (_mcpServerProcess != null && !_mcpServerProcess.HasExited)
             {
                 _mcpServerProcess.Kill();

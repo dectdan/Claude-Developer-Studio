@@ -43,6 +43,26 @@ export const memoryRoot = () => process.env.CDS_MEMORY_ROOT
 // [Documents]\ClaudeDevStudio\VSBridge: the files the VS Bridge extension writes.
 export const vsBridgeDir = () => path.join(memoryRoot(), 'VSBridge');
 
+// OneDrive conflict copies (P10): two PCs wrote the same file within OneDrive's sync window, and
+// OneDrive kept both, adding the PC's name to the copy's name (Microsoft's example:
+// Report-JOHNS-SURFACE.txt). The CLI merges them into the main file on load and record
+// (StoreBackup.cs, ConflictCopies: the same names) and moves them to Backups\conflicts\; until then,
+// the readers here read them too. Returns { base, pc } or null.
+const PC = '([A-Za-z0-9][A-Za-z0-9-]{0,62})';
+const CONFLICT_RULES = [
+  new RegExp(`^(MISTAKES|DECISIONS|PATTERNS|PERFORMANCE|HANDOFFS)-${PC}\\.jsonl$`, 'i'),
+  new RegExp(`^(\\d{4}-\\d\\d-\\d\\d)-${PC}\\.jsonl$`),
+  new RegExp(`^(session_handoff)-${PC}\\.md$`, 'i'),
+  new RegExp(`^(LESSONS|chat_mirror)-${PC}\\.jsonl$`, 'i'),
+];
+export function conflictCopyOf(name) {
+  for (const rule of CONFLICT_RULES) {
+    const m = rule.exec(name);
+    if (m) return { base: m[1], pc: m[2] };
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Which folders count as a project (moved here from cds-hook.js in P7, unchanged; the Claude Code
 // hook and the phase tools in cds-phase.js use the same rule).

@@ -59,8 +59,8 @@ namespace ClaudeDevStudio.Core
                 _settings.TotalBackupSize += new FileInfo(backupFile).Length;
                 SaveSettings(_settings);
 
-                // Cleanup old backups
-                CleanupOldBackups(backupPath);
+                // From 1.7.0 (P10) per-project backups are only made by hand (or before a restore), and
+                // backups made by hand are never deleted: no clean-up here any more.
 
                 return new BackupResult
                 {
@@ -222,7 +222,9 @@ namespace ClaudeDevStudio.Core
                     "MISTAKES.jsonl",
                     "DECISIONS.jsonl",
                     "UNCERTAINTIES.md",
-                    "PERFORMANCE.jsonl"
+                    "PERFORMANCE.jsonl",
+                    "HANDOFFS.jsonl",      // P10: the handoffs (from P3) were missing
+                    "session_handoff.md"
                 };
 
                 foreach (var file in filesToBackup)
@@ -274,11 +276,12 @@ namespace ClaudeDevStudio.Core
         /// </summary>
         private string GetBackupPath(BackupStrategy strategy)
         {
+            // [memory root]\Backups\<project> (MemoryPaths.Root, so CDS_MEMORY_ROOT in tests; P10).
+            // The whole-store backups are in Backups\store (StoreBackup.cs).
             return strategy switch
             {
                 BackupStrategy.OneDrive => Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                    "ClaudeDevStudio",
+                    ClaudeDevStudio.Memory.MemoryPaths.Root,
                     "Backups",
                     _projectName),
 
@@ -291,8 +294,7 @@ namespace ClaudeDevStudio.Core
                     _projectName),
 
                 _ => Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                    "ClaudeDevStudio",
+                    ClaudeDevStudio.Memory.MemoryPaths.Root,
                     "Backups",
                     _projectName)
             };

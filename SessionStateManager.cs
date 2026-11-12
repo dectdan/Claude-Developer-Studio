@@ -216,25 +216,14 @@ namespace ClaudeDevStudio.Core
         }
 
         /// <summary>
-        /// Get the memory path for a project (static helper)
+        /// The memory folder of a project (static helper): [memory root]\Projects\&lt;name&gt;.
+        /// From 1.7.0 (P10) it follows MemoryPaths.Root (so CDS_MEMORY_ROOT in tests) and no longer
+        /// creates the folder: before, any command that asked (stats, backup, git, cloud) made an
+        /// empty project folder named after the current directory in the real store.
         /// </summary>
         public static string GetMemoryPath(string projectName)
         {
-            var baseMemoryPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                "ClaudeDevStudio",
-                "Projects"
-            );
-
-            var projectPath = Path.Combine(baseMemoryPath, projectName);
-            
-            // Ensure directory exists
-            if (!Directory.Exists(projectPath))
-            {
-                Directory.CreateDirectory(projectPath);
-            }
-
-            return projectPath;
+            return Path.Combine(ClaudeDevStudio.Memory.MemoryPaths.Root, "Projects", projectName);
         }
     }
 

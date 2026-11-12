@@ -32,7 +32,7 @@ SetCompressor /SOLID lzma
 ; Metadata
 ;---------------------------------------------------------------------------
 !define PRODUCT_NAME      "ClaudeDevStudio"
-!define PRODUCT_VERSION   "1.6.0"
+!define PRODUCT_VERSION   "1.7.0"
 !define PRODUCT_PUBLISHER "Daniel E Gain"
 !define PRODUCT_CONTACT   "support@gainpublications.com"
 !define PRODUCT_URL       "https://github.com/dectdan/Claude-Developer-Studio"
@@ -267,8 +267,26 @@ Section "Install" SecMain
   ;--- Step 4: Install CDS application files ---
   ${STEP} "Installing ClaudeDevStudio files..."
 
+  ; CDS already installed (a version in the registry, or an installed CLI): back up the whole memory
+  ; store before the upgrade (P10). Done with the new CLI right after it is copied, before anything
+  ; runs it against the memory (the files copied here are programs, not memory). Never fails the install.
+  StrCpy $7 ""
+  ${If} $9 != ""
+    StrCpy $7 "upgrade"
+  ${ElseIf} ${FileExists} "${INSTALL_DIR}\CLI\claudedev.exe"
+    StrCpy $7 "upgrade"
+  ${EndIf}
+
   SetOutPath "${INSTALL_DIR}\CLI"
   File /r "build\CLI\*.*"
+
+  ${If} $7 == "upgrade"
+    ${STEP} "Backing up the memory store before the upgrade..."
+    nsExec::ExecToStack '"${INSTALL_DIR}\CLI\claudedev.exe" backup --upgrade'
+    Pop $0
+    Pop $1
+    ${STEP} "Memory backup (exit $0): $1"
+  ${EndIf}
 
   SetOutPath "${INSTALL_DIR}\TrayApp"
   File /r "build\TrayApp\*.*"
