@@ -39,7 +39,8 @@ if (-not $Prompt) {
 $allowed = 'Read,Edit,Write,MultiEdit,Glob,Grep,Bash,PowerShell,TodoWrite,NotebookEdit,WebFetch,WebSearch,' +
   'mcp__claudedevstudio__claudedev_load,mcp__claudedevstudio__claudedev_record_activity,' +
   'mcp__claudedevstudio__claudedev_record_mistake,mcp__claudedevstudio__claudedev_check_mistake,' +
-  'mcp__claudedevstudio__claudedev_stats,mcp__claudedevstudio__claudedev_chat_checkpoint'
+  'mcp__claudedevstudio__claudedev_stats,mcp__claudedevstudio__claudedev_chat_checkpoint,' +
+  'mcp__claudedevstudio__claudedev_handoff,mcp__claudedevstudio__claudedev_record_decision'
 
 $claude = (Get-Command claude -ErrorAction Stop).Source
 $q = { param($s) '"' + ($s -replace '"', '\"') + '"' }
