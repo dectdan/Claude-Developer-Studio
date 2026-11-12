@@ -60,19 +60,6 @@
                        FontSize="12"
                        Margin="0,8,0,0"/>
             
-            <!-- Debug Monitoring -->
-            <TextBlock Text="Debug Monitoring" FontWeight="SemiBold" FontSize="18" Margin="0,24,0,0"/>
-            <TextBlock x:Name="DebugViewStatus" 
-                       Text="DebugView: Installed" 
-                       Foreground="{ThemeResource SystemFillColorSuccessBrush}"
-                       FontSize="12"/>
-            <CheckBox Content="Auto-launch DebugView when monitoring starts" IsChecked="True" Margin="0,8,0,0"/>
-            <TextBlock Text="DebugView captures Visual Studio debug output for Claude to analyze." 
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       TextWrapping="Wrap"
-                       FontSize="12"
-                       Margin="0,4,0,0"/>
-            
             <!-- MCP Server -->
             <TextBlock Text="MCP Server" FontWeight="SemiBold" FontSize="18" Margin="0,24,0,0"/>
             <TextBlock x:Name="MCPStatus" 

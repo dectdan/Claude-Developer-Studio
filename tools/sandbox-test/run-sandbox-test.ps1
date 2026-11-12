@@ -15,6 +15,11 @@
 # done. After the time limit the sandbox is closed and the run is reported as a timeout. Only
 # one Windows Sandbox can run at a time.
 #
+# Time limits (P6): in-sandbox.ps1 gives each step that can hang its own limit (a stuck step fails as
+# a check and the run goes on), and a watchdog inside shuts the sandbox down 4 minutes before
+# -TimeoutMinutes (written to run-config.json). A run refuses to start while a sandbox VM
+# (vmmemWindowsSandbox) is still running, and says how to close it. Scenario T tests the limits.
+#
 # Exit codes: 0 all checks passed, 1 a check failed, 2 timeout, 3 could not start.
 
 param(
@@ -33,6 +38,13 @@ $Results = Join-Path $Kit "results\$Run"
 $SandboxProcs = 'WindowsSandbox', 'WindowsSandboxClient', 'WindowsSandboxRemoteSession', 'WindowsSandboxServer'
 
 function Get-SandboxProcs { @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $SandboxProcs -contains $_.Name }) }
+# The sandbox's VM (P6). It can outlive the window processes above: stopping it needs elevation, and a
+# new launch reattaches to it and never reports (GROUND_TRUTH section 11), so a run refuses to start then.
+function Get-SandboxVm { @(Get-Process -Name 'vmmemWindowsSandbox' -ErrorAction SilentlyContinue) }
+function Say-HowToClose {
+    Write-Host '  To close it: open Windows Sandbox from the Start menu (it reattaches to the running sandbox) and close its window,' -ForegroundColor Yellow
+    Write-Host '  or restart Windows. Then run this again.' -ForegroundColor Yellow
+}
 function Close-Sandbox {
     foreach ($p in Get-SandboxProcs) { try { Stop-Process -Id $p.Id -Force -ErrorAction Stop; Write-Host "  stopped $($p.Name) ($($p.Id))" } catch { Write-Host "  could not stop $($p.Name) ($($p.Id)): $($_.Exception.Message)" } }
 }
@@ -41,14 +53,21 @@ $exe = Join-Path $env:windir 'System32\WindowsSandbox.exe'
 if (-not (Test-Path $exe)) { Write-Host 'Windows Sandbox is not installed (optional feature Containers-DisposableClientVM).' -ForegroundColor Red; exit 3 }
 $setup = Join-Path $InstallerDir 'ClaudeDevStudio-Setup.exe'
 if (-not (Test-Path $setup)) { Write-Host "Installer not found: $setup (build it first)." -ForegroundColor Red; exit 3 }
-if ((Get-SandboxProcs).Count -gt 0) { Write-Host 'A Windows Sandbox is already running; only one can run at a time. Close it first.' -ForegroundColor Red; exit 3 }
+if ((Get-SandboxProcs).Count -gt 0) { Write-Host 'A Windows Sandbox is already running; only one can run at a time. Close it first.' -ForegroundColor Red; Say-HowToClose; exit 3 }
+$vm = Get-SandboxVm
+if ($vm.Count -gt 0) {
+    Write-Host "A Windows Sandbox VM is still running (vmmemWindowsSandbox, PID $($vm[0].Id), started $($vm[0].StartTime)), probably left by an earlier run that timed out." -ForegroundColor Red
+    Write-Host '  A new run would attach to it and never report, so this run does not start.' -ForegroundColor Red
+    Say-HowToClose
+    exit 3
+}
 
 New-Item -ItemType Directory -Force -Path $Results | Out-Null
 $Downloads = Join-Path $Repo 'Installer\downloads'
 New-Item -ItemType Directory -Force -Path $Downloads | Out-Null
 $version = ([regex]::Match((Get-Content (Join-Path $Repo 'Directory.Build.props') -Raw), '<Version>\s*([^<\s]+)')).Groups[1].Value
 $scenarioList = (($Scenarios -join ',') -split ',' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }) -join ','
-$runConfig = [ordered]@{ scenarios = $scenarioList; networking = [bool]$Networking; expectVersion = $version }
+$runConfig = [ordered]@{ scenarios = $scenarioList; networking = [bool]$Networking; expectVersion = $version; timeoutMinutes = $TimeoutMinutes }
 [System.IO.File]::WriteAllText((Join-Path $Results 'run-config.json'), ($runConfig | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))
 $net = if ($Networking) { 'Enable' } else { 'Disable' }
 $esc = { param($s) [System.Security.SecurityElement]::Escape($s) }
@@ -102,8 +121,14 @@ while ((Get-Date) -lt $deadline) {
 
 $elapsed = [math]::Round(((Get-Date) - $started).TotalMinutes, 1)
 if (-not $finished) {
+    $wd = Join-Path $Results 'watchdog.txt'
+    if (Test-Path $wd) { Write-Host "The sandbox's watchdog stopped the test: $(Get-Content $wd -Raw)" -ForegroundColor Red }
     Write-Host "TIMEOUT: no finished results after $TimeoutMinutes min; closing the sandbox." -ForegroundColor Red
+    # The watchdog inside shuts the VM down a few minutes before this limit; give it a moment.
+    $waitUntil = (Get-Date).AddSeconds(120)
+    while ((Get-SandboxVm).Count -gt 0 -and (Get-Date) -lt $waitUntil) { Start-Sleep -Seconds 5 }
     Close-Sandbox
+    if ((Get-SandboxVm).Count -gt 0) { Write-Host 'The sandbox VM is still running.' -ForegroundColor Yellow; Say-HowToClose }
     if (Test-Path $resultsFile) { Write-Host "Partial results: $resultsFile" }
     exit 2
 }

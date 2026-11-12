@@ -621,12 +621,12 @@ namespace ClaudeDevStudio.TrayApp
                 $"ClaudeDevStudio v{version}\n\n" +
                 "Memory & Development System for Claude AI\n\n" +
                 "Copyright © 2026 Daniel E Gain\n" +
-                "Email: danielegain@gmail.com\n" +
+                "Contact: support@gainpublications.com\n" +
                 "Licensed under MIT License\n\n" +
                 "Developed with assistance from Claude (Anthropic)\n\n" +
                 "Features:\n" +
-                "• Debug output monitoring (DebugView integration)\n" +
                 "• Project memory & context preservation\n" +
+                "• Visual Studio bridge (build errors, output, debugger)\n" +
                 "• Auto-backup to Documents folder\n" +
                 "• Claude Desktop integration via MCP\n\n" +
                 "GitHub: github.com/dectdan/Claude-Developer-Studio",

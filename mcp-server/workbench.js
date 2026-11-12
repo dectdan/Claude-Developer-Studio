@@ -60,6 +60,29 @@ function fetchUrl(url) {
   });
 }
 
+// The VS Bridge's port (VsBridgeServer.cs). CDS_VS_BRIDGE_PORT moves it for tests only
+// (smoke.mjs runs a fake bridge); never set it in normal use.
+const VS_BRIDGE_PORT = Number(process.env.CDS_VS_BRIDGE_PORT) || 62000;
+
+// GET from the VS Bridge: { status, body, json } or { unreachable: <reason> }.
+function bridgeGet(urlPath) {
+  return new Promise((resolve) => {
+    const req = http.request({ hostname: 'localhost', port: VS_BRIDGE_PORT, path: urlPath, method: 'GET', timeout: 5000 }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(body); } catch { /* not JSON */ }
+        resolve({ status: res.statusCode, body, json });
+      });
+    });
+    req.on('error', (e) => resolve({ unreachable: e.code === 'ECONNREFUSED' ? 'nothing is listening' : e.message }));
+    req.on('timeout', () => { req.destroy(); resolve({ unreachable: 'timed out after 5 s' }); });
+    req.end();
+  });
+}
+
 class WorkbenchServer {
   constructor() {
     this.server = new Server(
@@ -93,10 +116,13 @@ class WorkbenchServer {
         },
         {
           name: 'claudedev_vs_get_output',
-          description: 'Get VS build output text.',
+          description: 'Get a VS Output pane: build (default), debug (a running program\'s Debug.WriteLine/trace output), any pane by name, or list.',
           inputSchema: {
             type: 'object',
-            properties: { lines: { type: 'number', description: 'Lines from end (default 100)' } },
+            properties: {
+              pane: { type: 'string', description: 'build (default), debug, a pane name, or list' },
+              lines: { type: 'number', description: 'Lines from end (default 100)' },
+            },
             required: [],
           },
         },
@@ -219,7 +245,7 @@ class WorkbenchServer {
           case 'fetch_url':                 return await this.handleFetchUrl(args);
           case 'claudedev_vs_get_state':    return this.handleVsFile('vs_state.json');
           case 'claudedev_vs_get_errors':   return this.handleVsErrors();
-          case 'claudedev_vs_get_output':   return this.handleVsOutput(args);
+          case 'claudedev_vs_get_output':   return await this.handleVsOutput(args);
           case 'claudedev_vs_get_events':   return this.handleVsEvents(args);
           case 'claudedev_vs_get_debugger': return this.handleVsHttp('GET', '/debugger');
           case 'claudedev_vs_evaluate':     return this.handleVsHttp('POST', '/command', { action: 'evaluate', expression: args.expression });
@@ -278,16 +304,51 @@ class WorkbenchServer {
     }
   }
 
-  handleVsOutput(args) {
-    const outFile = path.join(vsBridgeDir(),'vs_build_output.txt');
-    if (!fs.existsSync(outFile)) return { content: [{ type: 'text', text: '[VS Bridge] vs_build_output.txt not found.' }] };
-    try {
-      const lines = fs.readFileSync(outFile, 'utf8').split('\n');
-      const limit = (args && args.lines) ? args.lines : 100;
-      return { content: [{ type: 'text', text: `Build Output (last ${limit} lines):\n\n${lines.slice(-limit).join('\n')}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `[VS Bridge] Read error: ${e.message}` }] };
+  // pane "build" (the default) is the copy the VS Bridge saves when a build ends, as before 1.5.0
+  // (it works with Visual Studio closed). Any other pane is read live from the running Visual Studio
+  // (VS Bridge 1.5.0+: GET /pane, GET /panes); "list" names the panes. Same size limit for all:
+  // the newest `lines` lines (default 100).
+  async handleVsOutput(args) {
+    const pane = String((args && args.pane) || 'build').trim() || 'build';
+    const n = Number(args && args.lines);
+    const limit = Number.isFinite(n) && n >= 1 ? Math.floor(n) : 100;
+    const key = pane.toLowerCase();
+    const say = (t) => ({ content: [{ type: 'text', text: t }] });
+
+    if (key === 'build') {
+      const outFile = path.join(vsBridgeDir(),'vs_build_output.txt');
+      if (!fs.existsSync(outFile)) return say('[VS Bridge] vs_build_output.txt not found.');
+      try {
+        const lines = fs.readFileSync(outFile, 'utf8').split('\n');
+        return say(`Build Output (last ${limit} lines):\n\n${lines.slice(-limit).join('\n')}`);
+      } catch (e) {
+        return say(`[VS Bridge] Read error: ${e.message}`);
+      }
     }
+
+    const listing = key === 'list' || key === 'panes';
+    const r = await bridgeGet(listing ? '/panes' : `/pane?name=${encodeURIComponent(pane)}&lines=${limit}`);
+    if (r.unreachable) {
+      return say(`[VS HTTP Bridge] Visual Studio with the CDS VS Bridge isn't reachable on localhost:${VS_BRIDGE_PORT} (${r.unreachable}). ` +
+        'Open Visual Studio with a solution and try again. The last build\'s output is pane "build" (no Visual Studio needed).');
+    }
+    if (r.status === 404) {
+      return say('[VS Bridge] The VS Bridge in this Visual Studio is older than 1.5.0 and reads only the Build pane (pane "build"). ' +
+        'Install ClaudeDevStudio 1.5.0 or later, which updates the VS Bridge, then restart Visual Studio.');
+    }
+    const j = r.json;
+    if (!j) return say(`[VS Bridge] Unexpected answer (HTTP ${r.status}): ${String(r.body).slice(0, 300)}`);
+    const names = (list) => (list || []).map(p => `"${p.name}"${p.kind ? ` (${p.kind})` : ''}`).join(', ') || 'none';
+    if (j.error) return say(`[VS Bridge] ${j.error}${j.panes ? `\nOutput panes now: ${names(j.panes)}.` : ''}`);
+    if (listing) {
+      const rows = (j.panes || []).map(p => `  ${p.name}${p.kind ? `  [pane: "${p.kind}"]` : ''}${p.lines != null ? `  ${p.lines} line${p.lines === 1 ? '' : 's'}` : '  (no text yet)'}`);
+      return say(rows.length
+        ? `Output panes (${rows.length}); pass a name as pane:\n${rows.join('\n')}`
+        : 'Visual Studio has no Output panes yet.');
+    }
+    if (j.note) return say(`Output pane "${j.pane}": ${j.note}${String(j.pane).toLowerCase() === 'debug' || j.kind === 'debug' ? ' A program started under the debugger writes its Debug.WriteLine/trace output here.' : ''}`);
+    const of = j.shown < j.lines ? `last ${j.shown} of ${j.lines} lines` : `all ${j.lines} lines`;
+    return say(`Output pane "${j.pane}" (${of}, live):\n\n${j.text ?? ''}`);
   }
 
   handleVsEvents(args) {
@@ -317,7 +378,7 @@ class WorkbenchServer {
     return new Promise((resolve) => {
       const bodyStr = body ? JSON.stringify(body) : null;
       const options = {
-        hostname: 'localhost', port: 62000, path: urlPath, method,
+        hostname: 'localhost', port: VS_BRIDGE_PORT, path: urlPath, method,
         headers: { 'Content-Type': 'application/json', ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}) },
         timeout: 5000,
       };

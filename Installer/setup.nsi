@@ -25,8 +25,9 @@ SetCompressor /SOLID lzma
 ; Metadata
 ;---------------------------------------------------------------------------
 !define PRODUCT_NAME      "ClaudeDevStudio"
-!define PRODUCT_VERSION   "1.4.0"
+!define PRODUCT_VERSION   "1.5.0"
 !define PRODUCT_PUBLISHER "Daniel E Gain"
+!define PRODUCT_CONTACT   "support@gainpublications.com"
 !define PRODUCT_URL       "https://github.com/dectdan/Claude-Developer-Studio"
 !define INSTALL_DIR       "$LocalAppData\ClaudeDevStudio"
 !define UNINSTALL_KEY     "Software\Microsoft\Windows\CurrentVersion\Uninstall\ClaudeDevStudio"
@@ -344,6 +345,8 @@ Section "Install" SecMain
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion"  "${PRODUCT_VERSION}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher"       "${PRODUCT_PUBLISHER}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "URLInfoAbout"    "${PRODUCT_URL}"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "Contact"         "${PRODUCT_CONTACT}"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "HelpLink"        "mailto:${PRODUCT_CONTACT}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "${INSTALL_DIR}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '"${INSTALL_DIR}\Uninstall.exe"'
   WriteRegStr HKCU "${UNINSTALL_KEY}" "QuietUninstallString" '"${INSTALL_DIR}\Uninstall.exe" /S'

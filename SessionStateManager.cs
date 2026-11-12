@@ -14,14 +14,42 @@ namespace ClaudeDevStudio.Core
         private readonly string _stateFilePath;
         private static readonly object _lock = new object();
 
+        // P6 (1.5.0): this state (the CLI's switch/active project) used to be
+        // %APPDATA%\ClaudeDevStudio\session_state.json. When the CLI runs under the packaged (MSIX)
+        // Claude Desktop, Windows writes files it creates anywhere under AppData (Roaming and Local
+        // alike) into Claude's package folder instead, so the CLI saw one file from Claude and
+        // another from a terminal. It now lives in the memory root, [Documents]\ClaudeDevStudio
+        // (MemoryPaths.Root), which is not virtualized. If the new file doesn't exist yet, the old
+        // one is copied to it once; the old file is never changed or deleted.
+        public const string StateFileName = "cli_session_state.json";
+
         public SessionStateManager()
         {
-            var appDataPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "ClaudeDevStudio");
+            var root = ClaudeDevStudio.Memory.MemoryPaths.Root;
+            Directory.CreateDirectory(root);
+            _stateFilePath = Path.Combine(root, StateFileName);
 
-            Directory.CreateDirectory(appDataPath);
-            _stateFilePath = Path.Combine(appDataPath, "session_state.json");
+            if (!File.Exists(_stateFilePath))
+            {
+                try
+                {
+                    var old = OldStateFilePath();
+                    if (File.Exists(old)) File.Copy(old, _stateFilePath, overwrite: false);
+                }
+                catch { /* no old state, or it can't be read: start empty */ }
+            }
+        }
+
+        /// <summary>
+        /// Where versions before 1.5.0 kept the state: %APPDATA%\ClaudeDevStudio\session_state.json
+        /// (APPDATA as the process sees it, so a test can point it at a throwaway folder).
+        /// </summary>
+        public static string OldStateFilePath()
+        {
+            var appData = Environment.GetEnvironmentVariable("APPDATA");
+            if (string.IsNullOrWhiteSpace(appData))
+                appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            return Path.Combine(appData, "ClaudeDevStudio", "session_state.json");
         }
 
         /// <summary>

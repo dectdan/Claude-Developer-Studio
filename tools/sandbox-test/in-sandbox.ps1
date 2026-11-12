@@ -13,7 +13,8 @@
 # removed again), S why signed MSIs are slow here (diagnostic: connectivity, signature-check
 # timings, a verbose msiexec of the Node.js MSI), A fresh install, B upgrade, C uninstall, D Documents redirected, E Claude Code
 # setup (P4), F a PC that never had Claude Desktop (P5; with networking also installs and starts
-# Claude Desktop itself). Which ones run is in C:\cds\results\run-config.json (written by
+# Claude Desktop itself), T the time limits themselves (P6: a step over its limit is stopped and
+# the script goes on; the watchdog fires). Which ones run is in C:\cds\results\run-config.json (written by
 # run-sandbox-test.ps1; default A,B,C,D,E,F). B-F need A before them.
 # Writes results.json (each check: scenario, name, PASS/FAIL, evidence) after every check
 # and sandbox.log, copies the installer's logs, then shuts the sandbox down.
@@ -35,9 +36,10 @@ $Redirected = Join-Path $Profile0 'RedirectedDocs'
 $UserShellFolders = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
 $ShellFolders     = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
 $Downloads = 'C:\cds\downloads'
-$ExpectVersion = '1.4.0'
+$ExpectVersion = '1.5.0'
 $Scenarios = @('A', 'B', 'C', 'D', 'E', 'F')
 $Networking = $false
+$TimeoutMinutes = 60
 $RunConfig = Join-Path 'C:\cds\results' 'run-config.json'
 if (Test-Path $RunConfig) {
     try {
@@ -45,8 +47,18 @@ if (Test-Path $RunConfig) {
         if ($rc.scenarios) { $Scenarios = @($rc.scenarios -split ',' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }) }
         $Networking = [bool]$rc.networking
         if ($rc.expectVersion) { $ExpectVersion = [string]$rc.expectVersion }
+        if ($rc.timeoutMinutes) { $TimeoutMinutes = [int]$rc.timeoutMinutes }
     } catch { }
 }
+
+# Time limits (P6). Each step that can hang has its own limit, so a stuck step fails as a check
+# and the script still finishes, saves results.json and shuts the sandbox down: the installer
+# (Run-Installer), the uninstaller (Run-Uninstaller), every program run (Invoke-Tool), and the steps
+# run in a separate PowerShell by Invoke-Step (the download, Add-AppxPackage, starting Claude
+# Desktop). Behind them, a watchdog shuts the sandbox down a few minutes before the host's own limit
+# (whose timeout can close only the sandbox's windows, not its VM: GROUND_TRUTH section 11).
+$Limits = @{ installer = 1800; uninstaller = 600; download = 1800; appxInstall = 600; appStart = 300; trayApp = 60 }
+$WatchdogMinutes = [Math]::Max(10, $TimeoutMinutes - 4)
 function Want([string]$S) { return $Scenarios -contains $S }
 $VersionPattern = 'v' + [regex]::Escape($ExpectVersion)
 
@@ -110,6 +122,54 @@ function Invoke-Tool([string]$Exe, [string]$Arguments, [int]$TimeoutSec = 600, [
     return @{ code = $p.ExitCode; out = $text.Trim() }
 }
 
+# Runs PowerShell code in its own powershell.exe with a time limit (P6), for a step that may hang
+# (a download, Add-AppxPackage, starting an app). The code's last output line should be JSON; it is
+# returned as an object with .secs added. On timeout the process is killed, a FAIL check
+# "<Step> finishes within N s" is recorded, and $null is returned, so the caller skips what depends on it.
+function Invoke-Step([string]$Scenario, [string]$Step, [int]$TimeoutSec, [string]$Code, [switch]$NoCheck) {
+    $file = Join-Path $Work ('step-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
+    [System.IO.File]::WriteAllText($file, "`$ErrorActionPreference = 'Continue'`r`n`$ProgressPreference = 'SilentlyContinue'`r`n" + $Code, $Utf8)
+    Log "    step: $Step (time limit $TimeoutSec s)"
+    $t0 = Get-Date
+    $r = Invoke-Tool 'powershell.exe' "-NoProfile -ExecutionPolicy Bypass -File `"$file`"" $TimeoutSec
+    $secs = [int]((Get-Date) - $t0).TotalSeconds
+    if ($r.code -eq -999) {
+        if ($NoCheck) { Log "    step stopped after $secs s (time limit $TimeoutSec s)" }
+        else { Check $Scenario "$Step finishes within $TimeoutSec s" $false "stopped after $secs s (its time limit); the run goes on without it" }
+        return $null
+    }
+    $last = @($r.out -split "`n" | Where-Object { $_.Trim() }) | Select-Object -Last 1
+    $obj = $null
+    try { $obj = $last | ConvertFrom-Json } catch { }
+    if (-not $obj) { $obj = [pscustomobject]@{ error = "no JSON from the step (exit $($r.code)): $($r.out)" } }
+    $obj | Add-Member -NotePropertyName secs -NotePropertyValue $secs -Force
+    return $obj
+}
+
+# The backstop (P6): a separate hidden PowerShell that, if this script is still running after
+# $WatchdogMinutes, notes it in sandbox.log and watchdog.txt and shuts the sandbox down. results.json
+# is saved after every check, so whatever ran is kept (finished: false). Stopped when the script ends.
+# -DryRunMarker (scenario T only): after -Seconds, write the marker file instead of shutting down.
+function Start-Watchdog([int]$Seconds = ($WatchdogMinutes * 60), [string]$DryRunMarker = '') {
+    $wlog = $LogFile -replace "'", "''"
+    $wtxt = (Join-Path $Res 'watchdog.txt') -replace "'", "''"
+    if ($DryRunMarker) {
+        $code = "Start-Sleep -Seconds $Seconds`r`n[System.IO.File]::WriteAllText('$($DryRunMarker -replace "'", "''")', 'watchdog fired (dry run) ' + (Get-Date -Format 's'))`r`n"
+        $file = Join-Path $Work 'watchdog-dryrun.ps1'
+    } else {
+        $code = "Start-Sleep -Seconds $Seconds`r`n" +
+            "`$m = (Get-Date -Format 'HH:mm:ss') + '  WATCHDOG: in-sandbox.ps1 still running after $WatchdogMinutes min (a step without a time limit hung); shutting the sandbox down.'`r`n" +
+            "[System.IO.File]::AppendAllText('$wlog', `$m + [char]13 + [char]10)`r`n" +
+            "[System.IO.File]::WriteAllText('$wtxt', `$m)`r`n" +
+            "shutdown.exe /s /f /t 0`r`n"
+        $file = Join-Path $Work 'watchdog.ps1'
+    }
+    [System.IO.File]::WriteAllText($file, $code, $Utf8)
+    $p = Start-Process -FilePath 'powershell.exe' -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$file`"" -WindowStyle Hidden -PassThru
+    if (-not $DryRunMarker) { Log "Watchdog started (PID $($p.Id)): shuts the sandbox down after $WatchdogMinutes min if the script hasn't finished." }
+    return $p
+}
+
 function Get-Docs {
     $r = Invoke-Tool 'powershell.exe' "-NoProfile -Command [Environment]::GetFolderPath('MyDocuments')" 60
     return $r.out.Trim()
@@ -165,10 +225,11 @@ function Run-Installer([string]$Scenario, [string]$Switches = '/S') {
             $seen = $lines.Count
         }
         if ($done) { $code = $p.ExitCode; break }
-        if (((Get-Date) - $t0).TotalSeconds -gt 1800) { try { $p.Kill() } catch { }; $code = -999; break }
+        if (((Get-Date) - $t0).TotalSeconds -gt $Limits.installer) { try { $p.Kill() } catch { }; $code = -999; break }
     }
     $secs = [int]((Get-Date) - $t0).TotalSeconds
-    Check $Scenario "installer $Switches exits 0" ($code -eq 0) "exit $code after $secs s"
+    $why = if ($code -eq -999) { " (stopped: its time limit is $($Limits.installer) s)" } else { '' }
+    Check $Scenario "installer $Switches exits 0" ($code -eq 0) "exit $code after $secs s$why"
     if (Test-Path (Join-Path $Inst 'install.log')) { Copy-Item (Join-Path $Inst 'install.log') (Join-Path $Res "$Scenario-install.log") -Force }
     $dl = Join-Path $env:TEMP 'ClaudeDevStudio-dotnet-install.log'
     if (Test-Path $dl) { Copy-Item $dl (Join-Path $Res "$Scenario-dotnet-install.log") -Force }
@@ -188,7 +249,7 @@ function Run-Uninstaller {
     $r = Invoke-Tool $un '/S' 120
     # The NSIS uninstaller copies itself to %TEMP%\~nsu*.tmp\ and runs from there, so
     # Uninstall.exe returns at once: wait until no process runs from that folder.
-    $deadline = (Get-Date).AddMinutes(10)
+    $deadline = $t0.AddSeconds($Limits.uninstaller)
     $names = @{}
     do {
         Start-Sleep -Seconds 2
@@ -202,8 +263,10 @@ function Run-Uninstaller {
     if ($names.Count -eq 0) {
         # Not seen (finished very fast, or another name): wait for Uninstall.exe to go instead.
         $until = (Get-Date).AddMinutes(3)
+        if ($until -gt $deadline) { $until = $deadline }
         while ((Test-Path $un) -and (Get-Date) -lt $until) { Start-Sleep -Seconds 2 }
     }
+    if ($running -gt 0) { Log "    uninstaller still running after its time limit ($($Limits.uninstaller) s): the checks that follow will say what is left" }
     Start-Sleep -Seconds 2
     return @{ code = $r.code; running = $running; secs = [int]((Get-Date) - $t0).TotalSeconds }
 }
@@ -312,8 +375,11 @@ function Check-Path([string]$Scenario, [string]$Expected, [string]$Label) {
     Check $Scenario $Label (($p.value -eq $Expected) -and ($p.kind -eq 'ExpandString')) "kind $($p.kind); length $($p.value.Length) (expected $($Expected.Length)); ends with: ...$($p.value.Substring([Math]::Max(0, $p.value.Length - 70)))"
 }
 
+$Watchdog = $null
 try {
     # ---------------------------------------------------------------- setup
+    $Watchdog = Start-Watchdog
+    $Info.limits = "installer $($Limits.installer) s, uninstaller $($Limits.uninstaller) s, download $($Limits.download) s, Add-AppxPackage $($Limits.appxInstall) s, app start $($Limits.appStart) s, event log $($Limits.trayApp) s, programs 60-600 s each; watchdog $WatchdogMinutes min"
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     $Info.user = $id.Name
     $Info.elevated = ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -399,6 +465,25 @@ try {
     $r = Invoke-Tool 'msiexec.exe' "/x `"$nodeMsi`" /quiet /norestart" 900
     }
 
+    # ---------------------------------------------------------------- T. the time limits themselves (P6)
+    if (Want 'T') {
+    $S = 'T'
+    Log '=== T. Time limits ==='
+    $t0 = Get-Date
+    $x = Invoke-Step $S 'a step that hangs (sleeps 120 s, limit 8 s)' 8 "Start-Sleep -Seconds 120`r`n@{ ok = `$true } | ConvertTo-Json -Compress" -NoCheck
+    $secs = [int]((Get-Date) - $t0).TotalSeconds
+    Check $S 'a step over its time limit is stopped, and the script goes on' ($null -eq $x -and $secs -lt 30) "returned: $(if ($x) { 'a result' } else { 'nothing (stopped)' }) after $secs s"
+    $y = Invoke-Step $S 'a quick step' 60 "@{ ok = `$true; n = 42 } | ConvertTo-Json -Compress"
+    Check $S 'a step within its limit returns its result' ($y -and $y.ok -and $y.n -eq 42) "$($y | ConvertTo-Json -Compress)"
+    $marker = Join-Path $Work 'watchdog-dryrun.txt'
+    $w = Start-Watchdog -Seconds 5 -DryRunMarker $marker
+    $until = (Get-Date).AddSeconds(60)
+    while (-not (Test-Path $marker) -and (Get-Date) -lt $until) { Start-Sleep -Seconds 1 }
+    Check $S "the watchdog fires on time (dry run, 5 s; the real one: $WatchdogMinutes min, then shutdown /s /f)" (Test-Path $marker) "$(if (Test-Path $marker) { Get-Content $marker } else { 'no marker after 60 s' }); watchdog PID $($w.Id)"
+    $wd = if ($Watchdog) { Get-Process -Id $Watchdog.Id -ErrorAction SilentlyContinue } else { $null }
+    Check $S 'the real watchdog is running behind this script' ([bool]$wd) "PID $($Watchdog.Id), running: $([bool]$wd)"
+    }
+
     # ---------------------------------------------------------------- A. fresh install
     if (Want 'A') {
     $S = 'A'
@@ -464,30 +549,8 @@ try {
     Log '=== C. Uninstall ==='
     $bakBefore = @(Get-ChildItem $CfgDir -Filter 'claude_desktop_config.json.bak-cds-*').Count
     $memBefore = Get-TreeSnapshot (Join-Path $docsA 'ClaudeDevStudio')
-    $un = Join-Path $Inst 'Uninstall.exe'
-    $t0 = Get-Date
-    $r = Invoke-Tool $un '/S' 120
-    # The NSIS uninstaller copies itself to %TEMP%\~nsu*.tmp\ and runs from there, so
-    # Uninstall.exe returns at once: wait until no process runs from that folder.
-    $deadline = (Get-Date).AddMinutes(10)
-    $names = @{}
-    do {
-        Start-Sleep -Seconds 2
-        $copies = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-            $path = $null; try { $path = $_.Path } catch { }
-            ($path -and $path -like '*\~nsu*') -or $_.Name -like 'Au_*' -or $_.Name -like 'Un_*' })
-        foreach ($c in $copies) { $names[$c.Name] = $c.Path }
-        $running = $copies.Count
-    } while (($running -gt 0 -or ((Get-Date) - $t0).TotalSeconds -lt 6) -and (Get-Date) -lt $deadline)
-    Log "    uninstaller copies seen: $(($names.GetEnumerator() | ForEach-Object { "$($_.Key) ($($_.Value))" }) -join ', ')"
-    if ($names.Count -eq 0) {
-        # Not seen (finished very fast, or another name): wait for Uninstall.exe to go instead.
-        $until = (Get-Date).AddMinutes(3)
-        while ((Test-Path $un) -and (Get-Date) -lt $until) { Start-Sleep -Seconds 2 }
-    }
-    Start-Sleep -Seconds 2
-    $secs = [int]((Get-Date) - $t0).TotalSeconds
-    Check $S 'uninstaller /S ran to the end' ($r.code -eq 0 -and $running -eq 0) "exit $($r.code); finished after $secs s"
+    $u = Run-Uninstaller
+    Check $S 'uninstaller /S ran to the end' ($u.code -eq 0 -and $u.running -eq 0) "exit $($u.code); finished after $($u.secs) s (time limit $($Limits.uninstaller) s)"
     $unLog = Join-Path $env:TEMP 'ClaudeDevStudio-uninstall.log'
     if (Test-Path $unLog) { Copy-Item $unLog (Join-Path $Res 'C-uninstall.log') -Force }
     Check-Config $S 'expect-none' 'config: CDS entries gone; keep-me, preferences, someOtherSetting remain; no BOM'
@@ -635,8 +698,12 @@ try {
     $tray = Start-Process -FilePath (Join-Path $Inst 'TrayApp\ClaudeDevStudio.TrayApp.exe') -PassThru
     Start-Sleep -Seconds 12
     $alive = -not $tray.HasExited
-    $errs = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Level = 2; StartTime = $t0 } -ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'ClaudeDevStudio' })
-    Check $S 'the tray app starts and keeps running (no error events)' ($alive -and $errs.Count -eq 0) "running after 12 s: $alive; error events naming ClaudeDevStudio: $($errs.Count) $(($errs | Select-Object -First 1 | ForEach-Object { $_.Message.Substring(0, [Math]::Min(300, $_.Message.Length)) }))"
+    $ev = Invoke-Step $S 'reading the Application event log' $Limits.trayApp @"
+`$e = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Level = 2; StartTime = [datetime]'$($t0.ToString('o'))' } -MaxEvents 200 -ErrorAction SilentlyContinue | Where-Object { `$_.Message -match 'ClaudeDevStudio' } | ForEach-Object { `$_.Message.Substring(0, [Math]::Min(300, `$_.Message.Length)) })
+@{ messages = `$e } | ConvertTo-Json -Compress
+"@
+    $errs = if ($ev) { @($ev.messages | Where-Object { $_ }) } else { @('(the event log could not be read in time)') }
+    Check $S 'the tray app starts and keeps running (no error events)' ($alive -and $errs.Count -eq 0) "running after 12 s: $alive; error events naming ClaudeDevStudio: $($errs.Count) $($errs | Select-Object -First 1)"
     try { if (-not $tray.HasExited) { $tray.Kill() } } catch { }
     Probe-Memory $S 'SandboxProjF' (Get-Docs)
     Remove-Item -LiteralPath $CfgDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -648,24 +715,36 @@ try {
     if ($Networking) {
         # Claude Desktop installed after CDS (the MSIX that claude.ai's installer installs).
         $msix = Join-Path $Work 'Claude.msix'
-        $t0 = Get-Date
-        # Windows PowerShell 5.1 downloads large files very slowly while it draws its progress bar.
-        $ProgressPreference = 'SilentlyContinue'
-        $dl = try { Invoke-WebRequest -Uri 'https://claude.ai/api/desktop/win32/x64/msix/latest/redirect' -OutFile $msix -UseBasicParsing -TimeoutSec 900; "downloaded $((Get-Item $msix).Length) bytes" } catch { "download failed: $($_.Exception.Message)" }
-        Check $S 'networked: Claude Desktop MSIX downloaded from claude.ai' (Test-Path $msix) "$dl in $([int]((Get-Date) - $t0).TotalSeconds) s"
-        if (Test-Path $msix) {
+        # Each step in its own PowerShell with its own time limit (P6): P5's run hung at the start step.
+        # (Windows PowerShell 5.1 downloads large files very slowly while it draws its progress bar:
+        # Invoke-Step turns it off.)
+        $dl = Invoke-Step $S 'networked: downloading Claude Desktop''s MSIX' $Limits.download @"
+try { Invoke-WebRequest -Uri 'https://claude.ai/api/desktop/win32/x64/msix/latest/redirect' -OutFile '$msix' -UseBasicParsing -TimeoutSec $($Limits.download); @{ ok = `$true; bytes = (Get-Item '$msix').Length } | ConvertTo-Json -Compress }
+catch { @{ ok = `$false; error = `$_.Exception.Message } | ConvertTo-Json -Compress }
+"@
+        if ($dl) { Check $S 'networked: Claude Desktop MSIX downloaded from claude.ai' ([bool]$dl.ok -and (Test-Path $msix)) "$(if ($dl.ok) { "downloaded $($dl.bytes) bytes" } else { "download failed: $($dl.error)" }) in $($dl.secs) s" }
+        if ($dl -and $dl.ok -and (Test-Path $msix)) {
             $before = [System.IO.File]::ReadAllBytes($Cfg)
-            $ai = try { Add-AppxPackage -Path $msix -ErrorAction Stop; 'ok' } catch { "Add-AppxPackage failed: $($_.Exception.Message)" }
-            $pkg = Get-AppxPackage -Name 'Claude' -ErrorAction SilentlyContinue
-            $Info.claudeDesktop = "$($pkg.PackageFullName)"
-            Check $S 'networked: Claude Desktop installs (Add-AppxPackage, per user)' ([bool]$pkg) "$ai; package: $($pkg.PackageFullName)"
+            $ai = Invoke-Step $S 'networked: Add-AppxPackage (Claude Desktop, per user)' $Limits.appxInstall @"
+`$a = try { Add-AppxPackage -Path '$msix' -ErrorAction Stop; 'ok' } catch { 'Add-AppxPackage failed: ' + `$_.Exception.Message }
+`$p = Get-AppxPackage -Name 'Claude' -ErrorAction SilentlyContinue | Select-Object -First 1
+@{ result = `$a; full = [string]`$p.PackageFullName; family = [string]`$p.PackageFamilyName } | ConvertTo-Json -Compress
+"@
+            $pkg = if ($ai -and $ai.full) { $ai } else { $null }
+            $Info.claudeDesktop = "$($ai.full)"
+            if ($ai) { Check $S 'networked: Claude Desktop installs (Add-AppxPackage, per user)' ([bool]$pkg) "$($ai.result); package: $($ai.full) ($($ai.secs) s)" }
             if ($pkg) {
                 $claudeHere = $true
-                Start-Process explorer.exe "shell:AppsFolder\$($pkg.PackageFamilyName)!Claude"
-                Start-Sleep -Seconds 75
-                $procs = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match 'ClaudeDevStudio' } | ForEach-Object { $_.CommandLine })
-                $claudeRunning = @(Get-Process -Name 'Claude' -ErrorAction SilentlyContinue).Count
-                $private = Join-Path $env:LOCALAPPDATA "Packages\$($pkg.PackageFamilyName)\LocalCache\Roaming\Claude"
+                # Start it, wait 75 s, then look: all in one limited step, so a start that never returns can't stop the run.
+                $st = Invoke-Step $S 'networked: starting Claude Desktop and looking at what it runs' $Limits.appStart @"
+Start-Process explorer.exe 'shell:AppsFolder\$($pkg.family)!Claude'
+Start-Sleep -Seconds 75
+`$procs = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue | Where-Object { `$_.CommandLine -match 'ClaudeDevStudio' } | ForEach-Object { `$_.CommandLine })
+@{ procs = `$procs; claude = @(Get-Process -Name 'Claude' -ErrorAction SilentlyContinue).Count } | ConvertTo-Json -Compress
+"@
+                $procs = if ($st) { @($st.procs | Where-Object { $_ }) } else { @() }
+                $claudeRunning = if ($st) { [int]$st.claude } else { @(Get-Process -Name 'Claude' -ErrorAction SilentlyContinue).Count }
+                $private = Join-Path $env:LOCALAPPDATA "Packages\$($pkg.family)\LocalCache\Roaming\Claude"
                 $privCfg = Join-Path $private 'claude_desktop_config.json'
                 $c = & $cdsOnly
                 $j = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($Cfg)) | ConvertFrom-Json
@@ -721,6 +800,7 @@ try {
 
 if (Test-Path (Join-Path $Inst 'install.log')) { Copy-Item (Join-Path $Inst 'install.log') (Join-Path $Res 'D-install.log') -Force }
 Save-Results $true
+if ($Watchdog) { try { Stop-Process -Id $Watchdog.Id -Force -ErrorAction Stop } catch { } }
 Log "Done: $(@($Checks | Where-Object { $_.result -eq 'PASS' }).Count) passed, $(@($Checks | Where-Object { $_.result -ne 'PASS' }).Count) failed. Shutting down."
 Start-Sleep -Seconds 3
 shutdown.exe /s /t 0

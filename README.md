@@ -36,7 +36,7 @@ The first time, CDS creates the project's memory. After that, Claude sees the re
 |---|---|
 | `claudedevstudio` server | The memory: load (with the project's ground truth), record activity, record and check mistakes, record decisions, handoffs between sessions, search across all projects' memory, lessons for every project, the ground-truth scaffold, stats, chat checkpoints. |
 | `cds-workbench` server | Visual Studio state, errors, output, debugger and commands (needs the VS Bridge); showing code and images in the Review Panel; sending a task to another AI provider; fetching a web page. |
-| VS Bridge | A Visual Studio extension that shares build errors, output and debugger state with Claude. It answers only programs on your own PC, not web pages. |
+| VS Bridge | A Visual Studio extension that shares build errors, the Output window's panes (Build, and from 1.5.0 the Debug pane, where a running program's `Debug.WriteLine` and trace output appear, or any other pane) and debugger state with Claude. It answers only programs on your own PC, not web pages. |
 | Review Panel | A local page (`http://127.0.0.1:63000`) where code and images from Claude appear. |
 | Tray app | Starts with Windows; opens the Dashboard; **Configure AI Keys**; **Set up Claude Code** (optional, below). |
 | Dashboard | Browse the memory. |
@@ -93,7 +93,7 @@ CDS works best when each project keeps its state in one file, `docs\GROUND_TRUTH
 
 ## Problems and questions
 
-Open an issue: [github.com/dectdan/Claude-Developer-Studio/issues](https://github.com/dectdan/Claude-Developer-Studio/issues). Say what you did, what happened, and your Windows version.
+Open an issue: [github.com/dectdan/Claude-Developer-Studio/issues](https://github.com/dectdan/Claude-Developer-Studio/issues). Say what you did, what happened, and your Windows version. Or write to support@gainpublications.com.
 
 ## Building from source
 

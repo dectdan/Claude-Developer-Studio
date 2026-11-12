@@ -49,8 +49,8 @@
             
             <StackPanel Spacing="8" Margin="0,24,0,0">
                 <TextBlock Text="Contact" FontWeight="SemiBold" FontSize="16" HorizontalAlignment="Center"/>
-                <HyperlinkButton Content="danielegain@gmail.com" 
-                               NavigateUri="mailto:danielegain@gmail.com"
+                <HyperlinkButton Content="support@gainpublications.com"
+                               NavigateUri="mailto:support@gainpublications.com"
                                HorizontalAlignment="Center"/>
                 <HyperlinkButton Content="GitHub Repository" 
                                NavigateUri="https://github.com/dectdan/Claude-Developer-Studio"
@@ -59,8 +59,8 @@
             
             <StackPanel Spacing="8" Margin="0,24,0,0">
                 <TextBlock Text="Features" FontWeight="SemiBold" FontSize="16" HorizontalAlignment="Center"/>
-                <TextBlock Text="• Debug output monitoring (DebugView integration)" TextWrapping="Wrap" HorizontalAlignment="Center"/>
                 <TextBlock Text="• Project memory &amp; context preservation" TextWrapping="Wrap" HorizontalAlignment="Center"/>
+                <TextBlock Text="• Visual Studio bridge (build errors, output, debugger)" TextWrapping="Wrap" HorizontalAlignment="Center"/>
                 <TextBlock Text="• Auto-backup to Documents folder" TextWrapping="Wrap" HorizontalAlignment="Center"/>
                 <TextBlock Text="• Claude Desktop integration via MCP" TextWrapping="Wrap" HorizontalAlignment="Center"/>
                 <TextBlock Text="• Automatic update notifications" TextWrapping="Wrap" HorizontalAlignment="Center"/>

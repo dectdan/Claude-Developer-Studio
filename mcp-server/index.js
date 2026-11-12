@@ -24,11 +24,14 @@
 // them, read-only) and lessons for every project (LESSONS.jsonl at the memory root, written by
 // the CLI's "lesson add"): load shows them, check_mistake checks them, and record_mistake
 // suggests one when the same mistake is recorded in two or more other projects.
+//
+// P6 (2026-11-12): claudedev_monitor_start removed (v1.5.0). It needed Sysinternals DebugView,
+// which CDS can't ship, and DebugView never sees the output of a program under Visual Studio's
+// debugger; cds-workbench's claudedev_vs_get_output with pane "debug" reads the Debug pane.
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -136,6 +139,12 @@ const INSTRUCTIONS =
   'As you go, record activities, mistakes (with the lesson) and decisions (with the reason). ' +
   'To find something from earlier sessions, in this project or any other, call claudedev_search; a lesson that holds for every project goes in claudedev_record_lesson. ' +
   'Before you stop, call claudedev_handoff: where you stopped and the next step.';
+
+// Not listed any more; a client that still calls it (an old chat) gets this instead of "Unknown tool".
+const MONITOR_REMOVED =
+  'claudedev_monitor_start was removed in ClaudeDevStudio 1.5.0 (it needed Sysinternals DebugView). ' +
+  'For a running program\'s Debug.WriteLine/trace output, use cds-workbench\'s claudedev_vs_get_output with pane "debug" ' +
+  '(Visual Studio with the CDS VS Bridge); for build errors, claudedev_vs_get_errors.';
 
 const PROJECT_PATH = { type: 'string', description: 'Full path to the project folder, e.g. C:\\Projects\\MyApp' };
 
@@ -266,11 +275,6 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { project_path: PROJECT_PATH }, required: ['project_path'] },
   },
   {
-    name: 'claudedev_monitor_start',
-    description: 'Start capturing Visual Studio debug output into the project\'s memory (needs Sysinternals DebugView installed).',
-    inputSchema: { type: 'object', properties: { project_path: PROJECT_PATH }, required: ['project_path'] },
-  },
-  {
     name: 'claudedev_chat_checkpoint',
     description: 'Save a short checkpoint to the session log. Survives context drops.',
     inputSchema: {
@@ -316,7 +320,7 @@ class ClaudeDevStudioServer {
         case 'claudedev_search':          result = await this.handleSearch(args); break;
         case 'claudedev_record_lesson':   result = await this.handleRecordLesson(args); break;
         case 'claudedev_stats':           result = await this.handleStats(args); break;
-        case 'claudedev_monitor_start':   result = await this.handleMonitorStart(args); break;
+        case 'claudedev_monitor_start':   result = fail(MONITOR_REMOVED); break;
         case 'claudedev_chat_checkpoint': return this.handleChatCheckpoint(args);
         case 'claudedev_chat_resume':     return this.handleChatResume(args);
         default: return fail(`Unknown tool: ${name}`);
@@ -575,30 +579,6 @@ class ClaudeDevStudioServer {
       [...activities, ...mistakes].some(e => entrySource.get(e) === legacy);
     if (countsLegacy) lines.push(`(Includes older entries from ${legacy}.)`);
     return text(lines.join('\n'));
-  }
-
-  // The CLI's monitor runs until stopped, so it is started detached with its output in
-  // a log file. Before v1.3.0 it ran under a 30-second timeout that killed it.
-  async handleMonitorStart(args) {
-    const p = requireProjectPath(args);
-    if (!fs.existsSync(CLAUDEDEV_PATH)) return fail(`claudedev.exe not found at ${CLAUDEDEV_PATH}.`);
-    const dir = projectMemoryDir(p);
-    fs.mkdirSync(dir, { recursive: true });
-    const logPath = path.join(dir, 'monitor.log');
-    const fd = fs.openSync(logPath, 'w');
-    let child;
-    try {
-      child = spawn(CLAUDEDEV_PATH, ['monitor', p], { detached: true, windowsHide: true, stdio: ['ignore', fd, fd] });
-    } finally {
-      fs.closeSync(fd);
-    }
-    let exitCode = null;
-    child.on('exit', (code) => { exitCode = code; });
-    child.unref();
-    await new Promise(r => setTimeout(r, 3000));
-    const log = cleanCliText(readText(logPath, 2000));
-    if (exitCode !== null) return fail(`The debug monitor stopped right away (exit code ${exitCode}).\n${log}`);
-    return text(`\u2713 Debug monitor running (PID ${child.pid}). Log: ${logPath}\n${log}`);
   }
 
   handleChatCheckpoint(args) {

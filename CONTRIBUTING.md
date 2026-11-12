@@ -6,7 +6,7 @@ By contributing you agree that your contribution is licensed under the project's
 
 ## Before you start
 
-- **Bugs and ideas:** open an issue at [github.com/dectdan/Claude-Developer-Studio/issues](https://github.com/dectdan/Claude-Developer-Studio/issues). Say what you did, what happened, what you expected, your Windows version and the CDS version (`claudedev version`).
+- **Bugs and ideas:** open an issue at [github.com/dectdan/Claude-Developer-Studio/issues](https://github.com/dectdan/Claude-Developer-Studio/issues). Say what you did, what happened, what you expected, your Windows version and the CDS version (`claudedev version`). Anything you'd rather not post in public: support@gainpublications.com.
 - **Read `docs\GROUND_TRUTH.md` first.** It is the project's current state: the architecture, the decisions, the known problems, the plan, and the rules that have bitten before. Older documents in `docs\history\` describe states that no longer exist.
 
 ## The folder layout
@@ -40,6 +40,7 @@ A build must have 0 errors and no new warnings.
 - **What Claude would see:** `node mcp-server\test\show.mjs claudedev_load <project folder>` prints load's output and its length.
 - **The installer, as a new user:** `powershell -NoProfile -ExecutionPolicy Bypass -File tools\sandbox-test\run-sandbox-test.ps1` runs install, upgrade, uninstall and a redirected Documents folder in Windows Sandbox (Windows Pro or Enterprise, with the Windows Sandbox feature on). `node tools\sandbox-test\config-merge-test.js` tests the Claude Desktop config merge on throwaway files. Don't test the installer on your own PC; the sandbox is the test machine.
 - **The VS Bridge and Review Panel caller checks:** `node mcp-server\test\caller-check.mjs http://127.0.0.1:63000` (or `http://localhost:62000` with Visual Studio open).
+- **The VS Bridge itself:** test it in Visual Studio's experimental instance, never your main one: install the VSIX with `VSIXInstaller.exe /rootSuffix:Exp`, then `devenv <solution> /rootSuffix Exp` (put `/log <file>` after the solution: `/log` takes an optional file name). If the experimental instance still loads an older copy after an upgrade (ActivityLog: "Could not load file or assembly ... CdsVsBridge.dll"), reset it with the VS SDK's `CreateExpInstance.exe /Reset /VSInstance=<version_instance> /RootSuffix=Exp` and install again. The bridge answers on `http://localhost:62000` (the Host must be `localhost`).
 
 ## How this repository works
 

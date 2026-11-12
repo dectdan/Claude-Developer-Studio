@@ -17,7 +17,7 @@
             
             <TextBlock Text="How It Works" FontWeight="SemiBold" FontSize="18" Margin="0,24,0,0"/>
             <TextBlock TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}">
-                1. The TrayApp runs in your system tray monitoring debug output
+                1. The TrayApp runs in your system tray (API keys, Claude Desktop and Claude Code setup)
                 <LineBreak/>
                 2. When you work with Claude in Claude Desktop, it uses MCP to access project memory
                 <LineBreak/>
@@ -62,10 +62,6 @@
                 <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
                     <TextBlock Grid.Column="0" Text="claudedev init" FontFamily="Consolas" />
                     <TextBlock Grid.Column="1" Text="Initialize project memory" TextWrapping="Wrap"/>
-                </Grid>
-                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
-                    <TextBlock Grid.Column="0" Text="claudedev monitor" FontFamily="Consolas" />
-                    <TextBlock Grid.Column="1" Text="Start Visual Studio debug monitoring" TextWrapping="Wrap"/>
                 </Grid>
                 <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
                     <TextBlock Grid.Column="0" Text="claudedev backup" FontFamily="Consolas" />
@@ -122,8 +118,8 @@
             
             <TextBlock Text="Need Help?" FontWeight="SemiBold" FontSize="18" Margin="0,24,0,0"/>
             <StackPanel Spacing="12">
-                <HyperlinkButton Content="Email: danielegain@gmail.com" 
-                               NavigateUri="mailto:danielegain@gmail.com"
+                <HyperlinkButton Content="Email: support@gainpublications.com"
+                               NavigateUri="mailto:support@gainpublications.com"
                                FontSize="14"/>
                 <HyperlinkButton Content="GitHub Repository" 
                                NavigateUri="https://github.com/dectdan/Claude-Developer-Studio"

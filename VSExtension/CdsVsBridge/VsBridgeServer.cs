@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using EnvDTE;
 using EnvDTE80;
+using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
 
 namespace CdsVsBridge
@@ -106,6 +107,10 @@ namespace CdsVsBridge
                     body = GetErrorsJson();
                 else if (req.HttpMethod == "GET" && path == "/output")
                     body = GetOutputJson(req);
+                else if (req.HttpMethod == "GET" && path == "/panes")
+                    body = await GetPanesJsonAsync();
+                else if (req.HttpMethod == "GET" && path == "/pane")
+                    body = await GetPaneJsonAsync(req);
                 else if (req.HttpMethod == "GET" && path == "/debugger")
                     body = await GetDebuggerJsonAsync();
                 else if (req.HttpMethod == "POST" && path == "/command")
@@ -178,6 +183,146 @@ namespace CdsVsBridge
             var skip  = lines.Length > limit ? lines.Length - limit : 0;
             var tail  = string.Join("\n", lines, skip, lines.Length - skip);
             return JsonSerializer.Serialize(new { output = tail }, JsonOpts);
+        }
+
+        // ── GET /panes, GET /pane?name=<name>&lines=<n> (from 1.5.0) ─────────
+        //
+        // Any Output window pane, read live (the Build pane above is the copy saved when a
+        // build ends). Panes are found by the well-known GUIDs first (names are localized:
+        // "build", "debug", "general"), then by name (any case), then by GUID. Only the newest
+        // `lines` lines are read (default 100), straight from the pane's text buffer.
+
+        private const int DefaultPaneLines = 100;
+
+        private static readonly (string Key, Guid Guid)[] WellKnownPanes =
+        {
+            ("build",   VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid),
+            ("debug",   VSConstants.OutputWindowPaneGuid.DebugPane_guid),
+            ("general", VSConstants.OutputWindowPaneGuid.GeneralPane_guid),
+        };
+
+        private async Task<string> GetPanesJsonAsync()
+        {
+            return await _package.JoinableTaskFactory.RunAsync(async () =>
+            {
+                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+                return JsonSerializer.Serialize(new { panes = ListPanes() }, JsonOpts);
+            });
+        }
+
+        private async Task<string> GetPaneJsonAsync(HttpListenerRequest req)
+        {
+            var name  = (req.QueryString["name"] ?? "build").Trim();
+            var limit = int.TryParse(req.QueryString["lines"], out var n) && n > 0 ? n : DefaultPaneLines;
+
+            return await _package.JoinableTaskFactory.RunAsync(async () =>
+            {
+                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+                var pane = FindPane(name);
+                if (pane == null)
+                {
+                    var key = name.ToLowerInvariant();
+                    var why = key == "debug"
+                        ? "There is no Debug pane yet: Visual Studio creates it the first time a program runs under the debugger."
+                        : $"There is no Output pane named \"{name}\".";
+                    return JsonSerializer.Serialize(new { error = why, panes = ListPanes() }, JsonOpts);
+                }
+
+                var info = Describe(pane);
+                try
+                {
+                    var doc  = pane.TextDocument;
+                    var end  = doc.EndPoint;
+                    // A pane that ends with a line break has an empty last line: don't count it.
+                    var last = end.Line > 1 && end.LineCharOffset == 1 ? end.Line - 1 : end.Line;
+                    var from = Math.Max(1, last - limit + 1);
+                    var ep   = doc.StartPoint.CreateEditPoint();
+                    ep.MoveToLineAndOffset(from, 1);
+                    var text = ep.GetText(end);
+                    return JsonSerializer.Serialize(new
+                    {
+                        pane  = info.Name,
+                        guid  = info.Guid,
+                        kind  = info.Kind,
+                        lines = last,
+                        shown = last - from + 1,
+                        text
+                    }, JsonOpts);
+                }
+                catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == VSConstants.E_FAIL)
+                {
+                    // Seen in the experimental instance (P6): a pane Visual Studio has created but never
+                    // written to has no text buffer yet, and TextDocument fails with E_FAIL.
+                    return JsonSerializer.Serialize(new
+                    {
+                        pane  = info.Name,
+                        guid  = info.Guid,
+                        kind  = info.Kind,
+                        lines = 0,
+                        shown = 0,
+                        text  = "",
+                        note  = "Visual Studio has not written anything to this pane yet."
+                    }, JsonOpts);
+                }
+                catch (Exception ex)
+                {
+                    return JsonSerializer.Serialize(new { error = $"The \"{info.Name}\" pane's text can't be read: {ex.Message}", pane = info.Name }, JsonOpts);
+                }
+            });
+        }
+
+        private List<PaneInfo> ListPanes()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var list = new List<PaneInfo>();
+            var panes = _dte.ToolWindows?.OutputWindow?.OutputWindowPanes;
+            if (panes == null) return list;
+            foreach (OutputWindowPane pane in panes)
+            {
+                var info = Describe(pane);
+                try { info.Lines = pane.TextDocument.EndPoint.Line; } catch { }
+                list.Add(info);
+            }
+            return list;
+        }
+
+        private OutputWindowPane? FindPane(string name)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var panes = _dte.ToolWindows?.OutputWindow?.OutputWindowPanes;
+            if (panes == null) return null;
+            var all = new List<OutputWindowPane>();
+            foreach (OutputWindowPane pane in panes) all.Add(pane);
+
+            foreach (var known in WellKnownPanes)
+            {
+                if (!string.Equals(known.Key, name, StringComparison.OrdinalIgnoreCase)) continue;
+                foreach (var pane in all)
+                    if (SameGuid(pane, known.Guid)) return pane;
+            }
+            foreach (var pane in all)
+                if (string.Equals(pane.Name, name, StringComparison.OrdinalIgnoreCase)) return pane;
+            if (Guid.TryParse(name, out var asGuid))
+                foreach (var pane in all)
+                    if (SameGuid(pane, asGuid)) return pane;
+            return null;
+        }
+
+        private static PaneInfo Describe(OutputWindowPane pane)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var info = new PaneInfo { Name = pane.Name };
+            try { info.Guid = pane.Guid; } catch { }
+            foreach (var known in WellKnownPanes)
+                if (SameGuid(pane, known.Guid)) info.Kind = known.Key;
+            return info;
+        }
+
+        private static bool SameGuid(OutputWindowPane pane, Guid guid)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            try { return Guid.TryParse(pane.Guid, out var g) && g == guid; }
+            catch { return false; }
         }
 
         // ── GET /debugger ─────────────────────────────────────────────────────
@@ -413,6 +558,18 @@ namespace CdsVsBridge
         public string? Type { get; set; }
         [System.Text.Json.Serialization.JsonPropertyName("value")]
         public string? Value { get; set; }
+    }
+
+    internal class PaneInfo
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("name")]
+        public string? Name { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("guid")]
+        public string? Guid { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("kind")]
+        public string? Kind { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("lines")]
+        public int? Lines { get; set; }
     }
 
     internal class CommandRequest

@@ -40,27 +40,6 @@ namespace ClaudeDevStudio.Dashboard.Views
                 AutoStartToggle.IsOn = false;
             }
 
-            // Check DebugView status
-            try
-            {
-                var installPath = InstallDir();
-                if (!string.IsNullOrEmpty(installPath))
-                {
-                    var debugViewPath = Path.Combine(installPath, "DebugView", "dbgview64.exe");
-                    if (File.Exists(debugViewPath))
-                    {
-                        DebugViewStatus.Text = "DebugView: Installed ✓";
-                    }
-                    else
-                    {
-                        DebugViewStatus.Text = "DebugView: Not found";
-                        DebugViewStatus.Foreground = (Microsoft.UI.Xaml.Media.Brush)
-                            Application.Current.Resources["SystemFillColorCautionBrush"];
-                    }
-                }
-            }
-            catch { }
-
             // Check MCP status (simplified - just check if config exists)
             try
             {

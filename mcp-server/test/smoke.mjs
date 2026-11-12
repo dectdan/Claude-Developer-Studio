@@ -15,6 +15,11 @@
 // store in %TEMP% (CDS_MEMORY_ROOT, CDS_LEGACY_ROOT: test-only), so its checks never read or write
 // the real store or the real LESSONS.jsonl. The lessons checks need --cli (the CLI must honour
 // CDS_MEMORY_ROOT; an older one would write to the real store, so they are skipped without it).
+//
+// P6: the monitor's removal; the CLI's session state in the memory root with the old %APPDATA% file
+// read once (a throwaway CDS_MEMORY_ROOT and APPDATA; --cli only); claudedev_vs_get_output's pane,
+// against a workbench with no Visual Studio and then a fake VS Bridge on a spare port
+// (CDS_VS_BRIDGE_PORT, test-only), so it never talks to a real Visual Studio.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -59,7 +64,7 @@ const listTree = (root) => {
   walk(root, '');
   return out.sort();
 };
-const TOOL_COUNT = 14; // 9 before P3 + claudedev_scaffold, claudedev_handoff, claudedev_record_decision (P3) + claudedev_search, claudedev_record_lesson (P5)
+const TOOL_COUNT = 13; // 9 before P3 + claudedev_scaffold, claudedev_handoff, claudedev_record_decision (P3) + claudedev_search, claudedev_record_lesson (P5) - claudedev_monitor_start (P6)
 
 let passed = 0, failed = 0;
 const check = (label, ok, detail = '') => {
@@ -656,6 +661,128 @@ try {
       }
     } finally {
       await client2.close().catch(() => {});
+    }
+  }
+
+  // ---- Checks added in P6: the debug monitor removed, the CLI's session state out of %APPDATA%,
+  // claudedev_vs_get_output's pane (against no Visual Studio and a fake VS Bridge on a spare port) ----
+  console.log('\n-- P6 checks (monitor removed, session state, vs_get_output pane) --');
+  {
+    const p6 = path.join(os.tmpdir(), `${scratchName}_p6`);
+    extraProjects.push({ dir: p6, mem: p6 });
+    fs.mkdirSync(p6, { recursive: true });
+
+    // The monitor: gone from tools/list; an old client calling it gets the replacement, not "Unknown tool".
+    const { tools: tools6 } = await client.listTools();
+    check('claudedev_monitor_start is no longer listed (P6)', !tools6.some(t => t.name === 'claudedev_monitor_start'), tools6.map(t => t.name).join(', '));
+    r = await call('claudedev_monitor_start', { project_path: scratch });
+    check('calling claudedev_monitor_start says it was removed in 1.5.0 and what to use instead',
+      r.isError && /removed in ClaudeDevStudio 1\.5\.0/.test(r.text) && /claudedev_vs_get_output/.test(r.text) && /pane "debug"/.test(r.text) && !fs.existsSync(path.join(memDir, 'monitor.log')), r.text);
+    const instr = client.getInstructions() || '';
+    check('the instructions do not mention the monitor or DebugView', !/monitor|DebugView/i.test(instr), instr);
+
+    if (!cliPath) {
+      console.log('SKIP  CLI checks for P6 (need the new CLI: --cli): "monitor says it was removed", "session state in the memory root", "the old %APPDATA% file is read once"');
+    } else {
+      const c = cli('monitor', scratch);
+      check('CLI "monitor" prints one line saying it was removed in 1.5.0 (exit 1)', c.code === 1 && /removed in ClaudeDevStudio 1\.5\.0/.test(c.out) && c.out.trim().split('\n').length === 1, c.out);
+
+      // Session state: a throwaway memory root (new place) and a throwaway APPDATA (the old place).
+      const R6 = path.join(p6, 'root'), A6 = path.join(p6, 'appdata');
+      const oldFile = path.join(A6, 'ClaudeDevStudio', 'session_state.json');
+      const newFile = path.join(R6, 'cli_session_state.json');
+      const realOld = path.join(process.env.APPDATA || '', 'ClaudeDevStudio', 'session_state.json');
+      const realNew = path.join(docs, 'ClaudeDevStudio', 'cli_session_state.json');
+      const stamp = (f) => fs.existsSync(f) ? `${fs.statSync(f).size}|${fs.statSync(f).mtimeMs}` : '(none)';
+      const realBefore = `${stamp(realOld)} / ${stamp(realNew)}`;
+      const cli6 = (...args) => { const x = spawnSync(cliPath, args, { encoding: 'utf8', windowsHide: true, timeout: 30000, env: { ...process.env, CDS_MEMORY_ROOT: R6, APPDATA: A6 } }); return { code: x.status, out: `${x.stdout || ''}${x.stderr || ''}` }; };
+
+      let a = cli6('active');
+      check('session state: with neither file, "active" says none is set and creates no file',
+        a.code === 1 && /No active project set/.test(a.out) && !fs.existsSync(newFile), a.out);
+      const oldJson = JSON.stringify({ ActiveProjectPath: 'C:\\Work\\OldOne', ActiveProjectName: 'OldOne', LastAccessed: '2026-11-10T18:47:00Z', SessionCount: 3, TotalSessions: 5, IsInitialized: true }, null, 2);
+      write(oldFile, oldJson);
+      a = cli6('active');
+      check('session state: the old %APPDATA% file is read when the new one does not exist (copied to the memory root)',
+        a.code === 0 && /Name: OldOne/.test(a.out) && /Session count: 3/.test(a.out) && fs.existsSync(newFile) && fs.readFileSync(newFile, 'utf8') === oldJson, a.out);
+      check('session state: the old file is left as it was', fs.readFileSync(oldFile, 'utf8') === oldJson);
+      write(oldFile, oldJson.replace(/OldOne/g, 'ChangedLater'));
+      a = cli6('active');
+      check('session state: the old file is read only once (the new file wins afterwards)', a.code === 0 && /Name: OldOne/.test(a.out) && !/ChangedLater/.test(a.out), a.out);
+      const realAfter = `${stamp(realOld)} / ${stamp(realNew)}`;
+      check('session state: the real %APPDATA% file and the real memory root were not touched', realBefore === realAfter, `before ${realBefore}, after ${realAfter}`);
+    }
+
+    // claudedev_vs_get_output: a workbench with a throwaway VS Bridge folder (CDS_MEMORY_ROOT), no
+    // Review Panel (LOCALAPPDATA has no install) and the bridge port moved to a spare one (CDS_VS_BRIDGE_PORT).
+    const http = await import('http');
+    const sparePort = await new Promise((res) => { const s = http.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); }); });
+    const W6 = path.join(p6, 'wb');
+    const wb = new Client({ name: 'cds-smoke-p6', version: '1.0.0' });
+    await wb.connect(new StdioClientTransport({
+      command: process.execPath, args: [path.join(path.dirname(serverPath), 'workbench.js')], stderr: 'ignore',
+      env: { CDS_MEMORY_ROOT: W6, LOCALAPPDATA: path.join(p6, 'local'), CDS_VS_BRIDGE_PORT: String(sparePort) },
+    }));
+    const wcall = async (name, args) => { const x = await wb.callTool({ name, arguments: args }); return { text: x.content?.[0]?.text ?? '', isError: !!x.isError }; };
+    let fake = null;
+    try {
+      const { tools: wt } = await wb.listTools();
+      const vo = wt.find(t => t.name === 'claudedev_vs_get_output');
+      check('workbench: claudedev_vs_get_output accepts pane (build, debug, a name, list)',
+        !!vo && !!vo.inputSchema?.properties?.pane && /debug/.test(vo.description) && /list/.test(vo.description), JSON.stringify(vo));
+      const wjson = JSON.stringify({ tools: wt });
+      check(`workbench tools/list stays small (${Buffer.byteLength(wjson, 'utf8')} bytes)`, Buffer.byteLength(wjson, 'utf8') < 6000);
+
+      r = await wcall('claudedev_vs_get_output', {});
+      check('vs_get_output with no pane is the Build pane as before (no saved build yet: says so)', !r.isError && /vs_build_output\.txt not found/.test(r.text), r.text);
+      write(path.join(W6, 'VSBridge', 'vs_build_output.txt'), Array.from({ length: 150 }, (_, k) => `build line ${k + 1}`).join('\n'));
+      r = await wcall('claudedev_vs_get_output', { pane: 'build', lines: 5 });
+      check('vs_get_output pane "build" reads the saved build output, newest lines', /^Build Output \(last 5 lines\)/.test(r.text) && r.text.endsWith('build line 146\nbuild line 147\nbuild line 148\nbuild line 149\nbuild line 150') && !/build line 145/.test(r.text), r.text);
+
+      r = await wcall('claudedev_vs_get_output', { pane: 'debug' });
+      check('vs_get_output pane "debug" without Visual Studio fails politely (not an exception)',
+        !r.isError && /isn't reachable/.test(r.text) && /Open Visual Studio/.test(r.text), r.text);
+      r = await wcall('claudedev_vs_get_output', { pane: 'list' });
+      check('vs_get_output pane "list" without Visual Studio fails politely too', !r.isError && /isn't reachable/.test(r.text), r.text);
+
+      // A fake VS Bridge 1.5.0 on the spare port (the answers VsBridgeServer.cs gives).
+      const seen = [];
+      let mode = 'new';
+      const debugText = Array.from({ length: 100 }, (_, k) => `Debug.WriteLine ${k + 201}`).join('\r\n') + '\r\n';
+      const panes = [{ name: 'Build', guid: '{1BD8A850-02D1-11D1-BEE7-00A0C913D1F8}', kind: 'build', lines: 40 }, { name: 'Debug', guid: '{FC076020-078A-11D1-A7DF-00A0C9110051}', kind: 'debug', lines: 301 }, { name: 'Source Control - Git', guid: '{B85579AA-8BE0-4C4F-A850-90902B317581}', lines: 3 }];
+      fake = http.createServer((q, s) => {
+        seen.push(q.url);
+        const u = new URL(q.url, 'http://localhost');
+        const send = (code, o) => { s.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' }); s.end(JSON.stringify(o)); };
+        if (mode === 'old') return send(404, { error: 'Not found' });
+        if (u.pathname === '/panes') return send(200, { panes });
+        if (u.pathname === '/pane' && u.searchParams.get('name') === 'debug') return send(200, { pane: 'Debug', guid: panes[1].guid, kind: 'debug', lines: 300, shown: 100, text: debugText });
+        if (u.pathname === '/pane' && u.searchParams.get('name') === 'Tests') return send(200, { pane: 'Tests', guid: '{00000000-0000-0000-0000-000000000001}', lines: 0, shown: 0, text: '', note: 'Visual Studio has not written anything to this pane yet.' });
+        if (u.pathname === '/pane') return send(200, { error: `There is no Output pane named "${u.searchParams.get('name')}".`, panes });
+        return send(404, { error: 'Not found' });
+      });
+      await new Promise((res) => fake.listen(sparePort, '127.0.0.1', res));
+
+      r = await wcall('claudedev_vs_get_output', { pane: 'debug' });
+      check('vs_get_output pane "debug" asks the bridge for the Debug pane (100 lines by default) and shows the newest lines',
+        !r.isError && seen.includes('/pane?name=debug&lines=100') && /^Output pane "Debug" \(last 100 of 300 lines, live\)/.test(r.text) && r.text.includes('Debug.WriteLine 201') && r.text.includes('Debug.WriteLine 300'), `${seen.join(' ')}\n${r.text.slice(0, 300)}`);
+      r = await wcall('claudedev_vs_get_output', { pane: 'list' });
+      check('vs_get_output pane "list" names the panes (with build/debug marked)',
+        !r.isError && /^Output panes \(3\)/.test(r.text) && /Debug {2}\[pane: "debug"\] {2}301 lines/.test(r.text) && /Source Control - Git {2}3 lines/.test(r.text), r.text);
+      r = await wcall('claudedev_vs_get_output', { pane: 'Source Control - Git', lines: 7 });
+      check('vs_get_output passes any other pane name through (encoded) with lines', seen.includes('/pane?name=Source%20Control%20-%20Git&lines=7'), seen.join(' '));
+      r = await wcall('claudedev_vs_get_output', { pane: 'Nope' });
+      check('vs_get_output for a pane that does not exist says so and lists the panes',
+        !r.isError && /There is no Output pane named "Nope"/.test(r.text) && /Output panes now: "Build" \(build\), "Debug" \(debug\), "Source Control - Git"/.test(r.text), r.text);
+      r = await wcall('claudedev_vs_get_output', { pane: 'Tests' });
+      check('vs_get_output for a pane Visual Studio has not written to yet says so (no error)', !r.isError && /^Output pane "Tests": Visual Studio has not written anything to this pane yet\.$/.test(r.text), r.text);
+      mode = 'old';
+      r = await wcall('claudedev_vs_get_output', { pane: 'debug' });
+      check('vs_get_output against a VS Bridge older than 1.5.0 says to update it (not the Build pane by mistake)',
+        !r.isError && /older than 1\.5\.0/.test(r.text) && !/build line/.test(r.text), r.text);
+    } finally {
+      await wb.close().catch(() => {});
+      if (fake) await new Promise((res) => fake.close(() => res()));
     }
   }
 } catch (e) {

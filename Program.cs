@@ -19,7 +19,6 @@ namespace ClaudeDevStudio
     ///   claudedev stats                      Show memory statistics
     ///   claudedev handoff                    Automatic handoff (never replaces an explicit one)
     ///   claudedev cleanup                    Run daily memory cleanup
-    ///   claudedev monitor <project_path>     Monitor Visual Studio debug output
     ///   claudedev build <project_path>       Build project
     ///   claudedev package <project_path>     Create MSIX package
     ///   claudedev clean <project_path>       Clean build artifacts
@@ -494,33 +493,12 @@ namespace ClaudeDevStudio
             return 0;
         }
 
+        // The debug monitor (VSDebugMonitor.cs, which needed Sysinternals DebugView) was removed
+        // in 1.5.0 (P6): the command stays only to say so and what to use instead.
         static int MonitorDebug(string[] args)
         {
-            if (args.Length < 2)
-                return Error("Usage: claudedev monitor <project_path>");
-
-            var projectPath = args[1];
-            if (!Directory.Exists(projectPath))
-                return Error($"Project path does not exist: {projectPath}");
-
-            var memory = new ClaudeMemory(projectPath);
-            var monitor = new VSDebugMonitor(projectPath, memory);
-
-            Console.WriteLine("Starting VS Debug Monitor...");
-            Console.WriteLine("This will capture exceptions and errors from Visual Studio debugger.");
-            Console.WriteLine();
-
-            var monitorTask = monitor.StartMonitoringAsync();
-            
-            Console.CancelKeyPress += (s, e) =>
-            {
-                e.Cancel = true;
-                monitor.StopMonitoring();
-            };
-
-            monitorTask.Wait();
-
-            return 0;
+            Console.WriteLine("claudedev monitor was removed in ClaudeDevStudio 1.5.0. For a running program's Debug.WriteLine/trace output, ask Claude to use claudedev_vs_get_output with pane \"debug\" (Visual Studio with the CDS VS Bridge).");
+            return 1;
         }
 
         static int BuildProject(string[] args)
@@ -1175,7 +1153,7 @@ namespace ClaudeDevStudio
             Console.WriteLine("Memory & Development System for Claude AI");
             Console.WriteLine();
             Console.WriteLine("Copyright (c) 2026 Daniel E Gain");
-            Console.WriteLine("Email: danielegain@gmail.com");
+            Console.WriteLine("Contact: support@gainpublications.com");
             Console.WriteLine("Licensed under MIT License");
             Console.WriteLine("GitHub: https://github.com/dectdan/Claude-Developer-Studio");
             Console.WriteLine();
@@ -1229,7 +1207,6 @@ namespace ClaudeDevStudio
             Console.WriteLine("  cloud status             Show cloud sync status");
             Console.WriteLine();
             Console.WriteLine("  BUILD AUTOMATION:");
-            Console.WriteLine("  monitor <project_path>   Monitor Visual Studio debug output");
             Console.WriteLine("  build <project_path>     Build project (Debug x64 by default)");
             Console.WriteLine("  package <project_path>   Create MSIX package");
             Console.WriteLine("  clean <project_path>     Clean build artifacts");
@@ -1430,7 +1407,7 @@ namespace ClaudeDevStudio
             Console.WriteLine($"ClaudeDevStudio v{ProductVersion}");
             Console.WriteLine();
             Console.WriteLine("Copyright (c) 2026 Daniel E Gain");
-            Console.WriteLine("Email: danielegain@gmail.com");
+            Console.WriteLine("Contact: support@gainpublications.com");
             Console.WriteLine("Licensed under MIT License");
             Console.WriteLine();
             Console.WriteLine("Developed with assistance from Claude (Anthropic)");

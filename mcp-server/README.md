@@ -4,7 +4,7 @@ This folder holds the two MCP servers that the installer adds to Claude Desktop 
 
 | File | What it is |
 |---|---|
-| `index.js` | **`claudedevstudio`**, the memory server (14 tools, below). A thin wrapper over the `claudedev` CLI, which owns the memory format and does every write. |
+| `index.js` | **`claudedevstudio`**, the memory server (13 tools, below). A thin wrapper over the `claudedev` CLI, which owns the memory format and does every write. |
 | `workbench.js` | **`cds-workbench`**, the developer tools (13 tools, below). |
 | `cds-context.js` | What `claudedev_load` shows on walking into a project: the last handoff, the ground truth's Status and Next, the newest `docs\Pn_OUTPUT.md`, then mistakes, decisions, patterns and activity, under a size budget (aims at 8,000 characters, never over 12,000). Shared by `index.js` and `cds-hook.js`. |
 | `cds-search.js` | `claudedev_search`: words across one project's memory or all of them (both stores, plus the lessons), ranked, one line per hit, about 3,000 characters; read-only. Also the keyword rule `check_mistake` uses. |
@@ -28,14 +28,15 @@ This folder holds the two MCP servers that the installer adds to Claude Desktop 
 | `claudedev_search` | Finds past mistakes, decisions, patterns, handoffs, lessons and activity by words, in one project or all (`query`, optional `project_path`, `kinds`, `limit`). Reads only. |
 | `claudedev_record_lesson` | A lesson for every project (`LESSONS.jsonl` at the memory root): load shows it everywhere, check_mistake checks it. Refuses an empty lesson or a near-duplicate, naming the match. Edit or remove: `claudedev lesson edit <LSN###> <json>`, `claudedev lesson remove <LSN###>`. |
 | `claudedev_stats` | Counts what is stored. |
-| `claudedev_monitor_start` | Captures Visual Studio debug output (needs Sysinternals DebugView). |
 | `claudedev_chat_checkpoint`, `claudedev_chat_resume` | A short checkpoint log that survives a dropped chat. |
+
+(`claudedev_monitor_start`, which needed Sysinternals DebugView, was removed in 1.5.0: use `claudedev_vs_get_output` with `pane: "debug"`.)
 
 Every write goes through `%LOCALAPPDATA%\ClaudeDevStudio\CLI\claudedev.exe`. If the CLI fails, the tool says the entry was **not** recorded.
 
 ## `cds-workbench` (tools)
 
-`claudedev_vs_get_state`, `claudedev_vs_get_errors`, `claudedev_vs_get_output`, `claudedev_vs_get_events`, `claudedev_vs_get_debugger`, `claudedev_vs_evaluate`, `claudedev_vs_command` (Visual Studio, through the VS Bridge extension); `display_review`, `display_image` (the Review Panel at `http://127.0.0.1:63000`); `qwen_generate`, `list_models`, `generate_image` (another AI provider, with your own key); `fetch_url`.
+`claudedev_vs_get_state`, `claudedev_vs_get_errors`, `claudedev_vs_get_output`, `claudedev_vs_get_events`, `claudedev_vs_get_debugger`, `claudedev_vs_evaluate`, `claudedev_vs_command` (Visual Studio, through the VS Bridge extension; `claudedev_vs_get_output` reads the Build pane by default, `pane: "debug"` a running program's `Debug.WriteLine`/trace output, any other pane by name, and `pane: "list"` names the panes); `display_review`, `display_image` (the Review Panel at `http://127.0.0.1:63000`); `qwen_generate`, `list_models`, `generate_image` (another AI provider, with your own key); `fetch_url`.
 
 ## The Claude Code hook
 
