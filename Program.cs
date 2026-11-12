@@ -14,7 +14,8 @@ namespace ClaudeDevStudio
     ///   claudedev load <project_path>        Load context (used by Claude at session start)
     ///   claudedev record <project_path> <type> <json>
     ///                                        Record activity/pattern/mistake/decision/performance/handoff
-    ///   claudedev check <project_path> <action>  Check if action matches prior mistake
+    ///   claudedev check <project_path> <action>  Check if action matches prior mistake (or a lesson for every project)
+    ///   claudedev lesson add|list|edit|remove     The lessons for every project (LESSONS.jsonl)
     ///   claudedev stats                      Show memory statistics
     ///   claudedev handoff                    Automatic handoff (never replaces an explicit one)
     ///   claudedev cleanup                    Run daily memory cleanup
@@ -51,6 +52,7 @@ namespace ClaudeDevStudio
                     "load" => LoadContext(args),
                     "record" => RecordData(args),
                     "check" => CheckAction(args),
+                    "lesson" or "lessons" => LessonCommand(args),
                     "stats" => ShowStats(args),
                     "handoff" => GenerateHandoff(args),
                     "cleanup" => RunCleanup(args),
@@ -100,12 +102,7 @@ namespace ClaudeDevStudio
             var memory = new ClaudeMemory(projectPath);
             memory.InitializeNewSession();
 
-            var memoryLocation = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                "ClaudeDevStudio",
-                "Projects",
-                Path.GetFileName(projectPath)
-            );
+            var memoryLocation = Path.Combine(MemoryPaths.Root, "Projects", Path.GetFileName(projectPath));
 
             Console.WriteLine($"✓ Initialized ClaudeDevStudio memory for: {Path.GetFileName(projectPath)}");
             Console.WriteLine($"  Memory location: {memoryLocation}");
@@ -270,6 +267,7 @@ namespace ClaudeDevStudio
 
             var memory = new ClaudeMemory(projectPath);
             var check = memory.CheckForMistake(actionDescription);
+            var found = false;
 
             if (check.FoundPriorAttempt && check.PriorMistake != null)
             {
@@ -279,14 +277,117 @@ namespace ClaudeDevStudio
                 Console.WriteLine($"What happened: {check.PriorMistake.Impact}");
                 Console.WriteLine($"Lesson learned: {check.PriorMistake.Lesson}");
                 Console.WriteLine($"\nRecommended alternative: {check.Alternative}");
-                
-                return 1;
+                found = true;
             }
-            else
+
+            // The lessons for every project (P5), same rule. Exit code 1 for either kind of match.
+            var lessons = LessonStore.Matches(actionDescription);
+            if (lessons.Any())
             {
-                Console.WriteLine("✓ No prior mistakes found for this action");
-                return 0;
+                if (found) Console.WriteLine();
+                Console.WriteLine($"⚠️ WARNING: This action matches {(lessons.Count == 1 ? "a lesson" : $"{lessons.Count} lessons")} for every project (machine-wide, {LessonStore.FilePath}):");
+                foreach (var (lesson, _) in lessons.Take(3))
+                {
+                    Console.WriteLine($"\nLesson ID: {lesson.Id}");
+                    Console.WriteLine($"Lesson: {lesson.Text}");
+                    if (!string.IsNullOrWhiteSpace(lesson.Why))
+                        Console.WriteLine($"Learned: {lesson.Why}");
+                }
+                found = true;
             }
+
+            if (found)
+                return 1;
+            Console.WriteLine("✓ No prior mistakes found for this action");
+            return 0;
+        }
+
+        // claudedev lesson add <json> [--force] | add --file <file.jsonl> [--force] | list
+        //                   | edit <LSN###> <json> [--force] | remove <LSN###>
+        // The lessons for every project (P5): LESSONS.jsonl at the memory root. JSON fields:
+        // "lesson" (required), "why" (where it was learned), "source_project" (optional).
+        static int LessonCommand(string[] args)
+        {
+            var action = args.Length > 1 ? args[1].ToLower() : "list";
+            var force = args.Any(a => a == "--force");
+            var rest = args.Skip(2).Where(a => a != "--force").ToList();
+            const string usage = "Usage: claudedev lesson add <json> [--force] | add --file <lessons.jsonl> | list | edit <LSN###> <json> | remove <LSN###>";
+
+            Lesson? Parse(string json)
+            {
+                try { return System.Text.Json.JsonSerializer.Deserialize<Lesson>(json); }
+                catch (System.Text.Json.JsonException ex) { Console.Error.WriteLine($"Not JSON: {ex.Message}"); return null; }
+            }
+
+            switch (action)
+            {
+                case "add":
+                {
+                    if (rest.Count >= 2 && rest[0] == "--file")
+                    {
+                        // One lesson per line; each goes through the same rules. Blank lines and lines
+                        // starting with // or # are skipped.
+                        if (!File.Exists(rest[1])) return Error($"File not found: {rest[1]}");
+                        int added = 0, refused = 0;
+                        foreach (var raw in File.ReadAllLines(rest[1]))
+                        {
+                            var line = raw.Trim().TrimStart('﻿');
+                            if (line.Length == 0 || line.StartsWith("//") || line.StartsWith("#")) continue;
+                            var l = Parse(line);
+                            if (l == null) { refused++; continue; }
+                            var r = LessonStore.Add(l, force, out var why);
+                            if (r != null) { added++; Console.WriteLine($"✓ Recorded lesson {r.Id}: {r.Text}"); }
+                            else { refused++; Console.WriteLine($"✗ {why} ({Shorten(l.Text, 80)})"); }
+                        }
+                        Console.WriteLine($"{added} added, {refused} refused. File: {LessonStore.FilePath}");
+                        return refused > 0 && added == 0 ? 1 : 0;
+                    }
+                    if (rest.Count == 0) return Error(usage);
+                    var lesson = Parse(string.Join(" ", rest));
+                    if (lesson == null) return 1;
+                    var recorded = LessonStore.Add(lesson, force, out var refusal);
+                    if (recorded == null) { Console.WriteLine(refusal); return 1; }
+                    Console.WriteLine($"✓ Recorded lesson {recorded.Id}: {recorded.Text}");
+                    Console.WriteLine($"  File: {LessonStore.FilePath}");
+                    return 0;
+                }
+                case "list":
+                {
+                    var all = LessonStore.ReadAll();
+                    if (!all.Any()) { Console.WriteLine($"No lessons for every project yet ({LessonStore.FilePath})."); return 0; }
+                    Console.WriteLine($"{all.Count} lesson{(all.Count == 1 ? "" : "s")} for every project ({LessonStore.FilePath}):");
+                    foreach (var l in all)
+                        Console.WriteLine($"{l.Id}  [{l.Timestamp:yyyy-MM-dd}] {l.Text}{(string.IsNullOrWhiteSpace(l.Why) ? "" : $"  | why: {l.Why}")}");
+                    return 0;
+                }
+                case "edit":
+                {
+                    if (rest.Count < 2) return Error(usage);
+                    var changes = Parse(string.Join(" ", rest.Skip(1)));
+                    if (changes == null) return 1;
+                    if (!LessonStore.Edit(rest[0], changes, force, out var refusal))
+                        return Error($"No lesson {rest[0]} in {LessonStore.FilePath} (claudedev lesson list shows them).");
+                    if (refusal != null) { Console.WriteLine(refusal); return 1; }
+                    Console.WriteLine($"✓ Changed lesson {rest[0].ToUpper()} (the previous file is LESSONS.jsonl.bak).");
+                    return 0;
+                }
+                case "remove":
+                {
+                    if (rest.Count < 1) return Error(usage);
+                    if (!LessonStore.Remove(rest[0], out var removed))
+                        return Error($"No lesson {rest[0]} in {LessonStore.FilePath} (claudedev lesson list shows them).");
+                    Console.WriteLine($"✓ Removed lesson {removed!.Id}: {removed.Text} (the previous file is LESSONS.jsonl.bak).");
+                    return 0;
+                }
+                default:
+                    return Error(usage);
+            }
+        }
+
+        static string Shorten(string? s, int max)
+        {
+            var t = (s ?? string.Empty).Trim();
+            return t.Length > max ? t[..max] + "..." : t;
         }
 
         static int ShowStats(string[] args)
@@ -1086,7 +1187,10 @@ namespace ClaudeDevStudio
             Console.WriteLine("  record <project_path> <type> <json>");
             Console.WriteLine("                           Record an activity, pattern, mistake, decision, performance or handoff (JSON)");
             Console.WriteLine("  check <project_path> <action>");
-            Console.WriteLine("                           Check if an action matches a prior mistake");
+            Console.WriteLine("                           Check if an action matches a prior mistake or a lesson for every project");
+            Console.WriteLine("  lesson add <json> [--force]   Add a lesson for every project ({\"lesson\":..., \"why\":...});");
+            Console.WriteLine("                           refuses an empty one or a near-duplicate. add --file <f.jsonl>: one per line");
+            Console.WriteLine("  lesson list | edit <LSN###> <json> | remove <LSN###>");
             Console.WriteLine("  stats [project_path]     Show memory statistics");
             Console.WriteLine("  handoff [project_path]   Write an automatic handoff from the session state");
             Console.WriteLine("                           (never replaces one written with record ... handoff)");
@@ -1195,13 +1299,14 @@ namespace ClaudeDevStudio
                 "Claude");
             var configPath = Path.Combine(configDir, "claude_desktop_config.json");
 
-            // Check Claude Desktop is installed
-            if (!Directory.Exists(configDir))
+            // Claude Desktop not set up yet (P5): add the entries anyway, as the installer does, so
+            // a Claude Desktop installed later finds them (cds-config.js creates the file).
+            var notSetUp = !Directory.Exists(configDir);
+            if (notSetUp)
             {
-                Console.WriteLine("Claude Desktop not found.");
-                Console.WriteLine("  Install from: https://claude.ai/download");
-                Console.WriteLine("  Then run: claudedev configure-claude");
-                return 1;
+                Console.WriteLine("Claude Desktop is not installed on this account yet; adding ClaudeDevStudio to its settings now.");
+                Console.WriteLine("  Then: install Claude Desktop from https://claude.ai/download, sign in, quit it fully and reopen it once.");
+                Console.WriteLine();
             }
 
             // Check MCP server exists
@@ -1254,7 +1359,9 @@ namespace ClaudeDevStudio
                 Console.WriteLine("Claude Desktop's config was NOT changed (see above).");
                 return 1;
             }
-            Console.WriteLine("Claude Desktop configured. Quit Claude Desktop fully and reopen it to activate ClaudeDevStudio.");
+            Console.WriteLine(notSetUp
+                ? "Done. Once Claude Desktop is installed and you are signed in, quit it fully and reopen it once to activate ClaudeDevStudio."
+                : "Claude Desktop configured. Quit Claude Desktop fully and reopen it to activate ClaudeDevStudio.");
             return 0;
         }
 

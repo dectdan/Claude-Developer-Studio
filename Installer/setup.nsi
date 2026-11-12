@@ -45,6 +45,7 @@ SetCompressor /SOLID lzma
 
 Var NodeExe       ; full path to node.exe, or "" when there is none
 Var FinishText    ; the finish page text (set at the end of the install)
+Var NoClaudeDesktop ; "1" when Claude Desktop was never set up on this account (P5)
 Var ClaudeCode    ; "1" when /CLAUDECODE=1 was given
 
 ;---------------------------------------------------------------------------
@@ -294,6 +295,21 @@ Section "Install" SecMain
   ;--- Step 8: Claude Desktop's config: add CDS's two entries, keep everything else ---
   Delete "${INSTALL_DIR}\${MANUAL_FILE}"
   StrCpy $FinishText "ClaudeDevStudio is installed.$\r$\n$\r$\nQuit Claude Desktop fully (tray icon, Quit) and reopen it. Then ask Claude: $\"Load CDS for C:\path\to\my\project$\".$\r$\n$\r$\nIf you use Visual Studio, reopen it too.$\r$\n$\r$\nOptional: if you use Claude Code, the second box below adds CDS's servers and four hooks to your Claude Code settings, so its sessions load the project's memory by themselves (backed up first; undo from the tray app)."
+  ; Claude Desktop never set up on this account (P5): no %APPDATA%\Claude and no packaged (MSIX)
+  ; Claude. cds-config.js still creates the file with CDS's two servers, which Claude Desktop reads
+  ; once it is installed; the finish page says what to do.
+  StrCpy $NoClaudeDesktop "0"
+  ${IfNot} ${FileExists} "$APPDATA\Claude\*.*"
+    FindFirst $R0 $R1 "$LOCALAPPDATA\Packages\Claude_*"
+    ${If} $R1 == ""
+      StrCpy $NoClaudeDesktop "1"
+    ${EndIf}
+    FindClose $R0
+  ${EndIf}
+  ${If} $NoClaudeDesktop == "1"
+    ${STEP} "Claude Desktop is not installed on this account yet: its settings file will be created with only ClaudeDevStudio's two servers."
+    StrCpy $FinishText "ClaudeDevStudio is installed.$\r$\n$\r$\nClaude Desktop is not installed yet. ClaudeDevStudio has already added itself to Claude Desktop's settings, so: install Claude Desktop from https://claude.ai/download, sign in, then quit it fully (tray icon, Quit) and reopen it once. Then ask Claude: $\"Load CDS for C:\path\to\my\project$\".$\r$\n$\r$\nOptional: if you use Claude Code, the second box below adds CDS's servers and four hooks to your Claude Code settings, so its sessions load the project's memory by themselves (backed up first; undo from the tray app)."
+  ${EndIf}
   ${If} $NodeExe == ""
     StrCpy $FinishText "ClaudeDevStudio's files are installed, but Node.js was not found, so it could not add itself to Claude Desktop.$\r$\n$\r$\nInstall Node.js LTS from https://nodejs.org and run this installer again."
     ${STEP} "Node.js not found: Claude Desktop's config not changed."
@@ -355,6 +371,8 @@ Section "Install" SecMain
     "${INSTALL_DIR}\Uninstall.exe"
 
   WriteUninstaller "${INSTALL_DIR}\Uninstall.exe"
+  ; The finish page's text, in the log too (a silent install shows no finish page).
+  ${STEP} "Finish page: $FinishText"
   ${STEP} "Installation complete!"
 
 SectionEnd

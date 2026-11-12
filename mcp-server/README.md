@@ -4,9 +4,10 @@ This folder holds the two MCP servers that the installer adds to Claude Desktop 
 
 | File | What it is |
 |---|---|
-| `index.js` | **`claudedevstudio`**, the memory server (12 tools, below). A thin wrapper over the `claudedev` CLI, which owns the memory format and does every write. |
+| `index.js` | **`claudedevstudio`**, the memory server (14 tools, below). A thin wrapper over the `claudedev` CLI, which owns the memory format and does every write. |
 | `workbench.js` | **`cds-workbench`**, the developer tools (13 tools, below). |
 | `cds-context.js` | What `claudedev_load` shows on walking into a project: the last handoff, the ground truth's Status and Next, the newest `docs\Pn_OUTPUT.md`, then mistakes, decisions, patterns and activity, under a size budget (aims at 8,000 characters, never over 12,000). Shared by `index.js` and `cds-hook.js`. |
+| `cds-search.js` | `claudedev_search`: words across one project's memory or all of them (both stores, plus the lessons), ranked, one line per hit, about 3,000 characters; read-only. Also the keyword rule `check_mistake` uses. |
 | `cds-paths.js` | Asks Windows where Documents is (it may be moved, e.g. by OneDrive): the memory is in `[Documents]\ClaudeDevStudio\Projects\<project folder name>\`. |
 | `cds-hook.js` | The Claude Code hook (optional; see the main README, "Claude Code"). |
 | `templates\` | What `claudedev_scaffold` creates in a project: `GROUND_TRUTH.md`, `CONVENTIONS.md`, `HOW_WE_WORK.md`. |
@@ -23,7 +24,9 @@ This folder holds the two MCP servers that the installer adds to Claude Desktop 
 | `claudedev_record_decision` | A decision and why. |
 | `claudedev_record_activity` | Work done. |
 | `claudedev_record_mistake` | A mistake, its impact, the fix and the lesson. |
-| `claudedev_check_mistake` | Checks a planned step against the recorded mistakes. |
+| `claudedev_check_mistake` | Checks a planned step against the recorded mistakes and the lessons for every project. |
+| `claudedev_search` | Finds past mistakes, decisions, patterns, handoffs, lessons and activity by words, in one project or all (`query`, optional `project_path`, `kinds`, `limit`). Reads only. |
+| `claudedev_record_lesson` | A lesson for every project (`LESSONS.jsonl` at the memory root): load shows it everywhere, check_mistake checks it. Refuses an empty lesson or a near-duplicate, naming the match. Edit or remove: `claudedev lesson edit <LSN###> <json>`, `claudedev lesson remove <LSN###>`. |
 | `claudedev_stats` | Counts what is stored. |
 | `claudedev_monitor_start` | Captures Visual Studio debug output (needs Sysinternals DebugView). |
 | `claudedev_chat_checkpoint`, `claudedev_chat_resume` | A short checkpoint log that survives a dropped chat. |
@@ -54,9 +57,11 @@ From the repository root:
 node mcp-server\test\smoke.mjs                                       # the installed CLI
 node mcp-server\test\smoke.mjs --cli bin\Release\net8.0\claudedev.exe   # a freshly built CLI
 node mcp-server\test\show.mjs claudedev_load C:\path\to\project       # what load shows, and its length
+node mcp-server\test\show.mjs claudedev_search "curly quotes PowerShell"   # a search, its length and time
+node mcp-server\test\show.mjs --tools                                 # the size of tools/list
 ```
 
-The smoke test uses throwaway projects in `%TEMP%` and removes their memory folders afterwards. See `docs\GROUND_TRUTH.md`, section 10.
+The smoke test uses throwaway projects in `%TEMP%` and removes their memory folders afterwards. Its search and lessons checks use a throwaway memory root (`CDS_MEMORY_ROOT`, `CDS_LEGACY_ROOT`: test-only variables, read by the servers, the hook and the CLI; never set them in normal use). See `docs\GROUND_TRUTH.md`, section 10.
 
 ## Running by hand
 

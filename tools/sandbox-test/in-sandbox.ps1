@@ -12,8 +12,9 @@
 # Scenarios, in order: N the .NET 8 Desktop Runtime installer timed on its own (installed, then
 # removed again), S why signed MSIs are slow here (diagnostic: connectivity, signature-check
 # timings, a verbose msiexec of the Node.js MSI), A fresh install, B upgrade, C uninstall, D Documents redirected, E Claude Code
-# setup (P4). Which ones run is in C:\cds\results\run-config.json (written by
-# run-sandbox-test.ps1; default A,B,C,D,E). B-E need the ones before them.
+# setup (P4), F a PC that never had Claude Desktop (P5; with networking also installs and starts
+# Claude Desktop itself). Which ones run is in C:\cds\results\run-config.json (written by
+# run-sandbox-test.ps1; default A,B,C,D,E,F). B-F need A before them.
 # Writes results.json (each check: scenario, name, PASS/FAIL, evidence) after every check
 # and sandbox.log, copies the installer's logs, then shuts the sandbox down.
 
@@ -35,12 +36,14 @@ $UserShellFolders = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Us
 $ShellFolders     = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
 $Downloads = 'C:\cds\downloads'
 $ExpectVersion = '1.4.0'
-$Scenarios = @('A', 'B', 'C', 'D', 'E')
+$Scenarios = @('A', 'B', 'C', 'D', 'E', 'F')
+$Networking = $false
 $RunConfig = Join-Path 'C:\cds\results' 'run-config.json'
 if (Test-Path $RunConfig) {
     try {
         $rc = Get-Content $RunConfig -Raw | ConvertFrom-Json
         if ($rc.scenarios) { $Scenarios = @($rc.scenarios -split ',' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }) }
+        $Networking = [bool]$rc.networking
         if ($rc.expectVersion) { $ExpectVersion = [string]$rc.expectVersion }
     } catch { }
 }
@@ -228,7 +231,7 @@ function Check-Program([string]$Scenario) {
               'mcp-server\index.js', 'mcp-server\workbench.js', 'mcp-server\package.json', 'mcp-server\qwen_config.template.json',
               'mcp-server\node_modules\@modelcontextprotocol\sdk\package.json', 'review-server\server.js',
               'review-server\node_modules\express\package.json', 'VSExtension\CdsVsBridge.vsix',
-              'mcp-server\cds-paths.js', 'mcp-server\cds-context.js', 'mcp-server\cds-hook.js',
+              'mcp-server\cds-paths.js', 'mcp-server\cds-context.js', 'mcp-server\cds-hook.js', 'mcp-server\cds-search.js',
               'cds-config.js', 'cds-claude-code.js', 'cds-vsix.ps1', 'cds-path.ps1', 'Uninstall.exe')
     $missing = @($need | Where-Object { -not (Test-Path (Join-Path $Inst $_)) })
     Check $Scenario 'program files are in place' ($missing.Count -eq 0) $(if ($missing.Count) { "missing: $($missing -join ', ')" } else { "$($need.Count) files present under $Inst" })
@@ -587,6 +590,130 @@ try {
     $j = & $ccFiles 'expect-cds'
     Check $S 'a silent install with /CLAUDECODE=1 sets Claude Code up (seeded entries kept)' ([bool]$j.ok) "hooks: $($j.cdsHooks -join ', '); $($j.problems -join ' | ')"
     Stop-CdsProcesses
+    }
+
+    # ---------------------------------------------------------------- F. a PC that never had Claude Desktop (P5)
+    # After A-E the runtimes are in place, so this is quick. CDS is taken out first, then
+    # %APPDATA%\Claude removed entirely: CDS is installed before Claude Desktop ever was.
+    # With -Networking, Claude Desktop itself (the MSIX from claude.ai) is then installed and started.
+    if (Want 'F') {
+    $S = 'F'
+    Log '=== F. Claude Desktop never installed ==='
+    if (Test-Path (Join-Path $Inst 'Uninstall.exe')) { Stop-CdsProcesses; $null = Run-Uninstaller }
+    Remove-Item -LiteralPath $CfgDir -Recurse -Force -ErrorAction SilentlyContinue
+    $pkgs = @(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue)
+    Check $S 'before: no %APPDATA%\Claude, no packaged Claude Desktop, CDS not installed' ((-not (Test-Path $CfgDir)) -and $pkgs.Count -eq 0 -and -not (Test-Path (Join-Path $Inst 'CLI\claudedev.exe'))) "Claude folder: $(Test-Path $CfgDir); Claude packages: $($pkgs.Count); CDS CLI: $(Test-Path (Join-Path $Inst 'CLI\claudedev.exe'))"
+    Run-Installer $S
+    Check-Program $S
+    $cdsOnly = {
+        if (-not (Test-Path $Cfg)) { return @{ ok = $false; ev = 'no file' } }
+        $raw = [System.IO.File]::ReadAllBytes($Cfg)
+        $bom = $raw.Length -ge 3 -and $raw[0] -eq 0xEF -and $raw[1] -eq 0xBB
+        $j = [System.Text.Encoding]::UTF8.GetString($raw) | ConvertFrom-Json
+        $top = @($j.PSObject.Properties.Name) -join ','
+        $srv = @($j.mcpServers.PSObject.Properties.Name) -join ','
+        $idx = [string]$j.mcpServers.claudedevstudio.args[0]
+        $files = @(Get-ChildItem -LiteralPath $CfgDir -Force | ForEach-Object Name) -join ', '
+        return @{ ok = ($top -eq 'mcpServers' -and $srv -eq 'claudedevstudio,cds-workbench' -and -not $bom -and (Test-Path $idx)); ev = "top-level keys: $top; servers: $srv; index.js: $idx (exists $(Test-Path $idx)); BOM $bom; files in the folder: $files"; files = $files }
+    }
+    $c = & $cdsOnly
+    Check $S 'the folder and file are created with just the two CDS entries (no BOM, no backup: nothing to back up)' ($c.ok -and $c.files -eq 'claude_desktop_config.json') $c.ev
+    $fl = Get-InstallLogLines
+    Copy-Item (Join-Path $Inst 'install.log') (Join-Path $Res 'F1-install.log') -Force
+    # The finish text spans several lines: from "Finish page:" up to "Installation complete!".
+    $fin = @(); $inFin = $false
+    foreach ($l in $fl) {
+        if ($l -match 'Finish page:') { $inFin = $true }
+        elseif ($l -match 'Installation complete!') { $inFin = $false }
+        if ($inFin -and $l.Trim()) { $fin += $l.Trim() }
+    }
+    $said = @($fl | Where-Object { $_ -match 'not installed on this account yet|has not been set up on this account yet' })
+    Check $S 'the log and the finish text say Claude Desktop is not installed yet, and what to do' ($said.Count -ge 2 -and ($fin -join ' ') -match 'Claude Desktop is not installed yet' -and ($fin -join ' ') -match 'claude\.ai/download' -and ($fin -join ' ') -match 'reopen it once') "$($said -join ' / ') // $($fin -join ' / ')"
+
+    # The tray app and the CLI on a PC without Claude Desktop: no error
+    $t0 = Get-Date
+    $tray = Start-Process -FilePath (Join-Path $Inst 'TrayApp\ClaudeDevStudio.TrayApp.exe') -PassThru
+    Start-Sleep -Seconds 12
+    $alive = -not $tray.HasExited
+    $errs = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Level = 2; StartTime = $t0 } -ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'ClaudeDevStudio' })
+    Check $S 'the tray app starts and keeps running (no error events)' ($alive -and $errs.Count -eq 0) "running after 12 s: $alive; error events naming ClaudeDevStudio: $($errs.Count) $(($errs | Select-Object -First 1 | ForEach-Object { $_.Message.Substring(0, [Math]::Min(300, $_.Message.Length)) }))"
+    try { if (-not $tray.HasExited) { $tray.Kill() } } catch { }
+    Probe-Memory $S 'SandboxProjF' (Get-Docs)
+    Remove-Item -LiteralPath $CfgDir -Recurse -Force -ErrorAction SilentlyContinue
+    $cc = Invoke-Tool (Join-Path $Inst 'CLI\claudedev.exe') 'configure-claude' 120
+    $c = & $cdsOnly
+    Check $S 'claudedev configure-claude without Claude Desktop: exit 0, says what to do, writes the two entries' ($cc.code -eq 0 -and $cc.out -match 'not installed on this account yet' -and $cc.out -match 'claude\.ai/download' -and $c.ok) "exit $($cc.code): $(($cc.out -split "`n") -join ' / ') // $($c.ev)"
+
+    $claudeHere = $false
+    if ($Networking) {
+        # Claude Desktop installed after CDS (the MSIX that claude.ai's installer installs).
+        $msix = Join-Path $Work 'Claude.msix'
+        $t0 = Get-Date
+        # Windows PowerShell 5.1 downloads large files very slowly while it draws its progress bar.
+        $ProgressPreference = 'SilentlyContinue'
+        $dl = try { Invoke-WebRequest -Uri 'https://claude.ai/api/desktop/win32/x64/msix/latest/redirect' -OutFile $msix -UseBasicParsing -TimeoutSec 900; "downloaded $((Get-Item $msix).Length) bytes" } catch { "download failed: $($_.Exception.Message)" }
+        Check $S 'networked: Claude Desktop MSIX downloaded from claude.ai' (Test-Path $msix) "$dl in $([int]((Get-Date) - $t0).TotalSeconds) s"
+        if (Test-Path $msix) {
+            $before = [System.IO.File]::ReadAllBytes($Cfg)
+            $ai = try { Add-AppxPackage -Path $msix -ErrorAction Stop; 'ok' } catch { "Add-AppxPackage failed: $($_.Exception.Message)" }
+            $pkg = Get-AppxPackage -Name 'Claude' -ErrorAction SilentlyContinue
+            $Info.claudeDesktop = "$($pkg.PackageFullName)"
+            Check $S 'networked: Claude Desktop installs (Add-AppxPackage, per user)' ([bool]$pkg) "$ai; package: $($pkg.PackageFullName)"
+            if ($pkg) {
+                $claudeHere = $true
+                Start-Process explorer.exe "shell:AppsFolder\$($pkg.PackageFamilyName)!Claude"
+                Start-Sleep -Seconds 75
+                $procs = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match 'ClaudeDevStudio' } | ForEach-Object { $_.CommandLine })
+                $claudeRunning = @(Get-Process -Name 'Claude' -ErrorAction SilentlyContinue).Count
+                $private = Join-Path $env:LOCALAPPDATA "Packages\$($pkg.PackageFamilyName)\LocalCache\Roaming\Claude"
+                $privCfg = Join-Path $private 'claude_desktop_config.json'
+                $c = & $cdsOnly
+                $j = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($Cfg)) | ConvertFrom-Json
+                $hasCds = [bool]$j.mcpServers.claudedevstudio -and [bool]$j.mcpServers.'cds-workbench'
+                $same = [System.Convert]::ToBase64String($before) -eq [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($Cfg))
+                Check $S 'networked: Claude Desktop starts and the config still lists both CDS servers (not replaced)' ($claudeRunning -gt 0 -and $hasCds) "Claude processes: $claudeRunning; config unchanged byte for byte: $same; $($c.ev)"
+                Check $S 'networked: Claude Desktop reads the real %APPDATA% file (no private package copy of the config was made)' (-not (Test-Path $privCfg)) "private folder $private exists: $(Test-Path $private) ($(@(Get-ChildItem $private -ErrorAction SilentlyContinue | ForEach-Object Name) -join ', ')); private config: $(Test-Path $privCfg)"
+                Check $S 'networked: Claude Desktop started CDS''s servers (node running index.js / workbench.js)' ($procs.Count -ge 1) "$($procs.Count): $($procs -join ' || ')"
+                $Info.claudeAppDataFiles = @(Get-ChildItem $CfgDir -Force -ErrorAction SilentlyContinue | ForEach-Object Name) -join ', '
+                $logs = @(Get-ChildItem (Join-Path $CfgDir 'logs') -Filter 'mcp*.log' -ErrorAction SilentlyContinue)
+                foreach ($l in $logs) { Copy-Item $l.FullName (Join-Path $Res "F-claude-$($l.Name)") -Force }
+                Get-Process -Name 'Claude' -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch { } }
+                Start-Sleep -Seconds 3
+            }
+        }
+    } else {
+        Log '    (Claude Desktop itself not installed: networking is off; run with -Networking -Scenarios A,F for that)'
+    }
+
+    Stop-CdsProcesses
+    $u = Run-Uninstaller
+    $unLog = Join-Path $env:TEMP 'ClaudeDevStudio-uninstall.log'
+    if (Test-Path $unLog) { Copy-Item $unLog (Join-Path $Res 'F-uninstall.log') -Force }
+    if ($claudeHere) {
+        $j = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($Cfg)) | ConvertFrom-Json
+        $left = @($j.mcpServers.PSObject.Properties.Name) -join ','
+        Check $S 'networked: uninstall removes only the two entries and keeps Claude Desktop''s folder' ($u.code -eq 0 -and (Test-Path $CfgDir) -and -not $j.mcpServers.claudedevstudio -and -not $j.mcpServers.'cds-workbench') "uninstaller exit $($u.code); servers left: '$left'; folder kept: $(Test-Path $CfgDir)"
+    } else {
+        Check $S 'the uninstaller removes the entries cleanly: the folder it created (only CDS''s file) is gone' ($u.code -eq 0 -and $u.running -eq 0 -and -not (Test-Path $CfgDir)) "uninstaller exit $($u.code) after $($u.secs) s; %APPDATA%\Claude exists: $(Test-Path $CfgDir) $(@(Get-ChildItem $CfgDir -Force -ErrorAction SilentlyContinue | ForEach-Object Name) -join ', ')"
+    }
+    Check $S 'the uninstaller removes CDS' (-not (Test-Path (Join-Path $Inst 'CLI\claudedev.exe'))) "CLI left: $(Test-Path (Join-Path $Inst 'CLI\claudedev.exe'))"
+
+    # The packaged (MSIX) Claude Desktop's own copy of the config (a fresh MSIX install reads it first).
+    if (-not $claudeHere) {
+        $fakePkg = Join-Path $env:LOCALAPPDATA 'Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude'
+        New-Item -ItemType Directory -Force -Path $fakePkg | Out-Null
+        $fakeCfg = Join-Path $fakePkg 'claude_desktop_config.json'
+        [System.IO.File]::WriteAllText($fakeCfg, "{`r`n  `"mcpServers`": { `"boxed`": { `"command`": `"cmd`" } },`r`n  `"preferences`": { `"x`": 1 }`r`n}`r`n", $Utf8)
+        Run-Installer 'F'
+        $pj = Get-Content $fakeCfg -Raw | ConvertFrom-Json
+        $ps = @($pj.mcpServers.PSObject.Properties.Name) -join ','
+        Check $S 'a packaged Claude Desktop''s own config copy gets both entries too (its server and settings kept, backed up)' ($ps -eq 'boxed,claudedevstudio,cds-workbench' -and $pj.preferences.x -eq 1 -and @(Get-ChildItem $fakePkg -Filter '*.bak-cds-*').Count -eq 1) "servers: $ps; backups: $(@(Get-ChildItem $fakePkg -Filter '*.bak-cds-*').Count); log: $((Get-InstallLogLines | Where-Object { $_ -match 'package' }) -join ' / ')"
+        Stop-CdsProcesses
+        $u = Run-Uninstaller
+        $pj = Get-Content $fakeCfg -Raw | ConvertFrom-Json
+        Check $S 'uninstall takes them out of the package copy again (the rest kept)' ((@($pj.mcpServers.PSObject.Properties.Name) -join ',') -eq 'boxed' -and $pj.preferences.x -eq 1) "servers: $(@($pj.mcpServers.PSObject.Properties.Name) -join ',')"
+        Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'Packages\Claude_pzs8sxrjxfjjc') -Recurse -Force -ErrorAction SilentlyContinue
+    }
     }
 } catch {
     Check 'X' 'test script ran without an exception' $false "$($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)"

@@ -96,6 +96,15 @@ try {
   c = read(cfg);
   check('no folder: file created with just the two entries', deepEq(Object.keys(c), ['mcpServers']) && deepEq(Object.keys(c.mcpServers), ['claudedevstudio', 'cds-workbench']) && !hasBom(cfg));
 
+  // 6b. Never set up: install twice (a backup), uninstall removes the folder it made; with any other file there it stays.
+  install(cfg);
+  check('no folder: uninstall removes the folder CDS created (only its file and backups were there)',
+    uninstall(cfg) === 0 && !fs.existsSync(path.dirname(cfg)));
+  check('no folder: install again recreates it', install(cfg) === 0 && fs.existsSync(cfg));
+  fs.writeFileSync(path.join(path.dirname(cfg), 'config.json'), '{"claude":"was here"}');
+  check('no folder: once Claude Desktop has written its own file there, uninstall keeps the folder',
+    uninstall(cfg) === 0 && fs.existsSync(path.join(path.dirname(cfg), 'config.json')) && deepEq(read(cfg), { mcpServers: {} }));
+
   // 7. Empty file counts as {}.
   dir = path.join(root, 't7'); fs.mkdirSync(dir);
   cfg = path.join(dir, 'claude_desktop_config.json');
@@ -128,6 +137,35 @@ try {
   check('legacy: CDS extension removed, others kept',
     !fs.existsSync(path.join(dir, 'Claude Extensions', id)) && !fs.existsSync(path.join(dir, 'Claude Extensions Settings', `${id}.json`)) &&
     deepEq(inst, { extensions: { 'someone.else': { v: 2 } }, other: true }) && !hasBom(path.join(dir, 'extensions-installations.json')));
+
+  // 10. The packaged (MSIX) Claude Desktop's own copy (P5): same rules, its own backup.
+  dir = path.join(root, 't10'); fs.mkdirSync(dir);
+  cfg = path.join(dir, 'Roaming', 'Claude', 'claude_desktop_config.json');
+  fs.mkdirSync(path.dirname(cfg), { recursive: true });
+  fs.writeFileSync(cfg, JSON.stringify({ mcpServers: { real: { command: 'r' } } }));
+  const pkgs = path.join(dir, 'Packages');
+  const pkgCfg = path.join(pkgs, 'Claude_pzs8sxrjxfjjc', 'LocalCache', 'Roaming', 'Claude', 'claude_desktop_config.json');
+  fs.mkdirSync(path.dirname(pkgCfg), { recursive: true });
+  fs.writeFileSync(pkgCfg, JSON.stringify({ mcpServers: { boxed: { command: 'b' } }, preferences: { x: 1 } }));
+  const noFile = path.join(pkgs, 'Claude_otherid', 'LocalCache', 'Roaming', 'Claude'); // a package folder without the file
+  fs.mkdirSync(noFile, { recursive: true });
+  fs.mkdirSync(path.join(pkgs, 'NotClaude_pzs8sxrjxfjjc', 'LocalCache', 'Roaming', 'Claude'), { recursive: true });
+  fs.writeFileSync(path.join(pkgs, 'NotClaude_pzs8sxrjxfjjc', 'LocalCache', 'Roaming', 'Claude', 'claude_desktop_config.json'), '{}');
+  check('packaged: install exits 0', install(cfg, ['--packages', pkgs]) === 0);
+  const pc = read(pkgCfg), rc = read(cfg);
+  check('packaged: the package copy gets both entries and keeps its own',
+    deepEq(Object.keys(pc.mcpServers), ['boxed', 'claudedevstudio', 'cds-workbench']) && deepEq(pc.preferences, { x: 1 }) && backups(path.dirname(pkgCfg)).length === 1);
+  check('packaged: the real file is handled too', deepEq(Object.keys(rc.mcpServers), ['real', 'claudedevstudio', 'cds-workbench']));
+  check('packaged: no file is created in a package folder without one, nor in another app\'s package',
+    fs.readdirSync(noFile).length === 0 && fs.readFileSync(path.join(pkgs, 'NotClaude_pzs8sxrjxfjjc', 'LocalCache', 'Roaming', 'Claude', 'claude_desktop_config.json'), 'utf8') === '{}');
+  check('packaged: uninstall removes the entries from both', run('uninstall', '--config', cfg, '--packages', pkgs) === 0 &&
+    deepEq(read(pkgCfg), { mcpServers: { boxed: { command: 'b' } }, preferences: { x: 1 } }) && deepEq(read(cfg), { mcpServers: { real: { command: 'r' } } }));
+  fs.writeFileSync(pkgCfg, '{ not json');
+  check('packaged: an invalid package copy is left untouched (exit 2), the real file still updated',
+    install(cfg, ['--packages', pkgs]) === 2 && fs.readFileSync(pkgCfg, 'utf8') === '{ not json' && read(cfg).mcpServers.claudedevstudio);
+  const pkgBytes = bytes(cfg);
+  check('packaged: a --config that is not the default %APPDATA% path looks at no packages unless asked',
+    install(cfg) === 0 && fs.readFileSync(pkgCfg, 'utf8') === '{ not json' && bytes(cfg).equals(pkgBytes));
 } catch (e) {
   check('no exception', false, e.stack);
 } finally {

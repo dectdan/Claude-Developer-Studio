@@ -18,7 +18,9 @@ The installer brings everything else it needs (Node.js, the .NET 8 Desktop Runti
 2. Run it. Windows asks for administrator permission (to install Node.js and .NET if needed).
 3. Quit Claude Desktop fully (right-click its tray icon, Quit; closing the window is not enough) and open it again.
 
-The installer adds two servers to Claude Desktop's settings file (`%APPDATA%\Claude\claude_desktop_config.json`). Your other servers and settings are kept, and the file is backed up first (`claude_desktop_config.json.bak-cds-<date>`). If the file isn't valid JSON, the installer leaves it alone and tells you what to add by hand.
+The installer adds two servers to Claude Desktop's settings file (`%APPDATA%\Claude\claude_desktop_config.json`). Your other servers and settings are kept, and the file is backed up first (`claude_desktop_config.json.bak-cds-<date>`). If the file isn't valid JSON, the installer leaves it alone and tells you what to add by hand. If Claude Desktop keeps its own packaged copy of that file (`%LOCALAPPDATA%\Packages\Claude_…\LocalCache\Roaming\Claude\`), the installer updates that copy too, with the same rules.
+
+**Claude Desktop not installed yet?** Install CDS anyway: it adds itself to Claude Desktop's settings ahead of time. Then install [Claude Desktop](https://claude.ai/download), sign in, and quit it fully and reopen it once.
 
 ## First use
 
@@ -32,7 +34,7 @@ The first time, CDS creates the project's memory. After that, Claude sees the re
 
 | Part | What it does |
 |---|---|
-| `claudedevstudio` server | The memory: load (with the project's ground truth), record activity, record and check mistakes, record decisions, handoffs between sessions, the ground-truth scaffold, stats, chat checkpoints. |
+| `claudedevstudio` server | The memory: load (with the project's ground truth), record activity, record and check mistakes, record decisions, handoffs between sessions, search across all projects' memory, lessons for every project, the ground-truth scaffold, stats, chat checkpoints. |
 | `cds-workbench` server | Visual Studio state, errors, output, debugger and commands (needs the VS Bridge); showing code and images in the Review Panel; sending a task to another AI provider; fetching a web page. |
 | VS Bridge | A Visual Studio extension that shares build errors, output and debugger state with Claude. It answers only programs on your own PC, not web pages. |
 | Review Panel | A local page (`http://127.0.0.1:63000`) where code and images from Claude appear. |
@@ -79,6 +81,8 @@ Settings › Apps › ClaudeDevStudio › Uninstall (or the Uninstall shortcut i
 CDS works best when each project keeps its state in one file, `docs\GROUND_TRUTH.md`: what the project is, its status (dated lines, newest last, ending with a **Next:** line), decisions, open questions, known problems and the plan.
 
 **What load shows**, in this order and kept short (it aims at 8,000 characters and never passes 12,000): the last handoff and how old it is; the ground truth's title, "Last updated" line, the end of its Status section and its Next line, and the questions still open; the newest `docs\P*_OUTPUT.md` (its first section and a list of the rest); then the recorded mistakes, decisions, patterns and recent activity. Anything cut says which file holds the rest.
+
+**Search and lessons for every project.** `claudedev_search` finds past mistakes, decisions, handoffs and activity by words, in one project or all of them ("curly quotes PowerShell"), one short line per hit with the file it came from; it only reads. A lesson that holds everywhere ("ask Windows for the Documents folder; it may be on OneDrive") can be recorded once with `claudedev_record_lesson`: load then shows it in every project (a short section after the project's own mistakes, the most relevant first), and `claudedev_check_mistake` checks plans against it. Lessons live in `Documents\ClaudeDevStudio\LESSONS.jsonl`; `claudedev lesson list`, `lesson edit <id> <json>` and `lesson remove <id>` manage them.
 
 **No ground truth yet?** Load says so, and Claude offers `claudedev_scaffold`. With your OK it creates `docs\GROUND_TRUTH.md`, `docs\CONVENTIONS.md` (how code gets written: read before editing, back up, verify, no secrets) and `docs\HOW_WE_WORK.md` (the loop below) from short templates. It never overwrites a file, and it never runs without your OK: it's your repository.
 

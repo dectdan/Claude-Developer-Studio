@@ -10,6 +10,11 @@
 //
 // P3 adds throwaway projects of its own (a hand-made ground truth, a big project for the size
 // budget), all in %TEMP%; their memory folders are removed at the end too.
+//
+// P5 (search, lessons for every project) runs a second server with a throwaway memory root and old
+// store in %TEMP% (CDS_MEMORY_ROOT, CDS_LEGACY_ROOT: test-only), so its checks never read or write
+// the real store or the real LESSONS.jsonl. The lessons checks need --cli (the CLI must honour
+// CDS_MEMORY_ROOT; an older one would write to the real store, so they are skipped without it).
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -54,7 +59,7 @@ const listTree = (root) => {
   walk(root, '');
   return out.sort();
 };
-const TOOL_COUNT = 12; // 9 before P3 + claudedev_scaffold, claudedev_handoff, claudedev_record_decision
+const TOOL_COUNT = 14; // 9 before P3 + claudedev_scaffold, claudedev_handoff, claudedev_record_decision (P3) + claudedev_search, claudedev_record_lesson (P5)
 
 let passed = 0, failed = 0;
 const check = (label, ok, detail = '') => {
@@ -89,6 +94,7 @@ try {
   const { tools } = await client.listTools();
   check(`lists ${TOOL_COUNT} tools`, tools.length === TOOL_COUNT, tools.map(t => t.name).join(', '));
   check('server sends instructions', /claudedev_load/.test(client.getInstructions() || ''));
+  check('the instructions mention claudedev_search and claudedev_record_lesson (P5)', /claudedev_search/.test(client.getInstructions() || '') && /claudedev_record_lesson/.test(client.getInstructions() || ''), client.getInstructions());
 
   let r = await call('claudedev_load', { project_path: scratch + '\\' });
   check('load creates memory for a new project (trailing backslash ok)', !r.isError && /created just now/.test(r.text) && fs.existsSync(path.join(memDir, 'session_state.json')), r.text);
@@ -493,6 +499,164 @@ try {
       /the transcript could not be read/.test(logAfter.slice(logBefore)),
       `exit ${hMissing.code}/${hDir.code}/${hJunk.code}\nlog: ${logAfter.slice(logBefore)}`);
     try { fs.rmSync(hookLog, { force: true }); fs.rmSync(path.join(os.tmpdir(), 'hook_cache.json'), { force: true }); } catch { /* leave it */ }
+  }
+
+  // ---- Checks added in P5: claudedev_search, lessons for every project ----
+  // A second server with a throwaway memory root and old store (CDS_MEMORY_ROOT, CDS_LEGACY_ROOT),
+  // so nothing here reads or writes the real store or the real LESSONS.jsonl.
+  console.log('\n-- P5 checks (search, lessons for every project; a throwaway memory root) --');
+  {
+    const p5 = path.join(os.tmpdir(), `${scratchName}_p5`);
+    const R = path.join(p5, 'root'), L = path.join(p5, 'legacy'), W = path.join(p5, 'work');
+    extraProjects.push({ dir: p5, mem: p5 });
+    const P = (s) => `${scratchName}_${s}`;
+    const proj = (s) => { const dir = path.join(W, P(s)); write(path.join(dir, 'package.json'), `{ "name": "p5-${s.toLowerCase()}" }\n`); return { dir, name: P(s), mem: path.join(R, 'Projects', P(s)), old: path.join(L, 'Projects', P(s)) }; };
+    const A = proj('A'), B = proj('B'), C = proj('C'), D = proj('D'), E = proj('E');
+    const jl = (list) => list.map(o => JSON.stringify(o)).join('\n') + '\n';
+    const m1 = { id: 'ERR001', timestamp: '2026-05-01T10:00:00', mistake: 'Packed the quokka marmalade crate upside down before the zeppelin left', impact: 'Broken jars', fix: 'Repacked it', lesson: 'Check the quokka crate orientation label first', severity: 'medium' };
+    write(path.join(A.mem, 'MISTAKES.jsonl'), jl([m1]));
+    write(path.join(A.mem, 'DECISIONS.jsonl'), jl([{ id: 'DEC001', timestamp: '2026-05-01T11:00:00', decision: 'Ship the quokka marmalade by zeppelin', chose: 'Ship the quokka marmalade by zeppelin', reasoning: 'Faster than the ferry', alternatives_considered: ['ferry'] }]));
+    write(path.join(A.mem, 'Activity', '2026-05-03.jsonl'), jl(Array.from({ length: 30 }, (_, k) => ({ id: `ACT20260503_${k}`, timestamp: `2026-05-03T09:${pad(k)}:00`, action: 'code_change', description: `Sorted quokka marmalade batch ${k} for the warehouse shelves`, file: 'shelves.txt' }))));
+    write(path.join(B.mem, 'MISTAKES.jsonl'), jl([{ id: 'ERR001', timestamp: '2026-06-01T10:00:00', mistake: 'Forgot the quokka marmalade invoice for the customs office', impact: 'Delayed', fix: 'Sent it', lesson: 'Print the quokka marmalade invoice with the crate', severity: 'low' }]));
+    // The same mistake in the old store (v1.2.x one-file-per-entry), and an entry only there.
+    write(path.join(A.old, 'Activity', '20260501_100000_mistake.json'), JSON.stringify({ timestamp: m1.timestamp, mistake: m1.mistake, impact: m1.impact, fix: m1.fix, lesson: m1.lesson }));
+    write(path.join(A.old, 'Activity', '20260404_090000_activity.json'), JSON.stringify({ timestamp: '2026-04-04T09:00:00', action: 'note', description: 'Old store note about quokka marmalade labels', file: '', outcome: 'success' }));
+    // Ranking: a mistake and a newer activity line with the same words.
+    write(path.join(E.mem, 'MISTAKES.jsonl'), jl([{ id: 'ERR001', timestamp: '2026-01-01T08:00:00', mistake: 'Peeled the tangerine over the keyboard', impact: 'Sticky keys', fix: 'Cleaned', lesson: 'Peel tangerine away from keyboard', severity: 'low' }]));
+    write(path.join(E.mem, 'Activity', '2026-09-09.jsonl'), jl([{ id: 'ACT20260909_1', timestamp: '2026-09-09T08:00:00', action: 'note', description: 'Peeled a tangerine beside the keyboard again', file: '' }]));
+    // Crowding: 12 mistakes and 40 newer activity lines with the same two words.
+    const F = proj('F');
+    write(path.join(F.mem, 'MISTAKES.jsonl'), jl(Array.from({ length: 12 }, (_, k) => ({ id: `ERR${String(k + 1).padStart(3, '0')}`, timestamp: `2026-02-${pad(k + 1)}T08:00:00`, mistake: `Walrus accordion mistake number ${k}`, impact: 'x', fix: 'y', lesson: `Tune walrus accordion ${k}`, severity: 'low' }))));
+    write(path.join(F.mem, 'Activity', '2026-10-10.jsonl'), jl(Array.from({ length: 40 }, (_, k) => ({ id: `ACT20261010_${k}`, timestamp: `2026-10-10T08:${pad(k)}:00`, action: 'file_edit', description: `Edited walrus_accordion_${k}.txt (Claude Code, Edit)`, file: `walrus_accordion_${k}.txt` }))));
+
+    const client2 = new Client({ name: 'cds-smoke-p5', version: '1.0.0' });
+    await client2.connect(new StdioClientTransport({
+      command: process.execPath, args: [serverPath],
+      env: { CDS_MEMORY_ROOT: R, CDS_LEGACY_ROOT: L, ...(cliPath ? { CDS_CLI_PATH: cliPath } : {}) },
+    }));
+    const call2 = async (name, args) => { const x = await client2.callTool({ name, arguments: args }); return { text: x.content?.[0]?.text ?? '', isError: !!x.isError }; };
+    const hitLines = (t) => t.split('\n').filter(l => l.startsWith('- '));
+    const tree = (d) => fs.existsSync(d) ? listTree(d).map(x => { const s = fs.statSync(path.join(d, x)); return `${x}|${s.isFile() ? s.size : 'd'}|${s.mtimeMs}`; }).join('\n') : '(none)';
+    try {
+      const { tools: tools2 } = await client2.listTools();
+      check('P5 server lists claudedev_search and claudedev_record_lesson', ['claudedev_search', 'claudedev_record_lesson'].every(n => tools2.some(t => t.name === n)), tools2.map(t => t.name).join(', '));
+
+      // ---- search (index.js only: works with any CLI) ----
+      const before = `${tree(R)}\n--\n${tree(L)}`;
+      r = await call2('claudedev_search', { query: 'quokka marmalade', project_path: A.dir });
+      check('search finds a seeded mistake by two of its words in one project',
+        !r.isError && r.text.includes(`mistake ${A.name}\\MISTAKES.jsonl ERR001: Packed the quokka marmalade crate`) && r.text.startsWith(`Search "quokka marmalade" in ${A.name}:`), r.text);
+      check('an entry in both the old and the new store is shown once (the new one)',
+        (r.text.match(/Packed the quokka marmalade crate/g) || []).length === 1 && !r.text.includes('20260501_100000_mistake.json'), r.text);
+      check('the mistake and the decision are shown before 31 activity hits',
+        / decision .*DEC001/.test(r.text) && hitLines(r.text).findIndex(l => / activity /.test(l)) > hitLines(r.text).findIndex(l => / decision /.test(l)) && /more activity lines not shown/.test(r.text), r.text);
+      const crowd = await call2('claudedev_search', { query: 'walrus accordion', project_path: F.dir });
+      const cl = hitLines(crowd.text);
+      check('activity cannot crowd out mistakes (12 mistakes, 40 newer activity lines: 10 mistakes and 5 activity shown)',
+        cl.length === 15 && cl.filter(l => / mistake /.test(l)).length === 10 && cl.filter(l => / activity /.test(l)).length === 5 &&
+        /2 more hits not shown/.test(crowd.text) && /35 more activity lines not shown/.test(crowd.text), crowd.text);
+      const all = await call2('claudedev_search', { query: 'quokka marmalade' });
+      check('search across projects finds both projects\' mistakes',
+        !all.isError && new RegExp(`in 2 projects`).test(all.text.split('\n')[0]) && all.text.includes(`${A.name}\\MISTAKES.jsonl ERR001`) && all.text.includes(`${B.name}\\MISTAKES.jsonl ERR001: Forgot the quokka marmalade invoice`), all.text);
+      r = await call2('claudedev_search', { query: 'quokka marmalade', kinds: ['activity'], limit: 40 });
+      check('search reads the old store too (an entry only there is shown as old:)',
+        !r.isError && r.text.includes(`old:${A.name}\\Activity\\20260404_090000_activity.json: note: Old store note about quokka marmalade labels`), r.text.slice(0, 1500));
+      check(`search with limit 40 stays within 6,000 characters (${r.text.length})`, r.text.length <= 6000 && hitLines(r.text).length === 31, `${r.text.length} characters, ${hitLines(r.text).length} lines`);
+      r = await call2('claudedev_search', { query: 'tangerine keyboard', project_path: E.dir });
+      const el = hitLines(r.text);
+      check('search ranks a mistake above a newer activity line with the same words',
+        el.length === 2 && / mistake /.test(el[0]) && / activity /.test(el[1]), r.text);
+      r = await call2('claudedev_search', { query: 'quokka marmalade', kinds: ['decisions'] });
+      check('search respects kinds (decisions only)', !r.isError && hitLines(r.text).length === 1 && hitLines(r.text).every(l => / decision /.test(l)), r.text);
+      r = await call2('claudedev_search', { query: 'quokka marmalade', limit: 3 });
+      check('search respects limit (3 lines, and says how many more)', hitLines(r.text).length === 3 && /showing 3 /.test(r.text) && /more (hits|activity lines) not shown/.test(r.text), r.text);
+      check(`search's default output stays within 3,000 characters (${all.text.length})`, all.text.length <= 3000, all.text);
+      r = await call2('claudedev_search', { query: 'xylophone kumquat' });
+      check('search with no hits answers in one line and suggests other words',
+        !r.isError && !r.text.includes('\n') && /No memory entry matches "xylophone kumquat"/.test(r.text) && /fewer or other words/.test(r.text), r.text);
+      r = await call2('claudedev_search', { query: 'quokka', kinds: ['nonsense'] });
+      check('search refuses an unknown kind, naming the valid ones', r.isError && /Unknown kind: nonsense/.test(r.text) && /mistakes, decisions, patterns, handoffs, activity, lessons/.test(r.text), r.text);
+      const after = `${tree(R)}\n--\n${tree(L)}`;
+      const bl = before.split('\n'), al = after.split('\n');
+      check('search creates or changes nothing (the memory root and the old store, before and after)', before === after,
+        `only before:\n${bl.filter(x => !al.includes(x)).join('\n')}\nonly after:\n${al.filter(x => !bl.includes(x)).join('\n')}`);
+
+      // ---- lessons (need the new CLI, which honours CDS_MEMORY_ROOT) ----
+      if (!cliPath) {
+        console.log('SKIP  lessons checks (need the new CLI: --cli; an older CLI would write to the real store): "record_mistake suggests a lesson", "record_lesson writes", "near-duplicate refused", "empty refused", "load shows lessons", "the hook stays within 9,500", "check_mistake finds a lesson"');
+      } else {
+        const realLessons = path.join(docs, 'ClaudeDevStudio', 'LESSONS.jsonl');
+        const realBefore = fs.existsSync(realLessons) ? `${fs.statSync(realLessons).size}|${fs.statSync(realLessons).mtimeMs}` : '(none)';
+        const lessonsFile = path.join(R, 'LESSONS.jsonl');
+        const lessonsIn = () => fs.existsSync(lessonsFile) ? fs.readFileSync(lessonsFile, 'utf8').split('\n').filter(l => l.trim()).map(l => JSON.parse(l)) : [];
+        const cli2 = (...args) => { const x = spawnSync(cliPath, args, { encoding: 'utf8', windowsHide: true, timeout: 30000, env: { ...process.env, CDS_MEMORY_ROOT: R } }); return { code: x.status, out: `${x.stdout || ''}${x.stderr || ''}` }; };
+
+        r = await call2('claudedev_load', { project_path: A.dir });
+        check('load with no lessons file has no lessons section (and is within budget)', !r.isError && !/Lessons for every project/.test(r.text) && r.text.length <= 12000 && r.text.includes(A.mem), r.text.slice(0, 600));
+
+        // record_mistake's suggestion: the same mistake in two other projects (A and B), before any lesson exists
+        r = await call2('claudedev_record_mistake', { project_path: D.dir, mistake: 'Packed the quokka marmalade crate upside down', impact: 'Broken jars', fix: 'Repacked it', lesson: 'Check the quokka crate orientation', severity: 'medium' });
+        check('record_mistake suggests a lesson for every project when the same mistake is in two other projects',
+          !r.isError && /recorded in 2 other projects/.test(r.text) && r.text.includes(A.name) && r.text.includes(B.name) && /claudedev_record_lesson/.test(r.text) && /suggestion/.test(r.text) && lessonsIn().length === 0, r.text);
+        r = await call2('claudedev_record_mistake', { project_path: D.dir, mistake: 'The xylophone tuning drifted overnight in the cold barn', impact: 'Out of tune', fix: 'Retuned', lesson: 'Keep the xylophone indoors overnight' });
+        check('record_mistake does not suggest a lesson for a mistake no other project has', !r.isError && !/other projects/.test(r.text) && !/record_lesson/.test(r.text), r.text);
+
+        r = await call2('claudedev_record_lesson', { lesson: 'Label every quokka marmalade crate with its orientation before loading', why: `${A.name}, 2026-05-01: a crate was packed upside down`, source_project: A.name });
+        let ls = lessonsIn();
+        check('record_lesson writes a lesson (LSN001, in the throwaway root\'s LESSONS.jsonl)',
+          !r.isError && /LSN001/.test(r.text) && ls.length === 1 && ls[0].id === 'LSN001' && ls[0].source_project === A.name && /upside down/.test(ls[0].why), `${r.text}\n${JSON.stringify(ls)}`);
+        r = await call2('claudedev_record_lesson', { lesson: 'Before loading, label each quokka marmalade crate orientation', why: 'again' });
+        check('record_lesson refuses a near-duplicate, naming the lesson it matches', r.isError && /NOT recorded/.test(r.text) && /nearly duplicates LSN001/.test(r.text) && lessonsIn().length === 1, r.text);
+        r = await call2('claudedev_record_lesson', { lesson: '   ', why: 'x' });
+        const c0 = cli2('lesson', 'add', '{"lesson":"  ","why":"x"}');
+        check('an empty lesson is refused (the tool and the CLI)', r.isError && /empty/.test(r.text) && c0.code === 1 && /needs "lesson"/.test(c0.out) && lessonsIn().length === 1, `${r.text}\n${c0.out}`);
+
+        r = await call2('claudedev_load', { project_path: A.dir });
+        const iMis = r.text.indexOf('--- Mistakes to avoid'), iLes = r.text.indexOf('--- Lessons for every project (1 of 1, the most relevant here first) ---'), iDec = r.text.indexOf('--- Decisions');
+        check('load shows the lessons section after the project\'s mistakes, before its decisions',
+          !r.isError && iMis > 0 && iLes > iMis && iDec > iLes && r.text.includes('- Label every quokka marmalade crate with its orientation before loading (LSN001)'), r.text.slice(Math.max(0, iMis - 50), iMis + 900));
+
+        // 40 more lessons (written as a fixture): the section stays near 1,200 characters, load within budget
+        fs.appendFileSync(lessonsFile, jl(Array.from({ length: 40 }, (_, k) => ({ id: `LSN${String(k + 2).padStart(3, '0')}`, timestamp: `2026-10-${pad((k % 28) + 1)}T08:00:00`, lesson: `Fixture lesson ${k}: remember the widget${k} gadget${k} settings when packaging the release for strangers`, why: 'fixture' }))));
+        r = await call2('claudedev_load', { project_path: A.dir });
+        const sStart = r.text.indexOf('\n--- Lessons for every project');
+        const sEnd = r.text.indexOf('\n\n', sStart + 2);
+        const section = sStart >= 0 ? r.text.slice(sStart, sEnd > 0 ? sEnd : undefined) : '';
+        check(`load with 41 lessons: the section is at most 1,200 characters (${section.length}) and load at most 12,000 (${r.text.length})`,
+          sStart >= 0 && section.length <= 1200 && r.text.length <= 12000 && /more in .*LESSONS\.jsonl/.test(section) && / of 41, the most relevant here first\) ---/.test(section) &&
+          section.split('\n')[2].startsWith('- Label every quokka marmalade crate'), section);
+
+        const hookEnv = { ...process.env, CDS_MEMORY_ROOT: R, CDS_LEGACY_ROOT: L, CDS_CLI_PATH: cliPath, CDS_HOOK_LOG: path.join(p5, 'hooks.log'), CLAUDE_PROJECT_DIR: A.dir };
+        const hs = spawnSync(process.execPath, [path.join(path.dirname(serverPath), 'cds-hook.js'), 'session-start'],
+          { input: JSON.stringify({ session_id: `smoke-p5-${scratchName}`, cwd: A.dir, hook_event_name: 'SessionStart', source: 'startup' }), encoding: 'utf8', env: hookEnv, windowsHide: true, timeout: 30000 });
+        check(`hook session-start with lessons stays at 9,500 characters or less (${(hs.stdout || '').length})`,
+          hs.status === 0 && (hs.stdout || '').length <= 9500 && (hs.stdout || '').startsWith(`=== ClaudeDevStudio: ${A.name} ===`) && /Lessons for every project/.test(hs.stdout || ''), `${(hs.stdout || '').slice(0, 400)}\n${hs.stderr}`);
+
+        const plan = 'Load the quokka marmalade crate without an orientation label';
+        r = await call2('claudedev_check_mistake', { project_path: C.dir, action_description: plan });
+        const c1 = cli2('check', C.dir, plan);
+        check('check_mistake finds a matching lesson and says it is machine-wide (the tool and the CLI)',
+          !r.isError && /lesson for every project \(machine-wide/.test(r.text) && /LSN001: Label every quokka/.test(r.text) &&
+          c1.code === 1 && /Lesson ID: LSN001/.test(c1.out) && /machine-wide/.test(c1.out), `${r.text}\n--- CLI:\n${c1.out}`);
+        r = await call2('claudedev_check_mistake', { project_path: C.dir, action_description: 'Rename the settings page title' });
+        check('check_mistake stays quiet when no mistake or lesson matches', !r.isError && /No recorded mistake or lesson/.test(r.text), r.text);
+        r = await call2('claudedev_record_mistake', { project_path: C.dir, mistake: 'Packed the quokka marmalade crate upside down', impact: 'Broken jars', fix: 'Repacked it', lesson: 'Check the quokka crate orientation' });
+        check('record_mistake says when a lesson for every project already covers the mistake', !r.isError && /already covers it: LSN001/.test(r.text) && !/record it once/.test(r.text), r.text);
+
+        r = await call2('claudedev_search', { query: 'quokka orientation', kinds: ['lessons'] });
+        check('search finds lessons (kinds: lessons)', !r.isError && /lesson LESSONS\.jsonl LSN001: Label every quokka marmalade crate/.test(r.text), r.text);
+
+        const c2 = cli2('lesson', 'remove', 'LSN001');
+        check('the CLI removes a lesson (lesson remove), keeping a backup', c2.code === 0 && !lessonsIn().some(l => l.id === 'LSN001') && fs.existsSync(lessonsFile + '.bak'), c2.out);
+
+        const realAfter = fs.existsSync(realLessons) ? `${fs.statSync(realLessons).size}|${fs.statSync(realLessons).mtimeMs}` : '(none)';
+        const leaked = [A, B, C, D, E].filter(x => fs.existsSync(path.join(docs, 'ClaudeDevStudio', 'Projects', x.name)));
+        check('the real LESSONS.jsonl and the real store were not touched by the lessons checks',
+          realBefore === realAfter && leaked.length === 0, `real lessons before ${realBefore}, after ${realAfter}; leaked: ${leaked.map(x => x.name).join(', ')}`);
+      }
+    } finally {
+      await client2.close().catch(() => {});
+    }
   }
 } catch (e) {
   check('no exception', false, e.stack || e.message);

@@ -20,7 +20,14 @@ const CLAUDEDEV_PATH = process.env.CDS_CLI_PATH
 
 // Where v1.2.x of this server wrote its own fallback files. Read-only from now on,
 // so nothing written there in the past is lost before the stores are merged.
-const LEGACY_ROOT = path.join(HOME, 'Documents', 'ClaudeDevStudio');
+// CDS_LEGACY_ROOT is for tests only (smoke.mjs, P5): a throwaway old store. Normal use never sets it.
+const LEGACY_ROOT = process.env.CDS_LEGACY_ROOT
+  ? path.resolve(process.env.CDS_LEGACY_ROOT)
+  : path.join(HOME, 'Documents', 'ClaudeDevStudio');
+
+// The lessons for every project (P5): one machine-wide file at the memory root, written by the
+// CLI (claudedev lesson add|edit|remove). load shows them in every project; check_mistake checks them.
+const lessonsFile = () => path.join(memoryRoot(), 'LESSONS.jsonl');
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -155,6 +162,21 @@ const oneLine = (s, n = 300) => {
   const t = String(s ?? '').replace(/\s+/g, ' ').trim();
   return t.length > n ? t.slice(0, n) + '...' : t;
 };
+
+// Words of 4+ characters from [a-z0-9_.-], lower-cased, minus common ones: the mistake-matching
+// rule's words (cds-search.js has the rule). MUST STAY IN STEP with MistakeMatching in
+// MemorySchemas.cs (same pattern, same stop words).
+const STOP = new Set(('that this with from have been were into when then than they them their there these those ' +
+  'what which while will would should could about after before because does done just only also very more most ' +
+  'some such each other over same make made using used file files code instead').split(' '));
+function keywords(s) {
+  return new Set(String(s || '').toLowerCase().match(/[a-z0-9_.\-]{4,}/g)?.filter(w => !STOP.has(w)) || []);
+}
+
+// The lessons for every project, newest first (entries without a lesson are skipped).
+const readLessons = () => readJsonLines(lessonsFile())
+  .filter(l => l && typeof l === 'object' && String(l.lesson ?? '').trim())
+  .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
 const day = (ts) => (ts ? String(ts).slice(0, 10) : '????-??-??');
 
 // ---------------------------------------------------------------------------
@@ -417,6 +439,7 @@ function handoffSection(dir) {
 // lowest up (activity, then patterns, ...); the handoff and the ground truth's Status never.
 const LOAD_TARGET = 8000;
 const LOAD_MAX = 12000;
+const LESSONS_MAX = 1200; // the "Lessons for every project" section (P5)
 
 // max: the hard cap (claudedev_load: LOAD_MAX; the Claude Code hook passes less, for its limit).
 function buildContext(projectPath, cliLoad, createdNow, max = LOAD_MAX) {
@@ -467,6 +490,38 @@ function buildContext(projectPath, cliLoad, createdNow, max = LOAD_MAX) {
     }));
   }
 
+  // The lessons for every project (P5): right after this project's own mistakes, which come first.
+  // At most LESSONS_MAX characters. The most relevant first: the most of a lesson's words found in
+  // this project's ground truth and mistakes; then the newest. No file (or no lessons): no section.
+  let lessons = readLessons();
+  if (lessons.length) {
+    const gtFile = findGroundTruth(projectPath);
+    const own = keywords(`${gtFile ? readDoc(gtFile) || '' : ''} ${mistakes.map(m => `${m.mistake ?? ''} ${m.lesson ?? ''}`).join(' ')}`);
+    const relevance = (l) => [...keywords(l.lesson)].filter(w => own.has(w)).length;
+    const ranked = own.size > 0;
+    lessons = lessons.map((l, i) => ({ l, i, r: ranked ? relevance(l) : 0 }))
+      .sort((a, b) => b.r - a.r || a.i - b.i).map(x => x.l); // a.i: readLessons' newest-first order
+    const variant = (maxChars) => {
+      const head = (k) => `\n--- Lessons for every project (${k} of ${lessons.length}${ranked ? ', the most relevant here first' : ', newest first'}) ---`;
+      const more = (k) => `(${lessons.length - k} more in ${lessonsFile()}; claudedev_check_mistake checks them all.)`;
+      const lines = [];
+      let size = 0;
+      for (const l of lessons) {
+        const line = `- ${oneLine(l.lesson, 220)}${l.id ? ` (${l.id})` : ''}`;
+        const k = lines.length + 1;
+        const total = head(k).length + 1 + size + line.length + (k < lessons.length ? 1 + more(k).length : 0);
+        if (lines.length && total > maxChars) break;
+        lines.push(line);
+        size += line.length + 1;
+      }
+      const out = [head(lines.length), ...lines];
+      if (lines.length < lessons.length) out.push(more(lines.length));
+      return out;
+    };
+    add('lessons', variant(LESSONS_MAX), variant(LESSONS_MAX / 2),
+      [`\n(${lessons.length} lessons for every project, not shown to keep load short: ${lessonsFile()}; claudedev_check_mistake checks them.)`]);
+  }
+
   const decisions = readJsonLines(memFile('DECISIONS.jsonl'))
     .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
   if (decisions.length) {
@@ -513,7 +568,7 @@ function buildContext(projectPath, cliLoad, createdNow, max = LOAD_MAX) {
 
   // Trim to the budget, lowest sections first. The handoff and the Status are never trimmed.
   const size = () => sections.reduce((n, s) => n + s.variants[s.at].lines.join('\n').length + 1, 0);
-  for (const key of ['activity', 'patterns', 'uncertainties', 'facts', 'decisions', 'output', 'questions', 'mistakes']) {
+  for (const key of ['activity', 'patterns', 'uncertainties', 'facts', 'decisions', 'lessons', 'output', 'questions', 'mistakes']) {
     const s = sections.find(x => x.key === key);
     while (s && size() > LOAD_TARGET && s.at < s.variants.length - 1) s.at++;
   }
@@ -549,9 +604,9 @@ async function loadProject(projectPath, { max = LOAD_MAX } = {}) {
 }
 
 export {
-  CLAUDEDEV_PATH, LEGACY_ROOT, LOAD_TARGET, LOAD_MAX,
-  projectName, projectMemoryDir, legacyMemoryDir,
+  CLAUDEDEV_PATH, LEGACY_ROOT, LOAD_TARGET, LOAD_MAX, LESSONS_MAX,
+  projectName, projectMemoryDir, legacyMemoryDir, lessonsFile,
   cleanCliText, runCli, cliMessage,
-  readText, readJsonLines, entrySource, collectEntries, oneLine, day,
+  readText, readJsonLines, readLessons, entrySource, collectEntries, oneLine, day, STOP, keywords,
   localDate, readDoc, findGroundTruth, buildContext, loadProject,
 };

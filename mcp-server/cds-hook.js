@@ -117,6 +117,8 @@ function projectFrom(input) {
 // The memory folder, as the CLI computes it ([Documents]\ClaudeDevStudio\Projects\<name>).
 // post-tool-use runs often, so it reads Documents from a cache that session-start refreshes.
 function memoryDirFor(p, { fresh = false } = {}) {
+  // Tests only (smoke.mjs): a throwaway memory root, as in cds-paths.js and the CLI.
+  if (process.env.CDS_MEMORY_ROOT) return path.join(path.resolve(process.env.CDS_MEMORY_ROOT), 'Projects', projectName(p));
   let docs = null;
   if (!fresh) {
     try {

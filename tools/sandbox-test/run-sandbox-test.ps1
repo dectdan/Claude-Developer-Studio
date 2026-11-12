@@ -2,14 +2,15 @@
 # Run on the host, no elevation needed:
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\sandbox-test\run-sandbox-test.ps1 [-TimeoutMinutes 60]
-#        [-Scenarios A,B,C,D,E] [-Networking]
+#        [-Scenarios A,B,C,D,E,F] [-Networking]
 #
 # Writes tools\sandbox-test\results\<run>\sandbox.wsb, launches it, waits for the sandbox
 # to write results.json (finished), then prints the checks. The sandbox has networking
 # disabled (the installer must be self-contained) unless -Networking is given, and sees the
 # installer folder, the bundled runtimes (Installer\downloads) and the test scripts read-only;
 # only results\<run>\ is writable. -Scenarios picks the scenarios (in-sandbox.ps1: N .NET timing,
-# A install, B upgrade, C uninstall, D Documents redirected, E Claude Code setup); they are
+# A install, B upgrade, C uninstall, D Documents redirected, E Claude Code setup, F no Claude
+# Desktop on the PC (P5; with -Networking it also installs Claude Desktop's MSIX); they are
 # written to results\<run>\run-config.json. The test script shuts the sandbox down when it is
 # done. After the time limit the sandbox is closed and the run is reported as a timeout. Only
 # one Windows Sandbox can run at a time.
@@ -19,7 +20,7 @@
 param(
     [string]$InstallerDir = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'Installer\Output'),
     [int]$TimeoutMinutes = 60,
-    [string[]]$Scenarios = @('A', 'B', 'C', 'D', 'E'),
+    [string[]]$Scenarios = @('A', 'B', 'C', 'D', 'E', 'F'),
     [switch]$Networking
 )
 

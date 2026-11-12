@@ -9,6 +9,26 @@ using System.Text.Json;
 namespace ClaudeDevStudio.Memory
 {
     /// <summary>
+    /// Where the memory store is: [Documents]\ClaudeDevStudio (Environment.SpecialFolder.MyDocuments,
+    /// which follows Windows' Documents redirection). CDS_MEMORY_ROOT is for tests only
+    /// (mcp-server\test\smoke.mjs, P5): a throwaway root, so tests of the machine-wide lessons never
+    /// touch the real store. mcp-server\cds-paths.js reads the same variable. Normal use never sets it.
+    /// </summary>
+    public static class MemoryPaths
+    {
+        public static string Root
+        {
+            get
+            {
+                var overrideRoot = Environment.GetEnvironmentVariable("CDS_MEMORY_ROOT");
+                return !string.IsNullOrWhiteSpace(overrideRoot)
+                    ? Path.GetFullPath(overrideRoot)
+                    : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ClaudeDevStudio");
+            }
+        }
+    }
+
+    /// <summary>
     /// Core memory system for Claude.
     /// Handles loading, storing, and querying project knowledge.
     /// 
@@ -20,10 +40,8 @@ namespace ClaudeDevStudio.Memory
     /// </summary>
     public class ClaudeMemory
     {
-        private static readonly string MEMORY_ROOT = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "ClaudeDevStudio"
-        );
+        // [Documents]\ClaudeDevStudio (MemoryPaths in Lessons.cs; CDS_MEMORY_ROOT for tests only).
+        private static readonly string MEMORY_ROOT = MemoryPaths.Root;
         private const int MAX_STORAGE_MB = 10240; // 10GB
 
         private readonly string _projectPath;

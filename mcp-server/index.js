@@ -19,6 +19,11 @@
 //
 // P4 (2026-11-11): load's context (buildContext and what it reads) moved unchanged to
 // cds-context.js, which the Claude Code hook (cds-hook.js) uses too.
+//
+// P5 (2026-11-11): claudedev_search (cds-search.js: words across one project's memory or all of
+// them, read-only) and lessons for every project (LESSONS.jsonl at the memory root, written by
+// the CLI's "lesson add"): load shows them, check_mistake checks them, and record_mistake
+// suggests one when the same mistake is recorded in two or more other projects.
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -31,8 +36,9 @@ import { memoryRoot } from './cds-paths.js';
 import {
   CLAUDEDEV_PATH, LEGACY_ROOT, projectName, projectMemoryDir, legacyMemoryDir,
   cleanCliText, runCli, cliMessage, readText, readJsonLines, entrySource, collectEntries,
-  oneLine, day, localDate, readDoc, findGroundTruth, loadProject,
+  oneLine, day, localDate, readDoc, findGroundTruth, loadProject, readLessons, lessonsFile,
 } from './cds-context.js';
+import { similarMistakes, similarLessons, search, sameMistakeElsewhere, KINDS, SEARCH_LIMIT } from './cds-search.js';
 
 // The version is set in package.json beside this file (checked by tools\check-versions.ps1).
 const VERSION = (() => {
@@ -74,33 +80,13 @@ const olderCliHint = (r) => /Unknown record type/i.test(cliMessage(r))
 
 const SCAFFOLD_FILES = ['GROUND_TRUTH.md', 'CONVENTIONS.md', 'HOW_WE_WORK.md'];
 
-// Keyword overlap between a planned action and recorded mistakes. Words of 4+ letters,
-// minus common ones; a mistake matches when it shares at least 3 such words with the
-// plan and they make up at least 30% of the smaller of the two word sets.
-// MUST STAY IN STEP with the CLI's MistakeMatching in MemorySchemas.cs: same word
-// pattern, same stop words, same thresholds, so the CLI and MCP agree.
-const STOP = new Set(('that this with from have been were into when then than they them their there these those ' +
-  'what which while will would should could about after before because does done just only also very more most ' +
-  'some such each other over same make made using used file files code instead').split(' '));
-function keywords(s) {
-  return new Set(String(s || '').toLowerCase().match(/[a-z0-9_.\-]{4,}/g)?.filter(w => !STOP.has(w)) || []);
-}
-function similarMistakes(plan, mistakes, max = 3) {
-  const planWords = keywords(plan);
-  const scored = [];
-  const seen = new Set();
-  for (const m of mistakes) {
-    const key = oneLine(m.mistake, 400);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    const words = keywords(`${m.mistake ?? ''} ${m.lesson ?? ''}`);
-    if (words.size === 0) continue;
-    const shared = [...words].filter(w => planWords.has(w));
-    const score = shared.length / Math.max(1, Math.min(words.size, planWords.size));
-    if (shared.length >= 3 && score >= 0.3) scored.push({ m, shared, score });
-  }
-  return scored.sort((a, b) => b.score - a.score).slice(0, max);
-}
+// The keyword rule for "does this plan look like a recorded mistake" (keywords, similarMistakes,
+// similarLessons) is in cds-search.js, shared with the search; it must stay in step with the
+// CLI's MistakeMatching in MemorySchemas.cs.
+
+// A CLI from before P5 has no "lesson" command.
+const noLessonsHint = (r) => /Unknown command: lesson/i.test(cliMessage(r))
+  ? 'The installed claudedev.exe is older than this server and has no lessons: update ClaudeDevStudio.\n' : '';
 
 // load's context (buildContext and everything it reads) is in cds-context.js, shared with
 // the Claude Code hook (cds-hook.js).
@@ -148,6 +134,7 @@ const INSTRUCTIONS =
   'If it has no ground truth, offer claudedev_scaffold to the user; create it only if they agree. ' +
   'Before a risky step, call claudedev_check_mistake. ' +
   'As you go, record activities, mistakes (with the lesson) and decisions (with the reason). ' +
+  'To find something from earlier sessions, in this project or any other, call claudedev_search; a lesson that holds for every project goes in claudedev_record_lesson. ' +
   'Before you stop, call claudedev_handoff: where you stopped and the next step.';
 
 const PROJECT_PATH = { type: 'string', description: 'Full path to the project folder, e.g. C:\\Projects\\MyApp' };
@@ -239,11 +226,38 @@ const TOOLS = [
   },
   {
     name: 'claudedev_check_mistake',
-    description: 'Check a planned action against the project\'s recorded mistakes before doing it.',
+    description: 'Check a planned action against the project\'s recorded mistakes and the lessons for every project before doing it.',
     inputSchema: {
       type: 'object',
       properties: { project_path: PROJECT_PATH, action_description: { type: 'string', description: 'The action you plan to take' } },
       required: ['project_path', 'action_description'],
+    },
+  },
+  {
+    name: 'claudedev_search',
+    description: 'Find past mistakes, decisions, patterns, handoffs, lessons and activity by words, in one project or all of them.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'A few words (4+ letters count); "quoted phrases" must appear as written' },
+        project_path: { type: 'string', description: 'Only this project (default: all projects)' },
+        kinds: { type: 'array', items: { type: 'string', enum: KINDS }, description: 'Only these kinds (default: all)' },
+        limit: { type: 'number', description: `Most lines to show (default ${SEARCH_LIMIT}, at most 40)` },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'claudedev_record_lesson',
+    description: 'Record a lesson for every project: load shows it in all projects and check_mistake checks it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lesson: { type: 'string', description: 'The lesson, in one plain sentence' },
+        why: { type: 'string', description: 'Where it was learned: the project, the date, what happened' },
+        source_project: { type: 'string', description: 'The project it was learned in (optional)' },
+      },
+      required: ['lesson', 'why'],
     },
   },
   {
@@ -299,6 +313,8 @@ class ClaudeDevStudioServer {
         case 'claudedev_record_activity': result = await this.handleRecordActivity(args); break;
         case 'claudedev_record_mistake':  result = await this.handleRecordMistake(args); break;
         case 'claudedev_check_mistake':   result = await this.handleCheckMistake(args); break;
+        case 'claudedev_search':          result = await this.handleSearch(args); break;
+        case 'claudedev_record_lesson':   result = await this.handleRecordLesson(args); break;
         case 'claudedev_stats':           result = await this.handleStats(args); break;
         case 'claudedev_monitor_start':   result = await this.handleMonitorStart(args); break;
         case 'claudedev_chat_checkpoint': return this.handleChatCheckpoint(args);
@@ -308,6 +324,8 @@ class ClaudeDevStudioServer {
     } catch (error) {
       result = fail(`Error: ${error.message}`);
     }
+    // Search is read-only, so it writes nothing at all: not even its line in the chat mirror.
+    if (name === 'claudedev_search') return result;
     const summary = (result?.content?.[0]?.text ?? '').slice(0, 120).replace(/\n/g, ' ');
     mirrorLog('tool', { tool: name, summary });
     return result;
@@ -440,30 +458,90 @@ class ClaudeDevStudioServer {
     };
     const r = await runCli(['record', p, 'mistake', JSON.stringify(entry)]);
     if (r.code !== 0) return fail(`Mistake was NOT recorded for ${projectName(p)}.\n${cliMessage(r)}`);
-    return text(`\u2713 Mistake recorded for ${projectName(p)}. claudedev_check_mistake will now warn on similar actions.`);
+    const out = [`\u2713 Mistake recorded for ${projectName(p)}. claudedev_check_mistake will now warn on similar actions.`];
+    // The same mistake in two or more other projects: suggest a lesson for every project (only a
+    // suggestion; nothing more is written unless Claude calls claudedev_record_lesson).
+    try {
+      const words = `${entry.mistake} ${entry.lesson}`;
+      const covered = similarLessons(words, readLessons(), 1)[0];
+      if (covered) {
+        out.push(`A lesson for every project already covers it: ${covered.l.id || ''} ${oneLine(covered.l.lesson, 200)}`.replace('  ', ' '));
+      } else {
+        const elsewhere = await sameMistakeElsewhere(words, projectName(p));
+        if (elsewhere.length >= 2) {
+          const list = elsewhere.slice(0, 5).map(x => `${x.project} ${day(x.ts)}`).join(', ');
+          out.push(`The same mistake is recorded in ${elsewhere.length} other projects (${list}${elsewhere.length > 5 ? ', ...' : ''}). ` +
+            'If its lesson holds for every project, record it once with claudedev_record_lesson (a suggestion: nothing else was written).');
+        }
+      }
+    } catch { /* the suggestion is optional; the mistake is recorded */ }
+    return text(out.join('\n'));
   }
 
-  // Two checks: the CLI's (it matches only when the planned action contains a recorded
-  // mistake's whole sentence) and a keyword-overlap check here, which also covers the
-  // v1.2.x store. A real fix of the CLI's matching is planned (docs\GROUND_TRUTH.md).
+  // The CLI's check (the same keyword rule, MistakeMatching in MemorySchemas.cs) and the same rule
+  // here, which also covers the v1.2.x store and works with an older CLI. From P5 both also check
+  // the lessons for every project. The CLI's text is shown only if it found what this didn't.
   async handleCheckMistake(args) {
     const p = requireProjectPath(args);
     if (!args.action_description) return fail('action_description is required.');
     const plan = String(args.action_description);
     const r = await runCli(['check', p, plan]);
-    const cliHit = /Mistake ID:/i.test(r.stdout);
+    const cliHit = /Mistake ID:|Lesson ID:/i.test(r.stdout);
     if (!cliHit && r.code !== 0) return fail(`The mistake check could not run.\n${cliMessage(r)}`);
 
     const dirs = [...new Set([projectMemoryDir(p), legacyMemoryDir(p)])];
     const hits = similarMistakes(plan, collectEntries(dirs).mistakes);
-    if (!cliHit && hits.length === 0) return text(`\u2713 No recorded mistake matches this action in ${projectName(p)}.`);
+    const lessonHits = similarLessons(plan, readLessons());
+    if (!cliHit && hits.length === 0 && lessonHits.length === 0) {
+      return text(`\u2713 No recorded mistake or lesson for every project matches this action in ${projectName(p)}.`);
+    }
 
-    const out = [`\u26a0 This plan resembles ${cliHit ? 'a' : hits.length} recorded mistake${hits.length > 1 ? 's' : ''} in ${projectName(p)}:`];
-    if (cliHit) out.push(r.stdout);
+    const out = [];
+    if (hits.length) out.push(`\u26a0 This plan resembles ${hits.length} recorded mistake${hits.length > 1 ? 's' : ''} in ${projectName(p)}:`);
     for (const { m, shared } of hits) {
       out.push(`- [${day(m.timestamp)}] ${oneLine(m.mistake, 220)}\n  lesson: ${oneLine(m.lesson, 220)}\n  fix: ${oneLine(m.fix, 220)}\n  (shared words: ${shared.join(', ')})`);
     }
+    if (lessonHits.length) {
+      out.push(`\u26a0 ${hits.length ? 'It also matches' : 'This plan matches'} ${lessonHits.length} lesson${lessonHits.length > 1 ? 's' : ''} for every project (machine-wide, ${lessonsFile()}):`);
+      for (const { l, shared } of lessonHits) {
+        out.push(`- ${l.id || '(no id)'}: ${oneLine(l.lesson, 220)}${l.why ? `\n  learned: ${oneLine(l.why, 200)}` : ''}\n  (shared words: ${shared.join(', ')})`);
+      }
+    }
+    if (cliHit && !hits.length && !lessonHits.length) {
+      out.push(`\u26a0 This plan resembles a recorded mistake in ${projectName(p)}:`, r.stdout);
+    }
     return text(out.join('\n'));
+  }
+
+  // Read-only: lists and reads memory files, never creates or changes anything.
+  async handleSearch(args) {
+    args = args || {};
+    const query = String(args.query ?? '').trim();
+    if (!query) return fail('query is required: a few words, e.g. "OneDrive Documents path".');
+    let project = '';
+    if (args.project_path && String(args.project_path).trim()) {
+      project = projectName(path.resolve(String(args.project_path).trim()));
+      if (!project) return fail(`Not a project folder (no folder name): ${args.project_path}`);
+      const exists = [...new Set([projectMemoryDir(project), legacyMemoryDir(project)])].some(d => fs.existsSync(d));
+      if (!exists) return text(`No memory for ${project} (nothing under ${path.dirname(projectMemoryDir(project))}). Search all projects without project_path.`);
+    }
+    const r = await search({ query, project, kinds: args.kinds, limit: args.limit });
+    return r.error ? fail(r.error) : text(r.text);
+  }
+
+  // Machine-wide: written by the CLI ("lesson add"), which refuses an empty lesson and a
+  // near-duplicate of an existing one (the mistake-matching rule), naming the match.
+  async handleRecordLesson(args) {
+    args = args || {};
+    const lesson = String(args.lesson ?? '').trim();
+    const why = String(args.why ?? '').trim();
+    if (!lesson) return fail('Lesson was NOT recorded: the lesson is empty.');
+    if (!why) return fail('Lesson was NOT recorded: why is required (where it was learned: the project, the date, what happened).');
+    const entry = { lesson, why };
+    if (args.source_project && String(args.source_project).trim()) entry.source_project = oneLine(args.source_project, 120);
+    const r = await runCli(['lesson', 'add', JSON.stringify(entry)]);
+    if (r.code !== 0) return fail(`Lesson was NOT recorded.\n${noLessonsHint(r)}${cliMessage(r)}`);
+    return text(`\u2713 Lesson for every project recorded${idIn(r, 'LSN')}: ${oneLine(lesson, 120)}\nclaudedev_load shows it in every project; claudedev_check_mistake checks it. File: ${lessonsFile()}`);
   }
 
   // Counts what is actually stored. (The CLI's own stats report uptime, a token counter

@@ -18,6 +18,20 @@
 // It also removes the Claude Extensions registration that CDS v1.1.x used, with the same
 // rules for extensions-installations.json.
 //
+// The packaged (MSIX) Claude Desktop (P5, 2026-11-11). The installer from claude.ai/download
+// installs Claude Desktop as an MSIX package (Claude_pzs8sxrjxfjjc). Windows redirects the files
+// a packaged app creates under AppData to a private copy, %LOCALAPPDATA%\Packages\<package>\
+// LocalCache\Roaming\..., and on opening a file tries that copy first, then the real one
+// (learn.microsoft.com/windows/msix/desktop/desktop-to-uwp-behind-the-scenes). So a fresh
+// install of Claude Desktop can read LocalCache\Roaming\Claude\claude_desktop_config.json and
+// never see %APPDATA%\Claude's (github.com/anthropics/claude-code/issues/26073). Rule: the
+// --config file is always handled as above (created if missing, so a Claude Desktop installed
+// later finds it), and every package copy that exists gets the same treatment (same rules,
+// its own backup). A package folder without the file needs nothing: the app falls back to the
+// real file. Package copies are looked for under --packages <dir>, or, when --config is the
+// default %APPDATA%\Claude\claude_desktop_config.json, under %LOCALAPPDATA%\Packages
+// ("--packages none" turns it off).
+//
 // Exit codes: 0 done (or nothing to do), 1 error, 2 a file wasn't valid JSON (left untouched).
 
 'use strict';
@@ -131,6 +145,9 @@ function install(opts) {
   const entries = cdsEntries(nodeExe, mcpDir);
 
   log(`ClaudeDevStudio: adding its servers to ${configFile}`);
+  if (!opts.packagedCopy && !fs.existsSync(path.dirname(configFile))) {
+    log(`  Claude Desktop has not been set up on this account yet (no ${path.dirname(configFile)}): creating the file with only CDS's two servers. Claude Desktop reads it once it is installed; quit and reopen it once after signing in.`);
+  }
   const r = readJsonObject(configFile);
   if (r.invalid) {
     log(`  NOT CHANGED: the file ${r.invalid}.`);
@@ -180,7 +197,30 @@ function uninstall(opts) {
   for (const k of present) delete servers[k];
   writeJsonAtomic(configFile, r.data);
   log(`  Removed ${present.join(' and ')}; kept ${Object.keys(servers).length} other server(s).`);
+  if (!opts.packagedCopy) removeFolderIfOnlyOurs(path.dirname(configFile), path.basename(configFile));
   return 0;
+}
+
+// On a PC where Claude Desktop was never set up, the installer created the folder and the file
+// with only CDS's entries. If the folder still holds nothing but that file and CDS's backups of
+// it, and none of them holds anything but CDS's entries, it is all CDS's: remove it.
+function removeFolderIfOnlyOurs(dir, name) {
+  try {
+    const onlyCds = (f) => {
+      const r = readJsonObject(f);
+      if (r.invalid) return false;
+      const keys = Object.keys(r.data);
+      if (keys.some(k => k !== 'mcpServers')) return false;
+      const s = r.data.mcpServers;
+      return s === undefined || (s && typeof s === 'object' && !Array.isArray(s) && Object.keys(s).every(k => CDS_SERVERS.includes(k)));
+    };
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const ours = entries.every(e => e.isFile() && (e.name === name || e.name.startsWith(`${name}.bak-cds-`)));
+    if (!ours || !entries.every(e => onlyCds(path.join(dir, e.name)))) return;
+    for (const e of entries) fs.unlinkSync(path.join(dir, e.name));
+    fs.rmdirSync(dir);
+    log(`  Claude Desktop was never set up here: removed ${dir} (it held only ClaudeDevStudio's file and its backups).`);
+  } catch (e) { log(`  Left ${dir} in place: ${e.message}`); }
 }
 
 // CDS v1.1.x registered itself through Claude Extensions. Remove that registration only.
@@ -209,24 +249,52 @@ function removeLegacyExtension(claudeDir) {
   return code;
 }
 
+// The packaged Claude Desktop's own copies of the config that exist (see the top of this file).
+function packagedConfigs(opts) {
+  let dir = opts.packages;
+  if (dir === 'none') return [];
+  if (!dir) {
+    const appData = process.env.APPDATA, local = process.env.LOCALAPPDATA;
+    const isDefault = appData && local &&
+      path.resolve(opts.config).toLowerCase() === path.join(appData, 'Claude', 'claude_desktop_config.json').toLowerCase();
+    if (!isDefault) return [];
+    dir = path.join(local, 'Packages');
+  }
+  let names = [];
+  try { names = fs.readdirSync(dir, { withFileTypes: true }).filter(e => e.isDirectory() && /^Claude_[a-z0-9]+$/i.test(e.name)).map(e => e.name); }
+  catch { return []; }
+  return names
+    .map(n => ({ pkg: n, file: path.join(dir, n, 'LocalCache', 'Roaming', 'Claude', 'claude_desktop_config.json') }))
+    .filter(x => fs.existsSync(x.file));
+}
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.log) logFile = path.resolve(opts.log);
   if (!opts.config || !['install', 'uninstall'].includes(opts.action) ||
       (opts.action === 'install' && (!opts.node || !opts.mcp))) {
-    console.error('usage: node cds-config.js install --config <file> --node <node.exe> --mcp <mcp-server dir> [--log <file>] [--manual <file>]');
-    console.error('       node cds-config.js uninstall --config <file> [--log <file>]');
+    console.error('usage: node cds-config.js install --config <file> --node <node.exe> --mcp <mcp-server dir> [--log <file>] [--manual <file>] [--packages <dir>|none]');
+    console.error('       node cds-config.js uninstall --config <file> [--log <file>] [--packages <dir>|none]');
     return 1;
   }
+  const run = (o) => (opts.action === 'install' ? install(o) : uninstall(o));
+  // The worst result wins: 1 (error) over 2 (a file left untouched) over 0.
+  const worst = (a, b) => (a === 1 || b === 1 ? 1 : Math.max(a, b));
+  let code = 0;
   try {
-    const code = opts.action === 'install' ? install(opts) : uninstall(opts);
+    code = run(opts);
     removeLegacyExtension(path.dirname(path.resolve(opts.config)));
-    return code;
   } catch (e) {
     log(`  ERROR: ${e.message}`);
-    return 1;
+    code = 1;
   }
+  for (const { pkg, file } of packagedConfigs(opts)) {
+    log(`Claude Desktop is installed as a package (${pkg}) that reads its own copy of the config:`);
+    try { code = worst(code, run({ ...opts, config: file, packagedCopy: true })); }
+    catch (e) { log(`  ERROR: ${e.message}`); code = 1; }
+  }
+  return code;
 }
 
 if (require.main === module) process.exitCode = main();
-module.exports = { install, uninstall, readJsonObject, CDS_SERVERS };
+module.exports = { install, uninstall, readJsonObject, packagedConfigs, CDS_SERVERS };

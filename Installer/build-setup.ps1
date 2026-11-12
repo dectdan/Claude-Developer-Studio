@@ -79,7 +79,7 @@ Step '[5/7] MCP servers, Review Panel, scripts'
 $mcpSrc  = Join-Path $Root 'mcp-server'
 $mcpDest = Join-Path $Build 'mcp-server'
 New-Item -ItemType Directory -Force -Path $mcpDest | Out-Null
-foreach ($f in 'index.js', 'workbench.js', 'cds-paths.js', 'cds-context.js', 'cds-hook.js', 'package.json', 'package-lock.json', 'manifest.json', 'qwen_config.template.json') {
+foreach ($f in 'index.js', 'workbench.js', 'cds-paths.js', 'cds-context.js', 'cds-hook.js', 'cds-search.js', 'package.json', 'package-lock.json', 'manifest.json', 'qwen_config.template.json') {
     Copy-Item (Join-Path $mcpSrc $f) $mcpDest
 }
 # The scaffold's templates (claudedev_scaffold); setup.nsi installs the staged folder recursively.

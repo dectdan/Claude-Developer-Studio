@@ -32,8 +32,13 @@ export function documentsDir() {
   return _documents;
 }
 
-// [Documents]\ClaudeDevStudio: the memory store (Projects\<name>\) and the chat mirror.
-export const memoryRoot = () => path.join(documentsDir(), 'ClaudeDevStudio');
+// [Documents]\ClaudeDevStudio: the memory store (Projects\<name>\), LESSONS.jsonl and the chat mirror.
+// CDS_MEMORY_ROOT is for tests only (mcp-server\test\smoke.mjs, P5): a throwaway memory root, so
+// tests of the machine-wide lessons never touch the real store. The CLI reads the same variable.
+// Normal use never sets it.
+export const memoryRoot = () => process.env.CDS_MEMORY_ROOT
+  ? path.resolve(process.env.CDS_MEMORY_ROOT)
+  : path.join(documentsDir(), 'ClaudeDevStudio');
 
 // [Documents]\ClaudeDevStudio\VSBridge: the files the VS Bridge extension writes.
 export const vsBridgeDir = () => path.join(memoryRoot(), 'VSBridge');
