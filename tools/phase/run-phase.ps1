@@ -42,11 +42,19 @@ $mcp = Join-Path $env:TEMP "cds_phase_mcp_$Phase.json"
 if (-not $Prompt) {
   $Prompt = "Read docs\$($Phase)_prompt.md and carry it out. You are running unattended: nobody can answer questions. Follow the prompt's rules for decisions it doesn't cover."
 }
-$allowed = 'Read,Edit,Write,MultiEdit,Glob,Grep,Bash,PowerShell,TodoWrite,NotebookEdit,WebFetch,WebSearch,' +
+# P8: Monitor (it watches a background command or a WebSocket; its commands follow Bash's rules).
+$allowed = 'Read,Edit,Write,MultiEdit,Glob,Grep,Bash,PowerShell,Monitor,TodoWrite,NotebookEdit,WebFetch,WebSearch,' +
   'mcp__claudedevstudio__claudedev_load,mcp__claudedevstudio__claudedev_record_activity,' +
   'mcp__claudedevstudio__claudedev_record_mistake,mcp__claudedevstudio__claudedev_check_mistake,' +
   'mcp__claudedevstudio__claudedev_stats,mcp__claudedevstudio__claudedev_chat_checkpoint,' +
   'mcp__claudedevstudio__claudedev_handoff,mcp__claudedevstudio__claudedev_record_decision'
+
+# P8, as cds-phase.js: wait up to 60 idle minutes for background work after the last turn, and let a
+# foreground command be given a timeout of up to 60 minutes (both default to 10). The user's own
+# values win. cmd.exe and Claude Code inherit them from this process.
+foreach ($v in 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', 'BASH_MAX_TIMEOUT_MS') {
+  if (-not [Environment]::GetEnvironmentVariable($v)) { [Environment]::SetEnvironmentVariable($v, '3600000') }
+}
 
 $claude = (Get-Command claude -ErrorAction Stop).Source
 $q = { param($s) '"' + ($s -replace '"', '\"') + '"' }

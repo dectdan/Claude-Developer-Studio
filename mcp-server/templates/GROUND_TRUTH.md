@@ -66,7 +66,7 @@ None.
 
 ## 8. Plan
 
-*The phases, one row each. A phase is one prompt (see `docs\HOW_WE_WORK.md`).*
+*The phases, one row each. A phase is one prompt (see `docs\HOW_WE_WORK.md`): it names its scope, what it never touches, its verification and its output file, and runs long steps in the foreground.*
 
 | Phase | What | Status |
 |---|---|---|

@@ -9,9 +9,15 @@
 //   slow      like normal, after 4 seconds
 //   forever   starts a child process (its pid in docs\fake_child.pid) and runs until killed
 //   error     writes to stderr, ends with an error result, exit code 1
+//   stubborn  like forever, but ignores Ctrl+C (so Stop must fall back to force)
 // With --resume <id> (a reply) it continues that session id and answers the message read from
 // stdin (or the prompt argument). Every call is recorded in docs\fake_calls.jsonl (argv, prompt,
-// whether it came on stdin, a marker variable) so the test can check the flags it got.
+// whether it came on stdin, a marker variable, the P8 environment settings) so the test can check
+// the flags and environment it got.
+// Ctrl+C (P8): like the real Claude Code 2.1.322 (seen in P8), it ends the turn: a user message
+// "[Request interrupted by user for tool use]", a result error_during_execution with
+// terminal_reason aborted_tools, then "runs its SessionEnd hooks" (writes docs\fake_session_end.txt)
+// and exits 0. Each Ctrl+C it gets is a line in docs\fake_signals.jsonl.
 // It writes nothing outside the project's docs\ folder. Its version: fake-version.txt beside it,
 // else 2.1.322.
 
@@ -50,6 +56,7 @@ const sessionId = resume || crypto.randomUUID();
 fs.appendFileSync(path.join(docs, 'fake_calls.jsonl'), JSON.stringify({
   argv, prompt, fromStdin, pid: process.pid, cwd: process.cwd(),
   mark: process.env.CDS_FAKE_MARK || null, claudecode: process.env.CLAUDECODE || null, project_dir: process.env.CLAUDE_PROJECT_DIR || null,
+  bg_wait_ceiling: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS || null, bash_max_timeout: process.env.BASH_MAX_TIMEOUT_MS || null,
 }) + '\n');
 
 const phase = (/docs\\(.+?)_prompt\.md/.exec(prompt || '') || [])[1] || null;
@@ -64,6 +71,17 @@ const say = (text) => emit({ type: 'assistant', parent_tool_use_id: null, messag
 const tool = (id, name, input) => emit({ type: 'assistant', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } });
 const toolResult = (id, content, isError) => emit({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: !!isError }] } });
 const result = (text, extra = {}) => emit({ type: 'result', subtype: 'success', is_error: false, num_turns: 4, duration_ms: Date.now() - t0, result: text, permission_denials: [], ...extra });
+
+for (const sig of ['SIGINT', 'SIGBREAK']) {
+  process.on(sig, () => {
+    fs.appendFileSync(path.join(docs, 'fake_signals.jsonl'), JSON.stringify({ signal: sig, pid: process.pid, mode, at: new Date().toISOString() }) + '\n');
+    if (mode === 'stubborn') return;
+    emit({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } });
+    emit({ type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_tools', num_turns: 3, duration_ms: Date.now() - t0, result: '' });
+    fs.writeFileSync(path.join(docs, 'fake_session_end.txt'), `SessionEnd ran after ${sig}\n`, 'utf8');
+    setTimeout(() => process.exit(0), 100);
+  });
+}
 
 emit({ type: 'system', subtype: 'init', cwd: process.cwd(), model: opt('--model') || 'fake-default-model', permissionMode: opt('--permission-mode'), tools: ['Read', 'Write', 'Bash'], mcp_servers: [{ name: 'claudedevstudio', status: 'connected' }] });
 
@@ -85,8 +103,9 @@ if (mode === 'continue') {
   fs.writeFileSync(path.join(docs, 'reply.txt'), prompt, 'utf8');
   toolResult('t9', 'ok');
   result(`Continued: ${String(prompt).trim()}`, { num_turns: 2 });
-} else if (mode === 'forever') {
-  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+} else if (mode === 'forever' || mode === 'stubborn') {
+  // The child ignores Ctrl+C (P8): something the run started that outlives Claude Code, which Stop must end.
+  const child = spawn(process.execPath, ['-e', "for (const s of ['SIGINT', 'SIGBREAK']) process.on(s, () => {}); setInterval(() => {}, 1000)"], { stdio: 'ignore', windowsHide: true });
   fs.writeFileSync(path.join(docs, 'fake_child.pid'), String(child.pid), 'utf8');
   say('Working on a long task.');
   tool('t1', 'Read', { file_path: 'README.md' });

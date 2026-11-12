@@ -272,7 +272,7 @@ class WorkbenchServer {
         },
         {
           name: 'claudedev_phase_stop',
-          description: 'Stop a phase run: ends its Claude Code process tree and releases the project\'s lock. Touches no other process.',
+          description: 'Stop a phase run: Ctrl+C first (Claude Code ends its turn and runs its SessionEnd hooks), else ends its process tree by force; releases the project\'s lock. Touches no other process.',
           inputSchema: {
             type: 'object',
             properties: { project_path: { type: 'string' }, phase: { type: 'string' } },

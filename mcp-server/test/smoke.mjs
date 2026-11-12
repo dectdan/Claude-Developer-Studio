@@ -26,6 +26,10 @@
 // throwaway projects in %TEMP%: the refusals, the lock (and a stale one), status while running
 // and after, a question, the reply's --resume and flags, stop ending the fake and its child, a run
 // started by run-phase.ps1; and (--cli) the automatic handoff listing only the project's files.
+// P8: Monitor in the default tools (run-phase.ps1's too), the run's environment (the idle ceiling and
+// the foreground timeout ceiling, recorded in the .json; Claude Code sharing the runner's console),
+// the gentle stop (Ctrl+C: the fake ends its turn, "runs SessionEnd", exits; what it left running is
+// ended; status says so) and its fallback (a fake that ignores Ctrl+C: two presses, then by force).
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -841,6 +845,21 @@ try {
       const D = phaseMod.DEFAULT_ALLOWED_TOOLS;
       check('the default allowed tools never include a bypass or the phase tools, and name the 13 memory tools',
         !/dangerously|bypass/i.test(D) && !/claudedev_phase_/.test(D) && (D.match(/mcp__claudedevstudio__claudedev_/g) || []).length === 13 && phaseMod.PERMISSION_MODE === 'acceptEdits', D);
+      // P8: Monitor (so a phase can wait on long work), and the run's environment settings.
+      const PE = phaseMod.PHASE_ENV || {};
+      // A cds-phase.js from before P8 (an installed 1.5.x copy) has none of it: those checks are skipped and named.
+      const p8 = !!phaseMod.PHASE_ENV;
+      const check8 = (label, ok, detail) => { if (p8) check(label, ok, detail); else console.log(`SKIP  ${label} (this cds-phase.js predates P8)`); };
+      check8('P8: Monitor is in the default allowed tools (still no bypass, still acceptEdits)', D.split(',').includes('Monitor') && !/dangerously|bypass/i.test(D), D);
+      check8('P8: the run\'s environment settings are the idle ceiling and the foreground timeout ceiling, 60 minutes each',
+        PE.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS === '3600000' && PE.BASH_MAX_TIMEOUT_MS === '3600000' && Object.keys(PE).length === 2, JSON.stringify(PE));
+      const ps1 = path.resolve(path.dirname(serverPath), '..', 'tools', 'phase', 'run-phase.ps1');
+      if (fs.existsSync(ps1)) {
+        const t = fs.readFileSync(ps1, 'utf8');
+        const code = t.split('\n').filter(l => !l.trim().startsWith('#')).join('\n');
+        check8('P8: run-phase.ps1 lists Monitor, sets both variables (unless already set), and passes no bypass flag',
+          /'[^']*\bMonitor\b[^']*'/.test(code) && /CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS/.test(code) && /BASH_MAX_TIMEOUT_MS/.test(code) && !/dangerously|bypassPermissions/i.test(code) && /acceptEdits/.test(code), ps1);
+      } else console.log(`SKIP  "run-phase.ps1 lists Monitor" (no ${ps1}: an installed copy)`);
 
       // Refusals
       let r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'X9' });
@@ -894,6 +913,13 @@ try {
         val('--allowedTools') === D && val('--output-format') === 'stream-json' && a.includes('--verbose') && !a.includes('--model') && !a.includes('--effort') &&
         path.resolve(val('--mcp-config') || '').toLowerCase().startsWith(path.resolve(os.tmpdir()).toLowerCase()) && c.cwd.toLowerCase() === proj.toLowerCase(), JSON.stringify(c));
       check('the run gets the user\'s environment, not the server\'s (no CLAUDECODE, no CLAUDE_PROJECT_DIR, no test variable)', c.claudecode === null && c.project_dir === null && c.mark === null, JSON.stringify(c));
+      {
+        const want = (k) => process.env[k] || PE[k]; // a value the user set themselves wins
+        const r0 = metaOf('N1').runs[0];
+        check8('P8: the run\'s environment carries the idle ceiling and the foreground timeout ceiling (recorded in the .json), and Claude Code shares the runner\'s console',
+          c.bg_wait_ceiling === want('CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS') && c.bash_max_timeout === want('BASH_MAX_TIMEOUT_MS') && !!c.bg_wait_ceiling &&
+          r0.env && r0.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS === c.bg_wait_ceiling && r0.shares_console === true, `${JSON.stringify(c)}\n${JSON.stringify(r0)}`);
+      }
       check('the lock is released when the run ends', !fs.existsSync(lockFile));
       const m1 = metaOf('N1');
       check('docs\\N1_run.json records the run (pid, exit code 0, launched through WMI, the command)',
@@ -943,11 +969,40 @@ try {
       await sleep(500);
       check('stop ends the run\'s process tree (the runner, the fake Claude Code and its child) and touches nothing else',
         !r7.isError && /Stopped L1/.test(r7.text) && [runnerPid, fakePid, childPid].every(p => p && !alive(p)) && alive(bystander.pid), `${r7.text}\nrunner ${runnerPid} ${alive(runnerPid)}, fake ${fakePid} ${alive(fakePid)}, child ${childPid} ${alive(childPid)}`);
-      try { bystander.kill(); } catch { /* gone */ }
       const l1 = metaOf('L1');
-      check('stop releases the lock and records "stopped by request"; status says STOPPED', !fs.existsSync(lockFile) && l1.runs[0].stopped_by_request === true && /STOPPED \(by request\)/.test((await pcall('claudedev_phase_status', { project_path: proj, phase: 'L1' })).text), JSON.stringify(l1.runs[0]).slice(0, 400));
+      const l1Status = (await pcall('claudedev_phase_status', { project_path: proj, phase: 'L1' })).text;
+      check('stop releases the lock and records "stopped by request"; status says STOPPED', !fs.existsSync(lockFile) && l1.runs[0].stopped_by_request === true && /STOPPED \(by request/.test(l1Status), JSON.stringify(l1.runs[0]).slice(0, 400));
+      // P8: the gentle stop. The fake got Ctrl+C, ended its turn, "ran its SessionEnd hooks", exited 0.
+      const sigs = () => { try { return fs.readFileSync(path.join(proj, 'docs', 'fake_signals.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch { return []; } };
+      check8(`P8: stop sends Ctrl+C first, and the fake Claude Code ended its turn and exited by itself (${l1.runs[0].stop_ms} ms)`,
+        /with Ctrl\+C/.test(r7.text) && /SessionEnd hooks ran/.test(r7.text) && l1.runs[0].stop_method === 'ctrl_c' && l1.runs[0].exit_code === 0 &&
+        sigs().filter(x => x.pid === fakePid && x.signal === 'SIGINT').length === 1 && fs.existsSync(path.join(proj, 'docs', 'fake_session_end.txt')), `${r7.text}\n${JSON.stringify(l1.runs[0]).slice(0, 600)}\n${JSON.stringify(sigs())}`);
+      // (The child goes with the runner's job object, which Node closes on exit; Stop's own sweep of the
+      // tree is the safety net for anything that left the job.)
+      check8('P8: after Ctrl+C, a child it left running (one that ignores Ctrl+C) is ended too; the bystander still lives; the log has the interrupted turn\'s result',
+        !alive(childPid) && alive(bystander.pid) &&
+        /"subtype":"error_during_execution".*"terminal_reason":"aborted_tools"/.test(fs.readFileSync(path.join(proj, 'docs', 'L1_run.log'), 'utf8')), r7.text);
+      check8('P8: status says it was stopped with Ctrl+C and that the SessionEnd hooks ran', /STOPPED \(by request, with Ctrl\+C: Claude Code ended its turn and exited, so its SessionEnd hooks ran\)/.test(l1Status), l1Status);
       r7 = await pcall('claudedev_phase_stop', { project_path: proj, phase: 'L1' });
       check('stop on a run that is not running says so', !r7.isError && /isn't running/.test(r7.text), r7.text);
+
+      // P8: a Claude Code that ignores Ctrl+C: two presses, then by force (the P7 way).
+      write(path.join(proj, 'docs', 'K1_prompt.md'), '# K1\n\nFAKE_MODE: stubborn\n');
+      r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'K1' });
+      s7 = await waitFor('K1', /Still working/);
+      const kFake = (calls().pop() || {}).pid;
+      const kChild = Number(fs.readFileSync(path.join(proj, 'docs', 'fake_child.pid'), 'utf8'));
+      const kRunner = metaOf('K1').runs[0].runner_pid;
+      r7 = await pcall('claudedev_phase_stop', { project_path: proj, phase: 'K1' });
+      await sleep(500);
+      const k1 = metaOf('K1');
+      const k1Status = (await pcall('claudedev_phase_status', { project_path: proj, phase: 'K1' })).text;
+      check8(`P8: when Ctrl+C doesn't end it (sent twice), stop ends the tree by force and says so (${r7.ms} ms)`,
+        /by force \(Ctrl\+C \(sent 2 times\) didn't end it within 15 s\)/.test(r7.text) && /no automatic handoff is written/.test(r7.text) &&
+        [kRunner, kFake, kChild].every(p => p && !alive(p)) && alive(bystander.pid) && k1.runs[0].stop_method === 'force' && k1.runs[0].ctrl_c_presses === 2 &&
+        sigs().filter(x => x.pid === kFake).length === 2 && !fs.existsSync(lockFile), `${r7.text}\n${JSON.stringify(k1.runs[0]).slice(0, 600)}`);
+      check8('P8: status says it was stopped by force, without SessionEnd hooks', /STOPPED \(by request, by force: Ctrl\+C \(sent 2 times\) didn't end it within 15 s; no SessionEnd hooks, no automatic handoff\)/.test(k1Status), k1Status);
+      try { bystander.kill(); } catch { /* gone */ }
 
       // Errors, a slow run, a stale lock, restarting a phase, a run-phase.ps1 run
       r7 = await pcall('claudedev_phase_start', { project_path: proj, phase: 'E1' });
@@ -985,7 +1040,7 @@ try {
 
       // Nothing outside the throwaway project and %TEMP%
       const tmp = path.resolve(os.tmpdir()).toLowerCase();
-      const allMeta = ['N1', 'Q1', 'L1', 'E1', 'S1'].map(metaOf);
+      const allMeta = ['N1', 'Q1', 'L1', 'K1', 'E1', 'S1'].map(metaOf);
       const paths = allMeta.flatMap(m => [m.log, m.err, m.mcp_config, ...m.runs.map(x => x.stdin).filter(Boolean)]);
       const realAfter = fs.readdirSync(realProjects).filter(n => n.includes(scratchName)).length;
       check('everything the runs wrote is in the throwaway project or %TEMP%; no memory folder in the real store for them; no MCP config left outside %TEMP%',

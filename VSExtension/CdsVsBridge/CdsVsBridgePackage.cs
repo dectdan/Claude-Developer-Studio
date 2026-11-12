@@ -51,7 +51,7 @@ namespace CdsVsBridge
 
             // Write initial state on load
             WriteCurrentState();
-            VsEventLogger.Log("extension_loaded", new { version = "1.5.0" }); // keep equal to source.extension.vsixmanifest (tools\check-versions.ps1)
+            VsEventLogger.Log("extension_loaded", new { version = "1.6.0" }); // keep equal to source.extension.vsixmanifest (tools\check-versions.ps1)
 
             // If a solution was already open when the package loaded, log it now
             // (OnSolutionOpened won't fire retroactively)

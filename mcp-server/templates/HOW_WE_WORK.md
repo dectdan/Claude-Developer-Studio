@@ -26,6 +26,17 @@
 
 One prompt, one concern. A prompt that grows too big becomes two phases.
 
+## Writing and running a phase
+
+- **The prompt names four things:** its scope (the files it may change and create), what it must never touch, how to verify the work, and its output file (`docs\Pn_OUTPUT.md`).
+- **Long steps stay in the foreground.** Builds, installers and test suites run as foreground commands with a timeout long enough for them, or are started and then checked in a loop in the same turn. A phase never ends its turn to wait for something running in the background: nobody is there to wake it up, and the work is left half done.
+- **Running it from a chat** (Claude Desktop with ClaudeDevStudio, Windows):
+  1. `claudedev_phase_start` with the project folder and the phase (for example `P3`). It starts Claude Code on `docs\P3_prompt.md`.
+  2. `claudedev_phase_status` every 15 to 20 minutes: running or finished, what it is doing, any refused tools.
+  3. If it finished with a question, answer with `claudedev_phase_reply`.
+  4. If it goes wrong, `claudedev_phase_stop`.
+  5. When it has finished, read `docs\P3_OUTPUT.md` and check the work before writing the next prompt.
+
 ## Where ClaudeDevStudio fits
 
 - **At the start:** `claudedev_load` with the project folder. It shows the last handoff, the Status and Next from the ground truth, the newest output, and the mistakes and decisions recorded so far.

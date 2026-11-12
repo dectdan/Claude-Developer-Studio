@@ -17,8 +17,18 @@
 //   reply   the same session again (`--resume <session id>` from the log), same model, effort and
 //           tools; the message goes in on stdin (never as an argument, so it can't become a flag);
 //           appended to the same log (Status shows "run 2 of 2").
-//   stop    ends the run's process tree (taskkill /T /F on the runner, after checking it is ours),
-//           records "stopped by request" and releases the lock.
+//   stop    (from P8) Ctrl+C first: Claude Code shares the runner's hidden console, so a small
+//           helper attaches to that console and sends CTRL_C_EVENT; Claude Code ends its turn, runs
+//           its SessionEnd hooks (the automatic handoff) and exits, and the runner records it. If it
+//           hasn't ended after a second Ctrl+C, or Ctrl+C can't be sent: the run's process tree is
+//           ended by force (taskkill /T /F on the runner, after checking it is ours), as in P7.
+//           Either way: "stopped by request" and how, and the lock released.
+//
+// The run's environment (from P8): CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS and BASH_MAX_TIMEOUT_MS
+// are set to 60 minutes unless the user set them (PHASE_ENV): a -p run then waits up to an hour of
+// idle time for background work it started (default 10 minutes), and a foreground command may be
+// given a timeout of up to an hour (default 10 minutes), so a long build or test can run in the
+// foreground as phase prompts ask.
 //
 // Never --dangerously-skip-permissions, never --permission-mode bypassPermissions: the mode is
 // always acceptEdits, with the allowed tools listed.
@@ -46,12 +56,23 @@ const PHASE_TOOLS = ['claudedev_phase_start', 'claudedev_phase_reply', 'claudede
 
 // run-phase.ps1's list, with the memory server's tools by their current names (13, P6). No
 // workbench tools: the run's MCP config has only the memory server, and a phase must not start,
-// answer or stop phases.
+// answer or stop phases. Monitor (from P8): it watches a command's output or a WebSocket in the
+// background; its commands follow the same permission rules as Bash (already allowed), so it adds
+// a way to wait for long work, not a new power (docs\P8_OUTPUT.md, decisions).
 export const DEFAULT_ALLOWED_TOOLS = [
-  'Read', 'Edit', 'Write', 'MultiEdit', 'Glob', 'Grep', 'Bash', 'PowerShell', 'TodoWrite', 'NotebookEdit', 'WebFetch', 'WebSearch',
+  'Read', 'Edit', 'Write', 'MultiEdit', 'Glob', 'Grep', 'Bash', 'PowerShell', 'Monitor', 'TodoWrite', 'NotebookEdit', 'WebFetch', 'WebSearch',
   ...['init', 'load', 'scaffold', 'handoff', 'record_decision', 'record_activity', 'record_mistake', 'check_mistake',
     'search', 'record_lesson', 'stats', 'chat_checkpoint', 'chat_resume'].map(t => `mcp__claudedevstudio__claudedev_${t}`),
 ].join(',');
+
+// The run's environment additions (see the header). A value the user set themselves wins.
+export const PHASE_ENV = {
+  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '3600000', // idle wait for background work after the last turn (default 600000)
+  BASH_MAX_TIMEOUT_MS: '3600000',                  // the longest timeout a foreground command may be given (default 600000)
+};
+
+// The gentle stop: Ctrl+C, then (if it still runs) a second one, then force.
+const CTRL_C_WAIT_MS = [10000, 5000];
 
 const defaultPrompt = (phase) =>
   `Read docs\\${phase}_prompt.md and carry it out. You are running unattended: nobody can answer questions. Follow the prompt's rules for decisions it doesn't cover.`;
@@ -265,6 +286,66 @@ function isOurs(info, pid, startedIso, mustContain) {
   return !mustContain || String(x.cmd || '').toLowerCase().includes(mustContain.toLowerCase());
 }
 
+// Every process below rootPid (pid, created ms), from one WMI snapshot. A child must have started
+// after its parent, so a parent pid that was reused doesn't pull in strangers.
+export async function processTree(rootPid) {
+  const ps = "$r = @(Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; " +
+    "created = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { '' }) } }); ConvertTo-Json -InputObject $r -Compress";
+  const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps]);
+  let all = [];
+  try { all = JSON.parse(r.out.trim() || '[]').map(x => ({ ...x, created: Date.parse(x.created) })); } catch { return []; }
+  const root = all.find(x => x.pid === rootPid);
+  if (!root) return [];
+  const tree = [root];
+  for (let i = 0; i < tree.length; i++) {
+    for (const x of all) if (x.ppid === tree[i].pid && x.created >= tree[i].created - 1000 && !tree.includes(x)) tree.push(x);
+  }
+  return tree;
+}
+
+// Ctrl+C into the console of `pid`: a helper PowerShell leaves its own console, attaches to that
+// one, ignores the event itself and sends CTRL_C_EVENT to every process attached to it (the runner,
+// which ignores it; Claude Code, which ends its turn, runs its SessionEnd hooks and exits; the
+// commands it is running). It sends nothing unless AttachConsole succeeded, so it can never reach
+// another console. Returns { error } when it couldn't send.
+const CTRL_C_PS = [
+  "Add-Type -TypeDefinition @'",
+  'using System;',
+  'using System.Runtime.InteropServices;',
+  'public static class CdsCtrlC {',
+  '  public delegate bool Handler(uint ctrlType);',
+  '  static Handler keep = delegate (uint t) { return true; };',
+  '  [DllImport("kernel32.dll", SetLastError = true)] static extern bool FreeConsole();',
+  '  [DllImport("kernel32.dll", SetLastError = true)] static extern bool AttachConsole(uint pid);',
+  '  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetConsoleCtrlHandler(Handler h, bool add);',
+  '  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GenerateConsoleCtrlEvent(uint ev, uint group);',
+  '  public static int Send(uint pid) {',
+  '    FreeConsole();',
+  '    if (!AttachConsole(pid)) return 10;',
+  '    SetConsoleCtrlHandler(keep, true);',
+  '    bool sent = GenerateConsoleCtrlEvent(0, 0);',
+  '    System.Threading.Thread.Sleep(300);',
+  '    FreeConsole();',
+  '    return sent ? 0 : 11;',
+  '  }',
+  '}',
+  "'@",
+  'exit [CdsCtrlC]::Send([uint32]$env:CDS_CTRL_PID)',
+].join('\n');
+
+async function sendCtrlC(pid) {
+  const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(CTRL_C_PS, 'utf16le').toString('base64')],
+    { env: { ...process.env, CDS_CTRL_PID: String(pid) }, timeout: 30000 });
+  if (r.code === 0) return {};
+  return { error: r.code === 10 ? `couldn't attach to the run's console (pid ${pid})` : r.code === 11 ? 'Windows refused to send Ctrl+C' : `the Ctrl+C helper failed (exit ${r.code}${r.err.trim() ? `: ${oneLine(r.err, 160)}` : ''})` };
+}
+
+async function waitGone(pid, ms) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) { if (!exists(pid)) return true; await sleep(200); }
+  return !exists(pid);
+}
+
 // The run that matters now (the last), in one shape for the tool's runs and run-phase.ps1's.
 function currentRun(meta) {
   if (Array.isArray(meta.runs) && meta.runs.length) return { ...meta.runs[meta.runs.length - 1], index: meta.runs.length - 1, count: meta.runs.length };
@@ -347,13 +428,24 @@ function cleanEnv() {
   return env;
 }
 
+// What Claude Code runs with: cleanEnv() plus PHASE_ENV where the user hasn't set the variable.
+export function phaseEnv(base = cleanEnv()) {
+  const env = { ...base };
+  const has = (k) => Object.keys(env).some(x => x.toUpperCase() === k);
+  for (const [k, v] of Object.entries(PHASE_ENV)) if (!has(k)) env[k] = v;
+  return env;
+}
+
 // WMI's Win32_Process.Create: the runner's parent is WMI, not this server, so closing Claude
 // Desktop (which ends its servers' process trees) doesn't end the phase; hidden (ShowWindow 0).
 // It gets the user's own environment, as a new terminal would (WMI builds it from the user's
 // profile), not this server's: Claude Desktop may give its servers a reduced one, and a parent
 // Claude Code session's variables (CLAUDECODE, CLAUDE_PROJECT_DIR) must not reach the phase.
+// From P8 the runner gets --console: it has its own (hidden) console from WMI, and Claude Code
+// shares it, so Stop can send Ctrl+C into it. (The detached fallback has no console: no --console,
+// and Claude Code gets a windowless one of its own, as in P7.)
 async function launchRunner(metaFile, index, cwd) {
-  const cmdline = `"${process.execPath}" "${SELF}" --run "${metaFile}" ${index}`;
+  const cmdline = `"${process.execPath}" "${SELF}" --run "${metaFile}" ${index} --console`;
   const env = cleanEnv();
   const ps = "$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }; " +
     "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $env:CDS_PHASE_CMD; CurrentDirectory = $env:CDS_PHASE_CWD; ProcessStartupInformation = $si }; " +
@@ -574,7 +666,11 @@ export async function phaseStatus(args = {}) {
   let label;
   if (st.state === 'starting') label = 'STARTING';
   else if (st.state === 'running') label = res ? 'RUNNING (it has a result and is waiting for background work it started)' : 'RUNNING';
-  else if (st.state === 'stopped') label = 'STOPPED (by request)';
+  else if (st.state === 'stopped') {
+    label = r.stop_method === 'ctrl_c' ? 'STOPPED (by request, with Ctrl+C: Claude Code ended its turn and exited, so its SessionEnd hooks ran)'
+      : r.stop_method === 'force' ? `STOPPED (by request, by force${r.stop_note ? `: ${oneLine(r.stop_note, 120)}` : ''}; no SessionEnd hooks, no automatic handoff)`
+      : 'STOPPED (by request)';
+  }
   else if (res) label = res.is_error ? `FINISHED WITH AN ERROR (${res.subtype})` : 'FINISHED';
   else if (st.state === 'ended') label = `ENDED WITHOUT A RESULT (exit code ${r.exit_code ?? '?'}${r.error ? `: ${oneLine(r.error, 120)}` : ''})`;
   else label = 'ENDED WITHOUT A RESULT (the process is gone: crashed, killed, or the PC restarted)';
@@ -598,7 +694,7 @@ export async function phaseStatus(args = {}) {
   if (latest.length) { lines.push('Latest from Claude:'); for (const t of latest) lines.push(`- ${oneLine(t, 300)}`); }
   if (res) {
     lines.push(`Result: ${res.subtype}, ${res.num_turns ?? '?'} turns, ${res.duration_ms != null ? minutes(res.duration_ms) : '?'}${res.is_error ? ', is_error' : ''}.`);
-    lines.push(`"${oneLine(res.result, 700)}"`);
+    if (String(res.result || '').trim()) lines.push(`"${oneLine(res.result, 700)}"`);
     if (looksLikeQuestion(res.result)) lines.push(`It ends with a QUESTION: answer it with claudedev_phase_reply (project_path, phase "${phase}", message).`);
   }
   let out = 'not written yet';
@@ -685,8 +781,44 @@ export async function phaseStop(args = {}) {
   const pids = [r.runner_pid, r.claude_pid].filter(Boolean);
   const info = await procInfo(pids);
   if (!isOurs(info, r.runner_pid, r.runner_started, runnerMark(r))) return ok(`${phase}'s process ${r.runner_pid} is no longer the run's (it has ended); nothing stopped.`);
+
+  // 1. Ctrl+C (from P8), when Claude Code shares the runner's console.
+  const t0 = Date.now();
+  let method = 'force', why = null, presses = 0, ended = 0;
+  if (r.shares_console && !r.legacy) {
+    const tree = await processTree(r.runner_pid);
+    for (const wait of CTRL_C_WAIT_MS) {
+      const c = await sendCtrlC(r.runner_pid);
+      if (c.error) { why = c.error; break; }
+      presses++;
+      if (await waitGone(r.runner_pid, wait)) { method = 'ctrl_c'; break; }
+    }
+    if (method === 'ctrl_c') {
+      // What the run started and left behind (a command in a console of its own): ended, if still the same process.
+      const rest = tree.filter(x => x.pid !== r.runner_pid);
+      const now = await procInfo(rest.map(x => x.pid));
+      for (const x of rest) {
+        const y = now[x.pid];
+        if (!y || Math.abs(y.created - x.created) > 1000) continue;
+        const k3 = await run('taskkill.exe', ['/PID', String(x.pid), '/T', '/F'], { timeout: 30000 });
+        ended += (k3.out.match(/SUCCESS/g) || []).length;
+      }
+    } else if (!why) why = `Ctrl+C (sent ${presses} time${presses === 1 ? '' : 's'}) didn't end it within ${CTRL_C_WAIT_MS.reduce((a, b) => a + b, 0) / 1000} s`;
+  } else {
+    why = r.legacy ? 'a run started by run-phase.ps1 (its Claude Code has a console of its own)' : 'a run started before P8 (its Claude Code has a console of its own)';
+  }
+  if (method === 'ctrl_c') {
+    const after = readJson(fl.meta);
+    const rr = after && after.runs ? after.runs[after.runs.length - 1] : {};
+    updateMeta(fl.meta, m => { Object.assign(m.runs[m.runs.length - 1], { stopped_by_request: true, stop_method: 'ctrl_c', ctrl_c_presses: presses, stop_ms: Date.now() - t0, ...(rr.ended ? {} : { ended: new Date().toISOString() }), ...(ended ? { leftover_processes_ended: ended } : {}) }); });
+    releaseLock(fl, phase);
+    return ok(`Stopped ${phase} in ${project} with Ctrl+C (${((Date.now() - t0) / 1000).toFixed(1)} s${presses > 1 ? `, ${presses} presses` : ''}): Claude Code ended its turn and exited (exit code ${rr.exit_code ?? '?'}), so its SessionEnd hooks ran (with CDS's Claude Code hooks: an automatic handoff).` +
+      `${ended ? ` ${ended} process${ended === 1 ? '' : 'es'} it left running ${ended === 1 ? 'was' : 'were'} ended.` : ''} The lock is released; docs\\${phase}_run.json records it as stopped by request. claudedev_phase_reply can continue the session.`);
+  }
+
+  // 2. By force: the runner's process tree.
   const k = await run('taskkill.exe', ['/PID', String(r.runner_pid), '/T', '/F'], { timeout: 30000 });
-  let ended = (k.out.match(/SUCCESS/g) || []).length;
+  ended = (k.out.match(/SUCCESS/g) || []).length;
   // Claude Code, if it outlived its runner somehow (its parent is the runner, or it is the recorded claude).
   if (r.claude_pid && exists(r.claude_pid)) {
     const ci = await procInfo([r.claude_pid]);
@@ -700,14 +832,15 @@ export async function phaseStop(args = {}) {
   const still = pids.filter(exists);
   const stillOurs = still.length ? await procInfo(still) : {};
   const left = still.filter(p => stillOurs[p] && (p !== r.runner_pid || isOurs(stillOurs, p, r.runner_started, runnerMark(r))));
+  const forced = { stopped_by_request: true, stop_method: 'force', stop_note: why, ...(presses ? { ctrl_c_presses: presses } : {}), ended: new Date().toISOString(), stopped_processes: ended };
   if (!r.legacy) {
-    updateMeta(fl.meta, m => { Object.assign(m.runs[m.runs.length - 1], { stopped_by_request: true, ended: new Date().toISOString(), stopped_processes: ended }); });
+    updateMeta(fl.meta, m => { Object.assign(m.runs[m.runs.length - 1], forced); });
   } else {
-    updateMeta(fl.meta, m => { m.stopped_by_request = new Date().toISOString(); m.runs = [{ ...r, stopped_by_request: true, ended: new Date().toISOString() }]; });
+    updateMeta(fl.meta, m => { m.stopped_by_request = new Date().toISOString(); m.runs = [{ ...r, ...forced }]; });
   }
   releaseLock(fl, phase);
   for (const f of [r.stdin]) { if (f) { try { fs.unlinkSync(f); } catch { /* gone */ } } }
-  return ok(`Stopped ${phase} in ${project}: ended ${ended} process${ended === 1 ? '' : 'es'} (the runner ${r.runner_pid}, Claude Code${r.claude_pid ? ` ${r.claude_pid}` : ''} and what it started). The lock is released; docs\\${phase}_run.json records it as stopped by request.` +
+  return ok(`Stopped ${phase} in ${project} by force (${why}): ended ${ended} process${ended === 1 ? '' : 'es'} (the runner ${r.runner_pid}, Claude Code${r.claude_pid ? ` ${r.claude_pid}` : ''} and what it started). The lock is released; docs\\${phase}_run.json records it as stopped by request.` +
     `${left.length ? ` Still running: ${left.join(', ')} (end them in Task Manager).` : ''} A turn it was in the middle of records no result, and no automatic handoff is written; claudedev_phase_reply can continue the session.`);
 }
 
@@ -715,13 +848,18 @@ export async function phaseStop(args = {}) {
 // The runner: node cds-phase.js --run <docs\<phase>_run.json> <run index>
 // ---------------------------------------------------------------------------
 
-async function runner(metaFile, index) {
+async function runner(metaFile, index, shareConsole) {
+  // Stop's Ctrl+C reaches every process on this console, the runner too: it waits for Claude Code
+  // to end instead (Node would otherwise exit at once and record nothing).
+  for (const sig of ['SIGINT', 'SIGBREAK']) process.on(sig, () => { /* Claude Code handles it; we wait for its exit */ });
   const meta = readJson(metaFile);
   if (!meta || !meta.runs || !meta.runs[index]) process.exit(2);
   const fl = files(meta.project, meta.phase);
   const runEntry = meta.runs[index];
   const started = new Date().toISOString();
-  updateMeta(metaFile, m => { Object.assign(m.runs[index], { runner_pid: process.pid, runner_started: started }); m.pid = process.pid; });
+  const env = phaseEnv();
+  const runEnv = Object.fromEntries(Object.keys(PHASE_ENV).map(k => [k, env[k]]));
+  updateMeta(metaFile, m => { Object.assign(m.runs[index], { runner_pid: process.pid, runner_started: started, shares_console: !!shareConsole, env: runEnv }); m.pid = process.pid; });
   try { const l = readJson(fl.lock); if (l && l.phase === meta.phase) { l.runner_pid = process.pid; l.started = started; writeJson(fl.lock, l); } } catch { /* best effort */ }
 
   const finish = (fields) => {
@@ -736,10 +874,11 @@ async function runner(metaFile, index) {
     if (runEntry.stdin) inp = fs.openSync(runEntry.stdin, 'r');
   } catch (e) { finish({ error: `couldn't open the log: ${e.message}` }); process.exit(1); }
   const [file, ...args] = runEntry.command;
-  const env = cleanEnv();
   let child;
   try {
-    child = spawn(file, args, { cwd: meta.project, stdio: [inp, out, err], windowsHide: true, env });
+    // windowsHide would give Claude Code a windowless console of its own, out of Ctrl+C's reach;
+    // with --console it shares this one (hidden by WMI), so no window appears either way.
+    child = spawn(file, args, { cwd: meta.project, stdio: [inp, out, err], windowsHide: !shareConsole, env });
   } catch (e) { finish({ error: e.message }); process.exit(1); }
   child.on('error', (e) => { finish({ error: e.message }); process.exit(1); });
   if (child.pid) updateMeta(metaFile, m => { m.runs[index].claude_pid = child.pid; });
@@ -748,5 +887,5 @@ async function runner(metaFile, index) {
 
 const argv = process.argv.slice(2);
 if (argv[0] === '--run' && process.argv[1] && path.resolve(process.argv[1]).toLowerCase() === SELF.toLowerCase()) {
-  runner(path.resolve(argv[1]), Number(argv[2] || 0)).catch(() => process.exit(1));
+  runner(path.resolve(argv[1]), Number(argv[2] || 0), argv.includes('--console')).catch(() => process.exit(1));
 }
