@@ -1,6 +1,6 @@
 # ClaudeDevStudio — Ground Truth
 
-*Last updated: 2026-11-12 (P12: back to current state; v1.7.3 built, not published)*
+*Last updated: 2026-11-12 (v1.7.3 published)*
 
 **Read this first.** It is the single source of truth for the project. **It is the current state, not a log:** when a fact changes, replace it here; don't append. The history (dated status entries, fixed problems, earlier detail) is in `docs\history\GROUND_TRUTH_history.md`, CDS's memory, the `docs\Pn_OUTPUT.md` files and git. Older status files are in `docs\history\` and describe states that no longer exist.
 
@@ -18,9 +18,9 @@
 
 ## 2. Status
 
-**Released:** v1.7.2 (2026-11-12, GitHub release `v1.7.2`, commit `a28dc21`): project memory (the CLI and the `claudedevstudio` MCP server: load, handoffs, mistakes, decisions, lessons for every project, search), the workbench (`cds-workbench`: phases from chat in three modes, VS Bridge tools, AI delegation), Claude Code hooks set up by default when Claude Code is there, whole-store backups (daily, before every upgrade, on demand) with export/import and restore, the tray app and the Dashboard (Phases and Backups pages). **Installed:** Dan's PC v1.7.2 through the installer (`install.log` 2026-11-12 18:31); machine 3 v1.7.2. **Website:** `D:\websites\claudedevstudio.com` says v1.7.2; Dan uploads it. **P12 done** (`docs\P12_OUTPUT.md`): load names the project's `HOW_WE_WORK.md`/`CONVENTIONS.md` in one line; the scaffold's templates carry Dan's whole method; this file back to current state. **v1.7.3** built (installer SHA-256 `1DF43556BB335C0EC8554AD7E049A450AB3FCD7614F5CC9E247046CA812BF558`), not published. **Open:** only §7 item 35 (AI delegation, deferred by Dan); further work comes from using CDS on Dan's projects.
+**Released:** v1.7.3 (2026-11-12, GitHub release `v1.7.3`, asset SHA-256 `1DF43556BB335C0EC8554AD7E049A450AB3FCD7614F5CC9E247046CA812BF558`): project memory (the CLI and the `claudedevstudio` MCP server: load, handoffs, mistakes, decisions, lessons for every project, search), the workbench (`cds-workbench`: phases from chat in three modes, VS Bridge tools, AI delegation), Claude Code hooks set up by default when Claude Code is there, whole-store backups (daily, before every upgrade, on demand) with export/import and restore, the tray app and the Dashboard (Phases and Backups pages); load names the project's `HOW_WE_WORK.md`/`CONVENTIONS.md` in one line, and the scaffold's templates carry Dan's whole method (including "test in proportion to the change"). **Installed:** Dan's PC v1.7.2 through the installer; machine 3 v1.7.3 (upgraded 2026-11-12: clean `install.log`; the SessionStart hook on a throwaway project printed the `Rules:` line). **Website:** v1.7.3, uploaded by Dan. **Open:** §7 items 35 (AI delegation) and 36 (update check), both deferred by Dan; further work comes from using CDS on Dan's projects.
 
-**Next:** the producer reviews `docs\P12_OUTPUT.md`, tests v1.7.3 on machine 3 and publishes it (the EXE `1DF43556…F558`, `docs\releases\RELEASE_NOTES_v1.7.3.md`); Dan installs it and uploads the website.
+**Next:** Dan installs v1.7.3.
 
 ---
 
