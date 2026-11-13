@@ -32,7 +32,7 @@ SetCompressor /SOLID lzma
 ; Metadata
 ;---------------------------------------------------------------------------
 !define PRODUCT_NAME      "ClaudeDevStudio"
-!define PRODUCT_VERSION   "1.7.1"
+!define PRODUCT_VERSION   "1.7.2"
 !define PRODUCT_PUBLISHER "Daniel E Gain"
 !define PRODUCT_CONTACT   "support@gainpublications.com"
 !define PRODUCT_URL       "https://github.com/dectdan/Claude-Developer-Studio"
@@ -440,6 +440,7 @@ Section "Install" SecMain
   ;--- Step 10: Registry, PATH, shortcuts, autostart ---
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName"     "${PRODUCT_NAME}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion"  "${PRODUCT_VERSION}"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon"     '"${INSTALL_DIR}\TrayApp\ClaudeDevStudio.TrayApp.exe",0'
   WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher"       "${PRODUCT_PUBLISHER}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "URLInfoAbout"    "${PRODUCT_URL}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "Contact"         "${PRODUCT_CONTACT}"
