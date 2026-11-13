@@ -1,6 +1,6 @@
 {
   "name": "cds-review-panel",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "description": "ClaudeDevStudio Review Panel - local display server",
   "main": "server.js",
   "scripts": {

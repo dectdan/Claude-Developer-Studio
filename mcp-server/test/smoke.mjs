@@ -1478,6 +1478,80 @@ try {
     check('P11: nothing of these checks reached the real store', !leaked11, docs);
     try { fs.rmSync(p11, { recursive: true, force: true }); } catch { /* leave it */ }
   }
+
+  // ---- P12: load points at the project's rules; the templates carry the whole method ----
+  console.log('\n-- P12 checks (the rules line, the new templates) --');
+  {
+    const GT12 = '# P12 — Ground Truth\n\n*Last updated: 2026-11-12*\n\n## 2. Status\n\nAll fine.\n\n**Next:** the next step.\n';
+    const RULES = /^Rules: read .* before changing anything/m;
+    const rulesLines = (t) => t.split('\n').filter(l => RULES.test(l));
+    const NOTE = /^\(No docs\\.*claudedev_scaffold can add/m;
+    // Both files in docs\
+    const both = makeProject('p12both');
+    write(path.join(both.dir, 'docs', 'GROUND_TRUTH.md'), GT12);
+    write(path.join(both.dir, 'docs', 'HOW_WE_WORK.md'), '# how\n');
+    write(path.join(both.dir, 'docs', 'CONVENTIONS.md'), '# conv\n');
+    r = await call('claudedev_load', { project_path: both.dir });
+    const lb = rulesLines(r.text);
+    check('P12: load with docs\\HOW_WE_WORK.md and docs\\CONVENTIONS.md prints one rules line naming both paths, and no note',
+      !r.isError && lb.length === 1 && lb[0] === 'Rules: read docs\\CONVENTIONS.md and docs\\HOW_WE_WORK.md before changing anything (how this project works).' &&
+      !NOTE.test(r.text) && r.text.indexOf(lb[0]) > r.text.indexOf('**Next:** the next step.') && r.text.indexOf(lb[0]) < r.text.indexOf('activity'),
+      r.text.slice(0, 1500));
+    console.log(`      (the line as printed: ${lb[0]})`);
+    // One file, at the root: the line names it there; the note names the other
+    const one = makeProject('p12one');
+    write(path.join(one.dir, 'docs', 'GROUND_TRUTH.md'), GT12);
+    write(path.join(one.dir, 'CONVENTIONS.md'), '# conv\n');
+    r = await call('claudedev_load', { project_path: one.dir });
+    const lo = rulesLines(r.text);
+    check('P12: load with only CONVENTIONS.md (at the root) prints the rules line for it and the note for docs\\HOW_WE_WORK.md',
+      !r.isError && lo.length === 1 && lo[0] === 'Rules: read CONVENTIONS.md before changing anything (how this project works).' &&
+      /^\(No docs\\HOW_WE_WORK\.md: claudedev_scaffold can add it; it never overwrites\. Offer it; don't just do it\.\)$/m.test(r.text),
+      r.text.slice(0, 1500));
+    // None: only the existing note
+    const none = makeProject('p12none');
+    write(path.join(none.dir, 'docs', 'GROUND_TRUTH.md'), GT12);
+    r = await call('claudedev_load', { project_path: none.dir });
+    check('P12: load with neither file prints no rules line, only the existing note',
+      !r.isError && rulesLines(r.text).length === 0 && /^\(No docs\\CONVENTIONS\.md or docs\\HOW_WE_WORK\.md: claudedev_scaffold can add them; it never overwrites\. Offer it; don't just do it\.\)$/m.test(r.text),
+      r.text.slice(0, 1500));
+
+    // The scaffold creates all three from the new templates, placeholders filled
+    const sc = makeProject('p12scaffold');
+    r = await call('claudedev_scaffold', { project_path: sc.dir, summary: 'P12 summary.' });
+    const rd = (f) => { try { return fs.readFileSync(path.join(sc.dir, 'docs', f), 'utf8'); } catch { return ''; } };
+    const [gt, cv, hw] = THREE.map(rd); // THREE: GROUND_TRUTH, CONVENTIONS, HOW_WE_WORK
+    const name12 = path.basename(sc.dir);
+    const filled = [gt, hw, cv].every(t => t && !/\{\{/.test(t) && t.includes(name12) && t.includes(localToday));
+    check('P12: the scaffold still creates all three files, every placeholder filled',
+      !r.isError && /Created: docs\\GROUND_TRUTH\.md, docs\\CONVENTIONS\.md, docs\\HOW_WE_WORK\.md/.test(r.text) && filled && gt.includes('P12 summary.'), r.text);
+    const hasAll = (t, parts) => parts.filter(p => !t.includes(p));
+    const hwMissing = hasAll(hw, ['## Starting a session', 'Load CDS for <project folder>', '## Working in a chat with the owner', 'One question at a time, then wait', 'One example, then ask', 'No unsolicited features',
+      'Would you like me to also handle X?', 'A phase is different', '**Header:**', `=== Pn COMPLETE — STOPPED FOR SCOPE. Awaiting review. ===`, 'and what to find in each', '## The output', 'who agreed', '"not tested" said plainly',
+      'that the ground truth was updated', '## When a session stops early', 'claudedev_phase_status` shows where it stopped', '## Two memories', 'the chat\'s memory', 'QUESTION:', 'RECOMMENDATION:']);
+    const cvMissing = hasAll(cv, ['weeks of work were lost', 'It has no exceptions', 'Build or verify after every task', 'A task is not done until its check passes', 'Finish one task before starting the next']);
+    const gtMissing = hasAll(gt, ['It is the current state, not a log', 'replace the old one here; don\'t append', 'ClaudeDevStudio\'s memory, the `docs\\Pn_OUTPUT.md` files and git', 'an index of what each did', '**Next:** fill in sections 1–3']);
+    check('P12: the new templates carry the method (HOW_WE_WORK: chat rules, header and stop line, output checklist, stopping early, two memories; CONVENTIONS: backup reason, verify each task; GROUND_TRUTH: current state, not a log)',
+      !hwMissing.length && !cvMissing.length && !gtMissing.length && !/Prompt [Hh]istory/.test(gt + hw) && !/Dated lines/.test(gt),
+      `missing in HOW_WE_WORK: ${hwMissing.join(' | ')}\nCONVENTIONS: ${cvMissing.join(' | ')}\nGROUND_TRUTH: ${gtMissing.join(' | ')}`);
+    r = await call('claudedev_load', { project_path: sc.dir });
+    check('P12: load of the scaffolded project shows its Status, its Next and the rules line',
+      !r.isError && /## 2\. Status/.test(r.text) && /\*\*Next:\*\* fill in sections 1–3/.test(r.text) && rulesLines(r.text)[0] === 'Rules: read docs\\CONVENTIONS.md and docs\\HOW_WE_WORK.md before changing anything (how this project works).',
+      r.text.slice(0, 1500));
+
+    // The SessionStart hook (needs the isolated root: --cli)
+    const hook12 = path.join(path.dirname(serverPath), 'cds-hook.js');
+    if (isolated && fs.existsSync(hook12)) {
+      const env = { ...process.env, CDS_HOOK_LOG: path.join(os.tmpdir(), `${scratchName}_hooks12.log`), CDS_CLI_PATH: cliPath, CLAUDE_PROJECT_DIR: both.dir };
+      const res = spawnSync(process.execPath, [hook12, 'session-start'], { input: JSON.stringify({ session_id: `smoke12-${scratchName}`, transcript_path: '', cwd: both.dir, hook_event_name: 'SessionStart', source: 'startup' }), encoding: 'utf8', env, windowsHide: true, timeout: 30000 });
+      const out = res.stdout || '';
+      const lh = rulesLines(out);
+      check('P12: the SessionStart hook\'s output for a project with both files shows the rules line',
+        res.status === 0 && out.startsWith(`=== ClaudeDevStudio: ${path.basename(both.dir)} ===`) && lh.length === 1 && lh[0] === lb[0] && /Loaded at session start by the ClaudeDevStudio hook/.test(out),
+        `exit ${res.status}\n${out.slice(0, 1500)}\n${res.stderr}`);
+      try { fs.rmSync(env.CDS_HOOK_LOG, { force: true }); } catch { /* leave it */ }
+    } else console.log('SKIP  P12: the SessionStart hook (needs --cli, for a throwaway memory root, and cds-hook.js beside the server)');
+  }
 } catch (e) {
   check('no exception', false, e.stack || e.message);
 } finally {

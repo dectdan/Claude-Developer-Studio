@@ -2,7 +2,7 @@
 
 *Last updated: {{DATE}} (created from the ClaudeDevStudio template)*
 
-**Read this first.** It is the single source of truth for this project: what it is, where it stands, what was decided and what comes next. When something here is out of date, fix it here first. Old notes and reports go in `docs\history\`, so nobody mistakes them for the current state.
+**Read this first.** It is the single source of truth for this project: what it is, where it stands, what was decided and what comes next. **It is the current state, not a log:** when a fact changes, replace the old one here; don't append. The history lives in ClaudeDevStudio's memory, the `docs\Pn_OUTPUT.md` files and git; old notes and reports go in `docs\history\`, so nobody mistakes them for the current state.
 
 ---
 
@@ -16,9 +16,9 @@
 
 ## 2. Status
 
-*Dated lines, newest last: what each session or phase did and where its details are (for example `docs\P1_OUTPUT.md`). The last line is always **Next:**.*
+*Where the project stands now, in one short paragraph: what works, what is released or installed where, what is in progress. Rewrite it after each session or phase; don't add dated entries. The last line is always **Next:**, the one next step.*
 
-- **{{DATE}}:** ground truth created.
+Ground truth created {{DATE}}; nothing else yet.
 
 **Next:** fill in sections 1–3 with the owner (what this is, the status, where things are).
 
@@ -38,13 +38,13 @@
 
 ## 4. Architecture
 
-*The parts, what each is built from, and what it does. How they talk to each other. Any file format or interface that must not change by accident.*
+*The parts, what each is built from, and what it does. How they talk to each other. Any file format or interface that must not change by accident. As it is now: replace what changed.*
 
 ---
 
 ## 5. Decisions
 
-*The owner's decisions, dated, each with the reason. Nobody undoes one without asking the owner.*
+*The owner's decisions, dated, each with the reason. Nobody undoes one without asking the owner. When one is replaced, keep only the one in force.*
 
 - **({{DATE}}) Example: one ground truth for the project.** Why: every session starts from the same facts.
 
@@ -52,7 +52,7 @@
 
 ## 6. Open Questions
 
-*Questions waiting for the owner, numbered. When one is settled, strike it through (`~~question~~`) and put the answer in Decisions. Write "None." when there are none.*
+*Questions waiting for the owner, numbered. When one is settled, put the answer in Decisions and remove the question. Write "None." when there are none.*
 
 None.
 
@@ -60,13 +60,13 @@ None.
 
 ## 7. Known Problems
 
-*Worst first, numbered. When one is fixed, mark it **FIXED** with the phase that fixed it, and keep the original description below.*
+*The open ones, worst first, numbered. When one is fixed, remove it (its number is not reused); the phase's output says how it was fixed.*
 
 ---
 
 ## 8. Plan
 
-*The phases, one row each. A phase is one prompt (see `docs\HOW_WE_WORK.md`): it names its scope, what it never touches, its verification and its output file, runs long steps in the foreground, and asks only real decisions, with a `QUESTION:` block.*
+*The phases, one short row each: an index of what each did and where its output is, not a log (the details are in `docs\Pn_OUTPUT.md`). A phase is one prompt (see `docs\HOW_WE_WORK.md`): it names its scope, what it never touches, its verification and its output file, runs long steps in the foreground, and asks only real decisions, with a `QUESTION:` block.*
 
 | Phase | What | Status |
 |---|---|---|
@@ -83,13 +83,3 @@ None.
 ## 10. Rules That Bite
 
 *Things that went wrong before and will again if forgotten, one line each, with the rule that prevents them.*
-
----
-
-## 11. Prompt History
-
-*One row per prompt: what it did and where its output is.*
-
-| Prompt | Date | What |
-|---|---|---|
-| — | {{DATE}} | Ground truth created. |

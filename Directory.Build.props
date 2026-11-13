@@ -7,7 +7,7 @@
     tools\check-versions.ps1.
   -->
   <PropertyGroup>
-    <Version>1.7.2</Version>
+    <Version>1.7.3</Version>
   </PropertyGroup>
   <!--
     Release builds keep no path of the machine that built them (P11, ground truth section 7 item 27):

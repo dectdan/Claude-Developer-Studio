@@ -391,13 +391,26 @@ function groundTruthSection(projectPath) {
     }
   }
 
-  // The rest of the method, if missing: one line.
-  const has = (name) => fs.existsSync(path.join(projectPath, 'docs', name)) || fs.existsSync(path.join(projectPath, name));
-  const missing = ['CONVENTIONS.md', 'HOW_WE_WORK.md'].filter(n => !has(n));
+  // The rest of the method: one line for the rules that are there (P12), one for those missing.
+  const { rules, missing } = methodFiles(projectPath);
   const note = missing.length
     ? `(No docs\\${missing.join(' or docs\\')}: claudedev_scaffold can add ${missing.length > 1 ? 'them' : 'it'}; it never overwrites. Offer it; don't just do it.)`
     : null;
-  return { fixed: out, questions, note };
+  return { fixed: out, questions, rules, note };
+}
+
+// The method's rule files, in docs\ or at the root (docs\ first): the line that points a session at
+// those that exist (P12: an ordinary chat or Claude Code session reads them before changing
+// anything; a phase gets them through its prompt), and the names of those missing.
+const METHOD_FILES = ['CONVENTIONS.md', 'HOW_WE_WORK.md'];
+function methodFiles(projectPath) {
+  const where = (name) => [path.join('docs', name), name].find(rel => fs.existsSync(path.join(projectPath, rel)));
+  const found = METHOD_FILES.map(where).filter(Boolean);
+  const missing = METHOD_FILES.filter(n => !where(n));
+  const rules = found.length
+    ? `Rules: read ${found.join(' and ')} before changing anything (how this project works).`
+    : null;
+  return { rules, missing };
 }
 
 const NO_GROUND_TRUTH = [
@@ -500,10 +513,14 @@ function buildContext(projectPath, cliLoad, createdNow, max = LOAD_MAX) {
   const gt = groundTruthSection(projectPath);
   if (gt) {
     add('ground_truth', gt.fixed);
+    // The rules line and the note for missing files are one line each and never trimmed.
+    if (gt.rules) add('method_rules', [gt.rules]);
     if (gt.questions) add('questions', ...gt.questions);
     if (gt.note) add('method_note', [gt.note]);
   } else {
     add('no_ground_truth', NO_GROUND_TRUTH);
+    const { rules } = methodFiles(projectPath);
+    if (rules) add('method_rules', [rules]);
   }
 
   const output = outputSection(projectPath);
