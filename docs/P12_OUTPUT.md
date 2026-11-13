@@ -4,7 +4,7 @@
 
 ## What the producer must do
 
-1. **Test v1.7.3 on machine 3** (no sandbox run, as the prompt says: Dan's call for small releases). The EXE: `Installer\Output\ClaudeDevStudio-Setup.exe`, 209,711,769 bytes, SHA-256 **`F6ECD3F495BC02C436416C421C05186FF6200897C56081D3E1E6124C99CE08C0`**. Worth looking at there: `claudedev version` says 1.7.3; `install.log` reads cleanly; in a project with `docs\CONVENTIONS.md` and/or `docs\HOW_WE_WORK.md`, `claudedev_load` (or a new Claude Code session) shows the `Rules:` line; `claudedev_scaffold` on a throwaway folder creates the new templates.
+1. **Test v1.7.3 on machine 3** (no sandbox run, as the prompt says: Dan's call for small releases). The EXE: `Installer\Output\ClaudeDevStudio-Setup.exe`, 209,672,180 bytes, SHA-256 **`1DF43556BB335C0EC8554AD7E049A450AB3FCD7614F5CC9E247046CA812BF558`** (the follow-up's rebuild, see "Follow-up" at the end; it replaces the first build, `F6ECD3F4…08C0`). Worth looking at there: `claudedev version` says 1.7.3; `install.log` reads cleanly; in a project with `docs\CONVENTIONS.md` and/or `docs\HOW_WE_WORK.md`, `claudedev_load` (or a new Claude Code session) shows the `Rules:` line; `claudedev_scaffold` on a throwaway folder creates the new templates.
 2. **Publish v1.7.3** with that EXE and `docs\releases\RELEASE_NOTES_v1.7.3.md`.
 3. Dan installs it; the website still needs uploading (unchanged from before; it doesn't need a change for this release, though it could mention `Load CDS for <folder>`).
 
@@ -168,3 +168,16 @@ Dan's store, settings, Claude Desktop config, installed copy, keys and other pro
 - Not deployed, tagged or published (the prompt).
 - CDS's own repo has no `docs\HOW_WE_WORK.md`/`CONVENTIONS.md`; not added (not in scope; the scaffold never overwrites, and this repo's method lives in its ground truth and phase prompts).
 - The website doesn't mention `Load CDS for <folder>` yet (outside this phase: `D:\websites` is never touched).
+
+## Follow-up: test in proportion to the change (Dan, LSN013)
+
+*2026-11-12, a second commit in this phase.*
+
+- **`mcp-server\templates\CONVENTIONS.md`**, under "Before saying it's done": **Test in proportion to the change.** Ask what the change could break and the cheapest check that would catch it; images, text or documents get a direct look at the result (the file is there, it shows); changed code gets its tests; the full battery (installers, sandbox, every scenario) is for changes to installing, upgrading, data handling or shared code; the output says what was tested, what was skipped, and why.
+- **`mcp-server\templates\HOW_WE_WORK.md`:** the prompt's Verification bullet now reads "the builds, tests and checks that prove it, sized to the change ("Test in proportion to the change" in `docs\CONVENTIONS.md`)".
+- **`docs\GROUND_TRUTH.md` §11:** the same rule in one line, with the v1.7.2 example (an icon release that started the whole sandbox suite; machine 3 plus reading the icons back from the built exes was enough). §2's SHA-256 now names the new build.
+- **`mcp-server\test\smoke.mjs`:** the P12 template check also looks for the new rule's wording in both templates (4 phrases in CONVENTIONS, 1 in HOW_WE_WORK).
+
+**Tested, in proportion:** the change is template text plus one line of a test, so: `build-setup.ps1` (it stages the templates; exit 0, 2.3 min; the staged `CONVENTIONS.md` and `HOW_WE_WORK.md` have the same SHA-256 as the source; versions all 15 OK; build paths: 4,101 files, 0 hits; NSIS OK), and `smoke.mjs --cli Installer\build\CLI\claudedev.exe`, **218/218** (the scaffold checks and the seven `P12:` checks among them; the full run takes about as long as picking those out). **Skipped:** the sandbox (Dan's call; nothing about installing changed), the warning recount (no code changed since the counts above).
+
+**The new installer:** `Installer\Output\ClaudeDevStudio-Setup.exe`, 209,672,180 bytes, SHA-256 **`1DF43556BB335C0EC8554AD7E049A450AB3FCD7614F5CC9E247046CA812BF558`**. This is the one to test on machine 3 and publish; the first build (`F6ECD3F4…08C0`) is replaced.

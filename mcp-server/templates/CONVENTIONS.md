@@ -20,6 +20,7 @@
 ## Before saying it's done
 
 - **Verify:** the build has 0 errors and no new warnings, and the tests pass. Run them; don't assume.
+- **Test in proportion to the change.** Before testing, ask what the change could break and what the cheapest check is that would catch it. A change to images, text or documents gets a direct look at the result: the file is there, and it shows. Changed code gets its tests. The full battery (installers, sandbox, every scenario) is for changes to installing, upgrading, data handling or shared code. The output says what was tested, what was skipped, and why.
 - **Report what wasn't done, and why.** Never report a success you didn't check.
 - **Say how you checked:** the command, its result, the counts.
 

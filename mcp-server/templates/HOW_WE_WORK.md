@@ -33,7 +33,7 @@
    - **Scope:** the files that may change, the new files, and the files never touched.
    - **Conventions:** this phase's rules, on top of `docs\CONVENTIONS.md`.
    - **The work:** numbered items, each specific enough to check.
-   - **Verification:** the builds, tests and checks that prove it.
+   - **Verification:** the builds, tests and checks that prove it, sized to the change ("Test in proportion to the change" in `docs\CONVENTIONS.md`).
    - **Questions:** what the phase decides by itself (the safest reading that keeps the rules, written down in the output) and when it stops to ask instead: only for a real decision, with a `QUESTION:` block (see "Asking a question" below).
    - **On completion:** the output file, the ground truth update, the commit.
    - **The stop line,** the prompt's last line, with nothing after it: `=== Pn COMPLETE — STOPPED FOR SCOPE. Awaiting review. ===`. It keeps the phase from going on to the next logical step before this one is reviewed.

@@ -1528,8 +1528,9 @@ try {
     const hasAll = (t, parts) => parts.filter(p => !t.includes(p));
     const hwMissing = hasAll(hw, ['## Starting a session', 'Load CDS for <project folder>', '## Working in a chat with the owner', 'One question at a time, then wait', 'One example, then ask', 'No unsolicited features',
       'Would you like me to also handle X?', 'A phase is different', '**Header:**', `=== Pn COMPLETE — STOPPED FOR SCOPE. Awaiting review. ===`, 'and what to find in each', '## The output', 'who agreed', '"not tested" said plainly',
-      'that the ground truth was updated', '## When a session stops early', 'claudedev_phase_status` shows where it stopped', '## Two memories', 'the chat\'s memory', 'QUESTION:', 'RECOMMENDATION:']);
-    const cvMissing = hasAll(cv, ['weeks of work were lost', 'It has no exceptions', 'Build or verify after every task', 'A task is not done until its check passes', 'Finish one task before starting the next']);
+      'that the ground truth was updated', '## When a session stops early', 'claudedev_phase_status` shows where it stopped', '## Two memories', 'the chat\'s memory', 'QUESTION:', 'RECOMMENDATION:', 'sized to the change ("Test in proportion to the change" in `docs\\CONVENTIONS.md`)']);
+    const cvMissing = hasAll(cv, ['weeks of work were lost', 'It has no exceptions', 'Build or verify after every task', 'A task is not done until its check passes', 'Finish one task before starting the next',
+      'Test in proportion to the change', 'what the cheapest check is', 'The full battery', 'what was skipped, and why']);
     const gtMissing = hasAll(gt, ['It is the current state, not a log', 'replace the old one here; don\'t append', 'ClaudeDevStudio\'s memory, the `docs\\Pn_OUTPUT.md` files and git', 'an index of what each did', '**Next:** fill in sections 1–3']);
     check('P12: the new templates carry the method (HOW_WE_WORK: chat rules, header and stop line, output checklist, stopping early, two memories; CONVENTIONS: backup reason, verify each task; GROUND_TRUTH: current state, not a log)',
       !hwMissing.length && !cvMissing.length && !gtMissing.length && !/Prompt [Hh]istory/.test(gt + hw) && !/Dated lines/.test(gt),
